@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "catanbot"
+version = "0.1.0"
+description = "ML-trained Settlers of Catan bot with expectimax search and a Colonist.io screenshot analyzer"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pillow>=9.0",
+]
+
+[project.optional-dependencies]
+vision = ["opencv-python-headless>=4.8"]
+llm = ["anthropic>=0.40"]
+dev = ["pytest>=7", "pytest-timeout"]
+
+[project.scripts]
+catanbot = "catanbot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["catanbot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 600
