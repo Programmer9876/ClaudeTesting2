@@ -373,3 +373,38 @@ round-trips (hexes, numbers, robber, pieces).  Keep each test < 30 s.
 * No global mutable state.  No prints in library code (return / log).
 * Performance matters in `engine.py` / `features.py` (self-play runs
   thousands of games): avoid per-call object churn, precompute tables.
+
+## 11. Exploitative play, game stage, dev-card timing (added requirements)
+
+* `catanbot/opponent_model.py` (DONE): `OpponentProfile` per player *name*
+  with exponentially decayed statistics (offer acceptance overall / per
+  resource received / per resource paid, implied resource valuations updated
+  from every accept / reject / proposal / bank trade, robber targets, risk of
+  holding > 7, build tendencies, "surprise" vs our heuristic).
+  `OpponentModel.observe(state_before, action, player, predicted=None)` is
+  called for every public action (the self-play runner and the search bot
+  must call it; `predicted` = our heuristic's top action for that decision
+  when cheap to compute).  `predict_accept(state, j, receives, pays,
+  proposer)` gives P(accept) used by the search for `PROPOSE_TRADE`
+  branches: `EV = p * V(accepted) + (1 - p) * V(rejected)`.
+  `rank_offers`, `arbitrage_opportunities` (direct and intermediary deals
+  where the counterpart's implied valuation disagrees with ours) feed offer
+  generation.  `save/load` JSON so profiles persist across games and
+  screenshots; the CLI takes `--profiles FILE` and `--event "blue accepted
+  give ore get wood"` lines.
+* **Game stage**: `opponent_model.game_stage(state)` (0..1) and
+  `trade_stage_factor(state)` (1.0 early -> 0.3 late).  Trading logic already
+  uses them: `should_accept` raises its margin with stage and refuses late
+  trades with anyone ahead of us; `plan_trades` prefers the bank late.  The
+  search must multiply the prior of `PROPOSE_TRADE` actions by
+  `trade_stage_factor` and cap proposals per turn (2 late, 4 early).
+* **Dev cards bought this turn** cannot be played until the next turn (VP
+  cards count immediately).  The engine enforces this via `dev_cards_new`;
+  the search must not assume a freshly bought knight is playable in the same
+  turn, and explanations must say "(playable next turn)" for `BUY_DEV`.
+* **Self-play training** (`train.py`): opponents are sampled from
+  {current best search bot, heuristic bot with temperature, previous nets}
+  and trading behaviour is randomised (epsilon on proposals / responses,
+  temperature over offer ranking, random per-game acceptance bias) so the
+  value net sees varied trading styles instead of one deterministic
+  policy.  Player count is sampled from {3, 4} per game.
