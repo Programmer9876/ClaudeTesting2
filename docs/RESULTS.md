@@ -4,6 +4,35 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 22:00 UTC - Colonist-information mode and champion league landed
+
+**Colonist-level information for our bot** (`--info counted`): opponents'
+hands come from a card counter fed only by public events (production,
+builds, trades, Monopoly / Year of Plenty, bank); hidden: steals seen by
+neither thief nor victim, discard types, unplayed dev types (drawn from the
+public pool).  Evidence: on 20 replayed games per engine (11,103 and 12,428
+log steps) the true hands were always among the counter's hypotheses (mean
+probability 0.76-0.80), each opponent's hand was known exactly 73 % of the
+time, at most 44 hypotheses; with every hidden event revealed the counter is
+exact at every step; swapping hidden cards between opponents never changed a
+counted-mode decision (a full-information search changed at 18-20 of 20
+positions).  The default full mode replays byte-identical games.  Cost: 3.4-4.2x
+per decision (4 determinizations).  Mixed Catanatron tables
+(`--mixed-opponents value,alphabeta,sameturn`) are in the benchmark.
+Proof tests T7-T11 (amendments 2 and 3) are being wired into the analysis
+before any of their games are played.
+
+**Champion league** (`scripts/league.py`, docs/LEAGUE.md): champion-0 = the
+proof bot (9984181).  Each champion plays with its own code (a frozen export
+of its commit, served over a JSON protocol), candidates play 2v2 tables
+against every champion, and promotion needs a significant win over the
+current champion (one-sided p < 0.01, exact binomial with O'Brien-Fleming
+style early stopping; simulated type-I error 0.0093, power 86 % at a 55 %
+share) and no significant loss to any earlier one (Holm).  A candidate
+identical to a champion wins exactly half of every block (built-in harness
+check).  About 290 games per hour per gate on this machine; a gate needs at
+most 1188 games per champion.
+
 ## 2026-09-25 21:20 UTC - fairness audit of the Catanatron benchmark
 
 The user asked whether the wins could come from a harness bug or a leak.

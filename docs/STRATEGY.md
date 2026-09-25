@@ -296,3 +296,112 @@ reduced sub-search for every leaf or for none (500 nodes per leaf must be
 left in `max_nodes` after the opponents' turns, DESIGN section 4 rule 4):
 at the SearchBot budget of 20000 nodes it is therefore exactly depth 2, and
 a real depth 3 costs ~250k nodes and seconds per decision.
+
+## Win-path races (`winpaths.py`; off by default)
+
+Top players treat Longest Road and Largest Army as *zero-sum races*: a race is only
+worth entering if you can win it, a crowded race wastes the cards of everyone in it,
+and the uncrowded path gets cheaper.  `static_value` does not know this: it credits
+an award holder the full 2 VP as if the award were permanent, and it gives every
+challenger a flat progress credit (0.15 / 0.35 per road length, 0.45 per played
+knight, 0.45 of the 0.7 per held knight) whether anybody else races or not.  Measured
+in self-play, a mid-game Longest Road holder keeps the award only 40 / 61 / 70 % of
+the time with a lead of 0 / 1 / 2, a Largest Army holder 65 / 94 % with a lead of 1 / 2.
+
+`catanbot/winpaths.py` replaces those award credits, for every seat, with a
+race-aware expected value.  It is an *evaluator wrapper* (`PathsEvaluator`) plus a
+move-ordering nudge: `static_value` and its C++ port are untouched.  It only runs
+with `search.paths = 1` (bot spec `...,paths=1`); the default bot never imports it.
+
+**Units and horizon.**  Static points (10 per VP); time in rounds.  The horizon is
+`H = clamp(0.5 + 2.0 (10 - vmax), 1, 16)` rounds, `vmax` the leader's VP (hidden VP
+cards as `counting.expected_hidden_vp`), fitted on 7.6k turn-start states
+(remaining rounds = 0.13 + 2.42 (10 - vmax), MAE 3.2).  Root quantities (H, the dev
+pool, the bank factor, liveness, the opponents' road room) are fixed per decision so
+sibling leaves are compared on one scale.
+
+**Supply** (cards per round, per seat): production with the robber's block counted
+for `min(1, 2 / H)` of the horizon, plus 0.35 of what the port ratios convert from
+the other resources, times a bank factor `min(1, bank / (table income + 1))`.  Road
+rate = `min(wood, brick, total / 2)`, dev rate = `min(sheep, wheat, ore, total / 3)`:
+your production decides which paths are cheap for you.
+
+**Race levels.**  Longest Road: official trail length + half the roads the hand (and
+held Road Building cards) could pay for + growth `min(room left, 0.6 x road rate x H)`
+(0.6 = the share of roads that extend the trail), + 1.5 for the holder (a tie keeps
+it).  Largest Army: played + held knights + half the dev cards the hand could buy x
+P(knight) + growth `min(1, P(knight) x dev rate) x H`, all seats' growth scaled to
+the knights left in the shared pool, + 1.0 for the holder.
+
+**Solver** (`solve_race`).  `P_i = softmax(beta F_i)` over the projected levels
+`F = b + G` plus a "nobody" outcome at the minimum level (5 roads / 3 knights) while
+unheld; `beta = 1.2 / sqrt(0.8^2 + max growth)` (more growth ahead = more
+uncertainty).  The **crowded factor** `N_close_i` is the soft count of rivals ahead
+of or within one unit of seat i.  The units a seat still has to spend to beat the
+strongest rival, `U = min(G, gap)`, escalate by 50 % per extra close rival, and cost
+`c_LR = 1.2 x crowd` points per road (0.6 points per future card, 2 cards per road,
+0.6 of the roads extend the trail, 0.4 of their value remains because race roads also
+reach spots) or `c_LA ~ 1.0-1.3 x crowd` per knight (a dev card's 3 cards minus the
+value of the VP and progress cards it may be instead).  The prize is
+`20 (1 - 0.5 (1 - P))` for the holder and `20 x 0.5 P` for a challenger (one KAPPA, so
+with no cost the race is exactly zero-sum).  **credit = max(V(P) - cost U, V(P0))**:
+`P0` is the chance if the seat stops growing now, the passive floor.  This is "only
+enter a race you can win": in a crowded race the credit falls to the floor and one
+more road / knight adds almost nothing, in a race nobody else is in the gap is 0 and
+the credit pulls hard.
+
+**Ledger.**  The correction `C_i = credit_i - S_i` cancels static's implicit award
+credit `S_i` exactly (20 for a holder, the 0.15 / 0.35 road-length terms, 0.45 per
+played knight, 0.45 per held knight - static's 0.25 knight-play utility, the progress
+cards' and the VP cards' credit stay).  A race is *live* once somebody holds it or has
+4 roads / 2 knights; a race that is not live is skipped and static applies unchanged.
+The leaf value is `softmax((static + g C) / 16)` (for a blended net: the heuristic
+half is corrected; for a plain net the difference of the two softmaxes is added).
+
+**Contested spots** (`paths_spots=1`, off by default).  For every spot within two
+roads that a rival also reaches, `P_me = r_me / sum r` with `r = 1 / (T + o)`: `T` =
+rounds until the seat can pay settlement + roads from hand and supply, `o` = its turn
+offset (every rival moves before our next turn).  Static's settlement-reach terms
+(0.12 x best spot, 0.6 per buildable spot) are rescaled by `P_me`.
+
+**Move ordering** (`paths_priors=1`, on with `paths=1`).  BUY_DEV gets
+`+4 P(knight) x DeltaLA` while Largest Army is live (and at least prior 45, i.e. it is
+expanded even when `should_buy_dev` says save, when `P(knight) x DeltaLA >= 1` point);
+a paid road gets `4 x DeltaLR` (x 0.3 unless it extends a dead end of our network, cap
+12) *instead of* action_priors' flat +8 Longest Road bonus: no bonus for roads in a
+lost race.  `DeltaR` = our credit change for one more unit, from one re-solve.
+
+**Deliberately not in the value.**  Cities are not zero-sum and static already values
+ore / wheat production (their competition enters only the race supply and the advice
+text); VP cards are exchangeable draws from the shared pool that static and the dev
+chance node already count exactly; "the race leader gets targeted" is in
+`robber.target_weight` and politics; there is no plan memory (decisions stay a pure
+function of the state, which keeps paired ablations deterministic - late switching is
+already expensive because sunk progress stays in `b`, H shrinks and the waste grows).
+
+**Limits (each is a test in tests/test_winpaths.py).**  A won path (holder, lead 3,
+thin pool): P ~ 0.98, C ~ 0, one more knight ~0.01 VP.  A race nobody else is in: a
+strong pull (two knights played and one held, rivals on at most one: +1.9 points for
+the next knight, credit 6.2 vs static's 1.35).  A crowded race (three rivals on 9, 9
+and 10 roads, us on 4): P 0.02, the next road < 0.03 VP, the road prior drops below
+action_priors' +8.  An opponent holding with a big lead: our credit ~0 and C cancels
+static's progress credit.  Endgame (vmax 9, H = 2.5): current levels decide, a
+challenger two roads behind has P < 0.1.
+
+**Advisor.**  The CLI's "Win paths" section (always shown, text only) prints the
+horizon, "Your best path: ...; crowded: ...", one line per award (holder, our level,
+rate, P, close rivals and a verdict: safe / defend / OPEN - worth racing / CROWDED -
+don't race / passive), the best contested spot, the VP cards left, our ore + wheat
+share and a portfolio (points per card: city, settlement, dev card, road-for-length).
+
+**Knobs.**  Spec keys `paths=1` (on), `paths_w` (value weight, default 1), `paths_crowd`
+(crowding strength, default 1; 0 = probability share only), `paths_priors` (default
+1), `paths_spots` (default 0); `recommend --paths W` in the CLI.  Tunables
+`search.paths`, `search.paths_w`, `search.paths_crowd`, `search.paths_priors`,
+`search.paths_spots` and the model constants `winpaths.KAPPA`, `BETA`, `H_B`,
+`HAND_W`, `ESC`, `TIE_LR`, `LIVE_LR`, `LIVE_LA`, `PRIOR_SCALE` and `PLACEBO` (the
+seat-rotated control); the constants only matter with `paths=1` in the base spec.
+**Cost** (depth 1, beam 4, expand 8, 30 mid-game positions, loaded machine):
+1.26x the default's decision time (p95 1.27x), 1.56x with `paths_spots=1`; ~26 us per
+leaf on top of the batched C++ evaluation.  Experiments and decision rules:
+docs/ABLATIONS_WINPATHS.md.
