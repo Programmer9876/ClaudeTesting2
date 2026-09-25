@@ -349,6 +349,67 @@ def test_helpers_match_python(game_states, network_states):
     assert checked >= 1000
 
 
+def _stacked_layouts() -> List[GameState]:
+    """Layouts that exercise the blockability term of score_settlement_spot: two or three own buildings and
+    cities on one hex, a settlement + city upgrade, opponents at 2 / 5 / 7 VP (robber.threat below and above
+    placement.PLACEMENT_STRONG_THREAT) sharing those hexes, hidden dev cards (expected_hidden_vp in threat)."""
+    rng = random.Random(21)
+    out: List[GameState] = []
+    for trial in range(40):
+        n = rng.choice([2, 3, 4])
+        s = new_game(n, rng=rng)
+        s.phase = PHASE_MAIN
+        occ = {}
+        for i in range(n):
+            p = s.players[i]
+            h0 = rng.randrange(B.NUM_HEXES)
+            hexes = [h0] + B.HEX_NEIGHBORS[h0][:rng.randint(0, 2)]
+            cands = [v for h in hexes for v in B.HEX_VERTICES[h]]
+            rng.shuffle(cands)
+            want = rng.randint(1, 5)
+            for v in cands:
+                if len(p.settlements) + len(p.cities) >= want:
+                    break
+                if P.is_free_vertex(occ, v):
+                    (p.cities if rng.random() < 0.4 else p.settlements).append(v)
+                    occ[v] = i
+            p.roads = [B.VERTEX_EDGES[v][rng.randrange(len(B.VERTEX_EDGES[v]))] for v in p.settlements + p.cities]
+            if rng.random() < 0.3:
+                p.dev_known = False
+                p.dev_count = rng.randint(1, 3)
+        if rng.random() < 0.4:
+            s.longest_road_owner = rng.randrange(n)
+            s.longest_road_len = 5
+        if rng.random() < 0.3:
+            s.largest_army_owner = rng.randrange(n)
+        out.append(s)
+    return out
+
+
+def test_score_settlement_spot_blockability_matches_python():
+    """The blockability term (placement.robber_exposure / BlockContext) is part of score_settlement_spot: compare
+    every free vertex of layouts with stacked hexes and strong opponents, and make sure the term is active."""
+    states = _stacked_layouts()
+    checked = 0
+    active = 0
+    for s in states:
+        occ = s.occupied_vertices()
+        free = [v for v in range(B.NUM_VERTICES) if P.is_free_vertex(occ, v)]
+        for i in range(s.num_players):
+            if P.robber_exposure(s, i) > 0.0:
+                active += 1
+            for v in free[::2]:
+                got = core.score_settlement_spot(s, i, v)
+                ref = P.score_settlement_spot(s, i, v)
+                assert abs(got - ref) <= ATOL, (v, got, ref)
+                checked += 1
+                if P.block_penalty(s, i, extra_settlement=v) != 0.0:
+                    active += 1
+        assert abs(core.static_value(s, 0) - static_value(s, 0)) <= ATOL
+    assert checked >= 1500 and active >= 50
+    assert any(P.strong_opponent_hexes(s, i)[h] for s in states for i in range(s.num_players) for h in range(B.NUM_HEXES))
+
+
 def test_reachable_spots_default_max_roads(game_states):
     s = game_states[400]
     assert core.reachable_spots(s, s.current) == core.reachable_spots(s, s.current, 3)

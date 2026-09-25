@@ -50,7 +50,8 @@ struct ReachableSpots {
 };
 void reachable_spots(const GameStateC& s, int player, int max_roads, const Occupancy& occ, ReachableSpots& out);
 
-// placement.score_settlement_spot(state, player, v, occ, own_prod, scarcity, setup)
+// placement.score_settlement_spot(state, player, v, occ, own_prod, scarcity, setup), incl. the
+// blockability penalty (placement.robber_exposure of `player` with and without a settlement on v).
 double score_settlement_spot(const GameStateC& s, int player, int v, const Occupancy& occ,
                              const double own_prod[NUM_RESOURCES], const double scarcity[NUM_RESOURCES],
                              bool setup);

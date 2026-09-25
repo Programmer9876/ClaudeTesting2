@@ -29,6 +29,7 @@ from .state import GameState, PHASE_GAME_OVER
 from .trading import candidate_offers, offer_is_feeding_leader, plan_trades, should_accept
 
 BUILD_VALUE = {"city": 3.2, "settlement": 2.8, "dev card": 1.0, "road": 0.5}
+EXPOSURE_WEIGHT = 0.25  # weight of robber.steal_exposure_fast in static_value (tunable; the C++ port keeps its own 0.25)
 
 
 def longest_road_length(state: GameState, player: int) -> int:
@@ -118,7 +119,7 @@ def static_value(state: GameState, player: int) -> float:
     score += 0.12 * min(n, 7) - 0.25 * max(0, n - 7)
     # Out-of-turn robber exposure: a valuable hand while being the obvious target is worth less.
     if n >= 3:
-        score -= 0.25 * steal_exposure_fast(state, player)
+        score -= EXPOSURE_WEIGHT * steal_exposure_fast(state, player)
     if p.hand_known:
         score += _progress_to_build(state, player)
     # Dev cards.

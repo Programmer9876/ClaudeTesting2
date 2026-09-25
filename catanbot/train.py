@@ -9,12 +9,21 @@ Each iteration:
    per game.  Every decision state is recorded from every player's
    perspective and labelled with the eventual winner.
 2. **Fit** a new net on the replay buffer (warm-started from the best net).
+   By default the net is *hand-blind*: its own resources / hand size /
+   can-afford features are masked (``--mask-features``, see
+   :data:`catanbot.model.HAND_BLIND_FEATURES`; ``--no-mask`` disables it).
+   Self-play labels come from a policy that spends every affordable build at
+   once, so an unmasked net learns that cards in hand are worth the builds
+   they will become and, as a search evaluator, holds the cards instead of
+   building; the heuristic half of the blend keeps affordability visible.
 3. **Evaluate** the candidate against the current best in a tournament and
    promote it if it wins more.
 
 Usage::
 
     python -m catanbot train --iters 4 --games 200 --workers 4
+    # fit one net on an existing buffer, no games / tournament:
+    python -m catanbot train --fit-only --replay models/value_net_replay.npz --out /tmp/net.npz
 """
 from __future__ import annotations
 
@@ -29,9 +38,11 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+from .model import HAND_BLIND_FEATURES
 from .selfplay import generate_dataset, tournament
 
 BASE_SEARCH = "search:depth={depth},beam={beam},expand={expand}"
+DEFAULT_MASK = ",".join(HAND_BLIND_FEATURES)   # --mask-features default: hand-blind net
 
 
 def _log(msg: str, fh=None) -> None:
@@ -80,6 +91,41 @@ def _bias_of(results) -> np.ndarray:
     return np.concatenate(parts) if parts else np.zeros(0, np.float32)
 
 
+def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: argparse.Namespace,
+               warm_from: Optional[str] = None, seed: int = 0, log=None):
+    """Fit a net on the replay buffer; returns ``(net, history, n_train, n_val)``.
+
+    Validation is 10 % of whole games (deterministic hash of the game id, so a
+    game is always validation or always training).  ``warm_from`` continues
+    from a saved net (its normalisation is kept); otherwise a fresh net with
+    ``args.hidden`` is built.  ``args.mask_features`` (glob patterns over
+    feature names, empty = none) is applied to the net in both cases.
+    """
+    from .features import NUM_FEATURES
+    from .model import ValueNet, feature_mask
+
+    n = len(y_buf)
+    is_val = ((g_buf.astype(np.uint64) * np.uint64(2654435761) + np.uint64(args.seed)) >> np.uint64(7)) % np.uint64(10) == 0
+    if not is_val.any():
+        is_val[:max(1, n // 10)] = True
+    val_idx, tr_idx = np.nonzero(is_val)[0], np.nonzero(~is_val)[0]
+    Xtr, ytr = X_buf[tr_idx].astype(np.float32), y_buf[tr_idx]
+    Xva, yva = X_buf[val_idx].astype(np.float32), y_buf[val_idx]
+    mask = feature_mask(getattr(args, "mask_features", None))
+    if warm_from:
+        net = ValueNet.load(warm_from)
+    else:
+        net = ValueNet(n_in=NUM_FEATURES, hidden=tuple(args.hidden), seed=seed)
+    net.input_mask = mask
+    if log:
+        log(f"  input mask: {len(net.masked_features())} features hidden" +
+            (f" ({', '.join(net.masked_features())})" if net.masked_features() else ""))
+    hist = net.fit(Xtr, ytr, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
+                   weight_decay=args.weight_decay, X_val=Xva, y_val=yva, patience=args.patience,
+                   input_noise=args.noise, refit_norm=not warm_from, log=log)
+    return net, hist, len(tr_idx), len(val_idx)
+
+
 def train(args: argparse.Namespace) -> Dict[str, object]:
     from .features import NUM_FEATURES
     from .model import ValueNet
@@ -103,17 +149,34 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
     g_buf = np.zeros(0, np.int32)          # game id of every sample (validation is split by game)
     b_buf = np.zeros(0, np.float32)        # acceptance bias of the sample's bot (trading-style metadata)
     buffer_path = os.path.splitext(args.out)[0] + "_replay.npz"
-    if args.resume and os.path.exists(buffer_path):
+    load_path = getattr(args, "replay", None) or buffer_path
+    if (args.resume or getattr(args, "replay", None) or getattr(args, "fit_only", False)) and os.path.exists(load_path):
         try:
-            d = np.load(buffer_path)
+            d = np.load(load_path)
             X_buf, y_buf = d["X"], d["y"]
             g_buf = d["g"] if "g" in d else np.arange(len(y_buf), dtype=np.int32)
             b_buf = d["bias"] if "bias" in d else np.zeros(len(y_buf), np.float32)
-            _log(f"loaded replay buffer with {len(y_buf)} samples", fh)
+            _log(f"loaded replay buffer {load_path} with {len(y_buf)} samples", fh)
         except Exception:
             pass
     _log(f"training: iters={args.iters} games={args.games} workers={args.workers} depth={args.depth} "
-         f"features={NUM_FEATURES} best={best_path}", fh)
+         f"features={NUM_FEATURES} best={best_path} mask={args.mask_features!r}", fh)
+
+    if getattr(args, "fit_only", False):
+        # One fit on the loaded buffer (no games, no tournament); the net is written to --out.
+        if len(y_buf) == 0:
+            fh.close()
+            raise SystemExit(f"--fit-only: no replay buffer at {load_path}")
+        t_fit = time.time()
+        net, hist, n_tr, n_va = fit_replay(X_buf, y_buf, g_buf, args,
+                                           warm_from=best_path if args.warm_start else None,
+                                           seed=args.seed, log=lambda m: _log(m, fh))
+        last = {k: (v[-1] if isinstance(v, list) and v else v) for k, v in hist.items()}
+        _log(f"  fit on {n_tr} samples ({n_va} validation) in {time.time() - t_fit:.0f}s: {json.dumps(last)}", fh)
+        net.save(args.out)
+        _log(f"  wrote {args.out}", fh)
+        fh.close()
+        return {"best": args.out, "iterations": [], "fit": last, "samples": int(len(y_buf))}
 
     for it in range(len(history), len(history) + args.iters):
         t_it = time.time()
@@ -164,24 +227,12 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
 
         # ---- fit (validation = 10 % of whole games, never positions of a training game) ----
         n = len(y_buf)
-        # Deterministic hash of the game id: a game is always validation or always training,
-        # so warm-started nets are never validated on games they were fitted on.
-        is_val = ((g_buf.astype(np.uint64) * np.uint64(2654435761) + np.uint64(args.seed)) >> np.uint64(7)) % np.uint64(10) == 0
-        if not is_val.any():
-            is_val[:max(1, n // 10)] = True
-        val_idx, tr_idx = np.nonzero(is_val)[0], np.nonzero(~is_val)[0]
-        Xtr, ytr = X_buf[tr_idx].astype(np.float32), y_buf[tr_idx]
-        Xva, yva = X_buf[val_idx].astype(np.float32), y_buf[val_idx]
-        if best_path and args.warm_start:
-            net = ValueNet.load(best_path)
-        else:
-            net = ValueNet(n_in=NUM_FEATURES, hidden=tuple(args.hidden), seed=args.seed + it)
         t_fit = time.time()
-        hist = net.fit(Xtr, ytr, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
-                       weight_decay=args.weight_decay, X_val=Xva, y_val=yva, patience=args.patience,
-                       input_noise=args.noise, refit_norm=not (best_path and args.warm_start))
+        net, hist, n_tr, _ = fit_replay(X_buf, y_buf, g_buf, args,
+                                        warm_from=best_path if (best_path and args.warm_start) else None,
+                                        seed=args.seed + it)
         last = {k: (v[-1] if isinstance(v, list) and v else v) for k, v in hist.items()}
-        _log(f"  fit on {len(ytr)} samples in {time.time() - t_fit:.0f}s: {json.dumps(last)}", fh)
+        _log(f"  fit on {n_tr} samples in {time.time() - t_fit:.0f}s: {json.dumps(last)}", fh)
         cand_path = os.path.splitext(args.out)[0] + f"_candidate.npz"
         net.save(cand_path)
 
@@ -232,6 +283,15 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=1e-2)
     p.add_argument("--hidden", type=int, nargs="+", default=[64, 32])
+    p.add_argument("--mask-features", default=DEFAULT_MASK, metavar="PATTERNS",
+                   help="comma-separated glob patterns of feature names the net never sees (stored with the net); "
+                        "default: the own-hand block (resources, hand size, 7-risk, can-afford flags)")
+    p.add_argument("--no-mask", dest="mask_features", action="store_const", const="",
+                   help="train on all features (the pre-mask behaviour)")
+    p.add_argument("--replay", default=None, metavar="PATH",
+                   help="replay buffer to load instead of <out>_replay.npz (read only)")
+    p.add_argument("--fit-only", action="store_true",
+                   help="fit one net on the loaded replay buffer and write it to --out (no games, no tournament)")
     p.add_argument("--eval-games", type=int, default=40)
     p.add_argument("--promote-ratio", type=float, default=1.0, help="promote if cand_win > ratio * best_win")
     p.add_argument("--seed", type=int, default=0)

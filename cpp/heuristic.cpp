@@ -6,7 +6,9 @@
 // the values are bit-identical to the Python reference on the same libm
 // (tests/test_accel_heuristic.py checks |C++ - Python| <= 1e-6 over thousands
 // of states).  The helpers come from placement.py (production, scarcity,
-// reachable_spots, score_settlement_spot) and counting.py (expected_hidden_vp).
+// reachable_spots, score_settlement_spot incl. its blockability term
+// robber_exposure / BlockContext), robber.py (threat) and counting.py
+// (expected_hidden_vp).
 // Keep this file in sync with those modules.
 #define CATAN_NO_PYTHON
 #include "heuristic.hpp"
@@ -54,9 +56,131 @@ int expansion_potential(int v, const Occupancy& occ) {
     return count;
 }
 
-// score_settlement_spot with the per-state `scarcity ** 0.5` table precomputed.
+// robber.threat: how dangerous player i is (1.0 for a harmless player).
+static double threat(const GameStateC& s, int i) {
+    const double vp = (double)s.public_vp(i) + expected_hidden_vp(s, i);
+    double t = 1.0 + 0.3 * std::max(0.0, vp - 4.0);
+    if (vp >= 8) t *= 1.8;
+    else if (vp >= 7) t *= 1.3;
+    return t;
+}
+
+// ---------------------------------------------------------------------------
+// placement: blockability (robber_exposure / BlockContext), see the module comment there
+// ---------------------------------------------------------------------------
+constexpr double PLACEMENT_ROBBER_Q = 0.35;       // placement.PLACEMENT_ROBBER_Q
+constexpr double PLACEMENT_BLOCK_WEIGHT = 1.0;    // placement.PLACEMENT_BLOCK_WEIGHT
+constexpr double PLACEMENT_STRONG_THREAT = 1.3;   // placement.PLACEMENT_STRONG_THREAT
+
+// placement.BlockContext: the per-(state, player) part of the blockability term.
+struct BlockContext {
+    double hex_w[NUM_HEXES];    // placement.hex_block_weights: pips x demand x scarcity ** 0.5, 0 for the desert
+    uint8_t strong[NUM_HEXES];  // placement.strong_opponent_hexes
+    double base_w[NUM_HEXES];   // W(h) of the player's current buildings
+    double base_k[NUM_HEXES];   // K(h): the same weights cubed and summed
+    double exposure_before;
+};
+
+// placement.hex_block_weights with the `scarcity ** 0.5` table precomputed.
+static void hex_block_weights(const GameStateC& s, const double* pow05, double out[NUM_HEXES]) {
+    const double* demand = resource_demand();
+    double res_w[NUM_RESOURCES];  // RESOURCE_DEMAND[r] * scarcity[r] ** 0.5
+    for (int r = 0; r < NUM_RESOURCES; ++r) res_w[r] = demand[r] * pow05[r];
+    for (int h = 0; h < NUM_HEXES; ++h) {
+        const int res = s.hex_res[h];
+        const int num = s.hex_num[h];
+        if (res == DESERT || num == 0) {
+            out[h] = 0.0;
+            continue;
+        }
+        out[h] = (double)pips_of(num) * res_w[res];
+    }
+}
+
+// placement.strong_opponent_hexes
+static void strong_opponent_hexes(const GameStateC& s, int player, uint8_t out[NUM_HEXES]) {
+    std::memset(out, 0, NUM_HEXES);
+    for (int i = 0; i < s.num_players; ++i) {
+        if (i == player) continue;
+        if (threat(s, i) < PLACEMENT_STRONG_THREAT) continue;
+        const PlayerC& q = s.players[i];
+        for (int k = 0; k < q.n_settlements; ++k) {
+            const int v = q.settlements[k];
+            for (int j = 0; j < VERTEX_HEXES_N[v]; ++j) out[VERTEX_HEXES[v][j]] = 1;
+        }
+        for (int k = 0; k < q.n_cities; ++k) {
+            const int v = q.cities[k];
+            for (int j = 0; j < VERTEX_HEXES_N[v]; ++j) out[VERTEX_HEXES[v][j]] = 1;
+        }
+    }
+}
+
+// One building's contribution to W(h) / K(h) (placement._stack_weights inner loops): c = hex_w[h] for
+// a settlement (weight 1.0: x * 1.0 == x exactly, so it matches Python's plain `c = hex_w[h]`) and
+// 2.0 * hex_w[h] for a city.
+static inline void add_building(int v, double weight, const double* hex_w, double* w, double* k) {
+    for (int j = 0; j < VERTEX_HEXES_N[v]; ++j) {
+        const int h = VERTEX_HEXES[v][j];
+        const double c = weight * hex_w[h];
+        w[h] += c;
+        k[h] += c * c * c;
+    }
+}
+
+// placement._stack_weights(state, player, hex_w, extra_settlement, extra_city); -1 = none.
+static void stack_weights(const GameStateC& s, int player, const double* hex_w, int extra_settlement, int extra_city,
+                          double w[NUM_HEXES], double k[NUM_HEXES]) {
+    for (int h = 0; h < NUM_HEXES; ++h) w[h] = k[h] = 0.0;
+    const PlayerC& p = s.players[player];
+    for (int i = 0; i < p.n_settlements; ++i) {
+        if (p.settlements[i] == extra_city) continue;
+        add_building(p.settlements[i], 1.0, hex_w, w, k);
+    }
+    for (int i = 0; i < p.n_cities; ++i) add_building(p.cities[i], 2.0, hex_w, w, k);
+    if (extra_settlement >= 0) add_building(extra_settlement, 1.0, hex_w, w, k);
+    if (extra_city >= 0) add_building(extra_city, 2.0, hex_w, w, k);
+}
+
+// placement._exposure_of
+static double exposure_of(const double* w, const double* k, const uint8_t* strong) {
+    double ssq = 0.0;
+    double num = 0.0;
+    for (int h = 0; h < NUM_HEXES; ++h) {
+        const double x = w[h];
+        if (x <= 0.0) continue;
+        ssq += x * x;
+        // W^3 - K is 0 for a hex with a single building and grows with stacking.
+        num += (x * x * x - k[h]) * (1.0 + 0.5 * (double)strong[h]);
+    }
+    if (ssq <= 0.0) return 0.0;
+    return PLACEMENT_ROBBER_Q * num / ssq;
+}
+
+// placement.BlockContext.__init__
+static void make_block_context(const GameStateC& s, int player, const double* pow05, BlockContext& b) {
+    hex_block_weights(s, pow05, b.hex_w);
+    strong_opponent_hexes(s, player, b.strong);
+    stack_weights(s, player, b.hex_w, -1, -1, b.base_w, b.base_k);
+    b.exposure_before = exposure_of(b.base_w, b.base_k, b.strong);
+}
+
+// placement.BlockContext.exposure_with_settlement
+static double exposure_with_settlement(const BlockContext& b, int v) {
+    double w[NUM_HEXES], k[NUM_HEXES];
+    std::memcpy(w, b.base_w, sizeof(w));
+    std::memcpy(k, b.base_k, sizeof(k));
+    for (int j = 0; j < VERTEX_HEXES_N[v]; ++j) {
+        const int h = VERTEX_HEXES[v][j];
+        const double c = b.hex_w[h];
+        w[h] += c;
+        k[h] += c * c * c;
+    }
+    return exposure_of(w, k, b.strong);
+}
+
+// score_settlement_spot with the per-state `scarcity ** 0.5` table and the player's BlockContext precomputed.
 double score_spot(const GameStateC& s, int v, const Occupancy& occ, const double* own_prod, const double* pow05,
-                  bool setup) {
+                  bool setup, const BlockContext& block) {
     double prod[NUM_RESOURCES];
     vertex_production(s, v, true, prod);
     const double* demand = resource_demand();
@@ -84,6 +208,8 @@ double score_spot(const GameStateC& s, int v, const Occupancy& occ, const double
         else if (port < NUM_RESOURCES) score += 0.5 + 6.0 * (own_prod[port] + prod[port]);
     }
     score += 0.35 * expansion_potential(v, occ);
+    // Blockability: how much more of our income one robber placement could switch off.
+    score -= PLACEMENT_BLOCK_WEIGHT * (exposure_with_settlement(block, v) - block.exposure_before);
     return score;
 }
 
@@ -102,15 +228,6 @@ void make_context(const GameStateC& s, Context& c) {
         c.sqrt_scarcity[r] = std::sqrt(c.scarcity[r]);
         c.pow05_scarcity[r] = pow_half(c.scarcity[r]);
     }
-}
-
-// robber.threat: how dangerous player i is (1.0 for a harmless player).
-static double threat(const GameStateC& s, int i) {
-    const double vp = (double)s.public_vp(i) + expected_hidden_vp(s, i);
-    double t = 1.0 + 0.3 * std::max(0.0, vp - 4.0);
-    if (vp >= 8) t *= 1.8;
-    else if (vp >= 7) t *= 1.3;
-    return t;
 }
 
 // counting.dev_draw_probabilities()[DEV_KNIGHT]: undrawn deck, else the public pool.
@@ -233,10 +350,12 @@ double static_value_ctx(const GameStateC& s, int player, const Context& c) {
             if (reach.dist[v] == 0) ++now;
         score += 0.6 * std::min(now, 3);
         double best_spot = 0.0;
+        BlockContext block;
+        make_block_context(s, player, c.pow05_scarcity, block);
         for (int v = 0; v < NUM_VERTICES; ++v) {
             const int d = reach.dist[v];
             if (d < 0) continue;
-            const double sc = score_spot(s, v, c.occ, prod_free, c.pow05_scarcity, false) / (1.0 + 0.9 * d);
+            const double sc = score_spot(s, v, c.occ, prod_free, c.pow05_scarcity, false, block) / (1.0 + 0.9 * d);
             if (sc > best_spot) best_spot = sc;
         }
         score += 0.12 * best_spot;
@@ -483,10 +602,11 @@ void reachable_spots(const GameStateC& s, int player, int max_roads, const Occup
 double score_settlement_spot(const GameStateC& s, int player, int v, const Occupancy& occ,
                              const double own_prod[NUM_RESOURCES], const double scarcity[NUM_RESOURCES],
                              bool setup) {
-    (void)player;  // the Python signature takes it; the score only depends on own_prod
     double pow05[NUM_RESOURCES];
     for (int r = 0; r < NUM_RESOURCES; ++r) pow05[r] = pow_half(scarcity[r]);
-    return score_spot(s, v, occ, own_prod, pow05, setup);
+    BlockContext block;  // placement.score_settlement_spot builds one when block_ctx is None
+    make_block_context(s, player, pow05, block);
+    return score_spot(s, v, occ, own_prod, pow05, setup, block);
 }
 
 double progress_to_build(const GameStateC& s, int player, const Occupancy& occ) {

@@ -185,51 +185,63 @@ def reachable_spots(state: GameState, player: int, max_roads: int = 3,
 # Blockability: how much of our income one robber placement can switch off
 # ---------------------------------------------------------------------------
 # The robber sits on one hex.  Two of our buildings on the same hex (or a city
-# on it) concentrate our income where a single robber placement - and the
-# robber goes to the juiciest hex of its victim - blocks all of it.  The spot
-# scorers therefore charge a candidate building for the *increase* of our
-# robber exposure, on the same pips-equivalent scale as their production term:
+# next to our settlement on it) concentrate our income where a single robber
+# placement - and the robber goes to the juiciest hex of its victim - blocks
+# all of it.  The spot scorers therefore charge a candidate building for the
+# *increase* of our robber exposure, on the same pips-equivalent scale as
+# their production term:
 #
-#   W(h)        = our demand-weighted pips on hex h (settlement = pips, city = 2 x pips,
-#                 times RESOURCE_DEMAND[res] x scarcity[res] ** 0.5; the robber's current
-#                 position is ignored - the term is about where it *can* go)
-#   P_block(h)  = PLACEMENT_ROBBER_Q x W(h)^2 / sum_h' W(h')^2 x (1 + 0.5 x shared_strong(h))
-#   exposure    = sum_h P_block(h) x W(h)
-#   penalty     = PLACEMENT_BLOCK_WEIGHT x (exposure_after - exposure_before)
+#   W_b(h)     = demand-weighted pips of our building b on hex h (settlement = pips,
+#                city = 2 x pips, times RESOURCE_DEMAND[res] x scarcity[res] ** 0.5;
+#                the robber's current position is ignored - the term is about
+#                where it *can* go)
+#   W(h)       = sum_b W_b(h)                     our weight on the hex
+#   P_block(h) = PLACEMENT_ROBBER_Q x W(h)^2 / sum_h' W(h')^2 x (1 + 0.5 x shared_strong(h))
+#   stack(h)   = 1 - sum_b W_b(h)^3 / W(h)^3     the share of the hex's weight that is
+#                                                 there because buildings share it
+#                                                 (0 for one building, 0.75 for two equal ones)
+#   exposure   = sum_h P_block(h) x W(h) x stack(h)
+#   penalty    = PLACEMENT_BLOCK_WEIGHT x (exposure_after - exposure_before)
 #
 # The square in P_block models opponents aiming the robber at our best hex, so
-# concentration is costly; shared_strong(h) = 1 when an opponent with
-# robber.threat >= PLACEMENT_STRONG_THREAT (5+ estimated VP) has a building on
-# h, because the robber visits the hexes of strong players anyway.  See
-# docs/STRATEGY.md (Placement) for worked examples.  cpp/heuristic.cpp mirrors
-# every function below bit for bit (score_spot / BlockContext).
+# concentration is costly; stack(h) measures the exposure *in excess of* the
+# same buildings standing on separate hexes, so a first building - and any
+# layout without shared hexes - has exposure 0 and the scorers never trade
+# raw pips against it, only stacking.  shared_strong(h) = 1 when an opponent
+# with robber.threat >= PLACEMENT_STRONG_THREAT (5+ estimated VP) has a
+# building on h: the robber visits the hexes of strong players anyway, so
+# stacking there is blocked 1.5x as often.  Worked numbers: docs/STRATEGY.md
+# (Placement).  cpp/heuristic.cpp mirrors every function below bit for bit
+# (score_spot / BlockContext).
 PLACEMENT_ROBBER_Q = 0.35
 """Fraction of the time the robber sits on one of *our* hexes when we are an
 ordinary target (nobody singles us out).  Tunable; the penalty scales with it."""
 
-PLACEMENT_BLOCK_WEIGHT = 1.5
+PLACEMENT_BLOCK_WEIGHT = 1.0
 """Weight of the blockability penalty on the pips-equivalent scale of
-``score_settlement_spot`` / ``score_city``.  1.5 makes a second settlement on a
-6 we already build on cost ~1.7 pips against a second 6 elsewhere (a 5-pip hex
-with ordinary demand weights); set to 0 to switch the term off."""
+``score_settlement_spot`` / ``score_city``.  With 1.0 a second settlement on
+the 6 our first settlement already works costs ~1.9 points (~1.7 pips of
+production value) against a second 6 elsewhere; set to 0 to switch the term
+off (the scores are then exactly the old ones)."""
 
 PLACEMENT_STRONG_THREAT = 1.3
 """An opponent whose ``robber.threat`` is at least this (5+ estimated VP: the
 threat is 1 + 0.3 x (VP - 4)) attracts the robber to their hexes regardless of
-us; a hex we share with such a player counts as blocked 1.5x as often.  An
-absolute threshold (not "the strongest at the table") so that early in the
-game, when nobody is a robber magnet yet, only concentration is charged."""
+us; stacking on a hex we share with such a player counts 1.5x.  An absolute
+threshold (not "the strongest at the table") so that early in the game, when
+nobody is a robber magnet yet, only concentration is charged."""
 
 
 def hex_block_weights(state: GameState, scarcity: Optional[Sequence[float]] = None) -> List[float]:
-    """Per hex: pips x RESOURCE_DEMAND x scarcity ** 0.5 (0 for the desert) - a settlement's W(h)."""
+    """Per hex: pips x RESOURCE_DEMAND x scarcity ** 0.5 (0 for the desert) - a settlement's W_b(h)."""
     scarcity = resource_scarcity(state) if scarcity is None else scarcity
+    res_w = [RESOURCE_DEMAND[r] * (scarcity[r] ** 0.5) for r in range(5)]
     out = [0.0] * B.NUM_HEXES
     for h in range(B.NUM_HEXES):
         res, num = state.hexes[h]
         if res == B.DESERT or num == 0:
             continue
-        out[h] = B.PIPS[num] * RESOURCE_DEMAND[res] * (scarcity[res] ** 0.5)
+        out[h] = B.PIPS[num] * res_w[res]
     return out
 
 
@@ -253,61 +265,73 @@ def strong_opponent_hexes(state: GameState, player: int) -> List[int]:
     return strong
 
 
-def _building_block_weights(state: GameState, player: int, hex_w: Sequence[float],
-                            extra_settlement: Optional[int] = None,
-                            extra_city: Optional[int] = None) -> List[float]:
-    """W(h) of the player's buildings (settlements, then cities, then the extras; a city counts twice).
+def _stack_weights(state: GameState, player: int, hex_w: Sequence[float],
+                   extra_settlement: Optional[int] = None,
+                   extra_city: Optional[int] = None) -> Tuple[List[float], List[float]]:
+    """Per hex: ``W(h)`` (our buildings' weights summed) and ``K(h)`` (the same weights cubed and summed).
 
+    Settlements, then cities, then the extras; a city weighs twice a settlement.
     ``extra_city`` equal to one of our settlements is the upgrade of that settlement.
     """
     w = [0.0] * B.NUM_HEXES
+    k = [0.0] * B.NUM_HEXES
     p = state.players[player]
     for v in p.settlements:
         if v == extra_city:
             continue
         for h in B.VERTEX_HEXES[v]:
-            w[h] += hex_w[h]
+            c = hex_w[h]
+            w[h] += c
+            k[h] += c * c * c
     for v in p.cities:
         for h in B.VERTEX_HEXES[v]:
-            w[h] += 2.0 * hex_w[h]
+            c = 2.0 * hex_w[h]
+            w[h] += c
+            k[h] += c * c * c
     if extra_settlement is not None:
         for h in B.VERTEX_HEXES[extra_settlement]:
-            w[h] += hex_w[h]
+            c = hex_w[h]
+            w[h] += c
+            k[h] += c * c * c
     if extra_city is not None:
         for h in B.VERTEX_HEXES[extra_city]:
-            w[h] += 2.0 * hex_w[h]
-    return w
+            c = 2.0 * hex_w[h]
+            w[h] += c
+            k[h] += c * c * c
+    return w, k
 
 
-def _exposure_of(w: Sequence[float], strong: Sequence[int]) -> float:
-    """sum_h P_block(h) x W(h) for the per-hex weights ``w`` (0 without buildings)."""
+def _exposure_of(w: Sequence[float], k: Sequence[float], strong: Sequence[int]) -> float:
+    """``sum_h P_block(h) x W(h) x stack(h)`` = ``q x sum_h (1 + 0.5 strong) (W^3 - K) / sum W^2``."""
     ssq = 0.0
-    for h in range(B.NUM_HEXES):
-        ssq += w[h] * w[h]
-    if ssq <= 0.0:
-        return 0.0
-    total = 0.0
+    num = 0.0
     for h in range(B.NUM_HEXES):
         x = w[h]
         if x <= 0.0:
             continue
-        p_block = PLACEMENT_ROBBER_Q * (x * x) / ssq * (1.0 + 0.5 * strong[h])
-        total += p_block * x
-    return total
+        ssq += x * x
+        # W^3 - K is 0 for a hex with a single building and grows with stacking.
+        num += (x * x * x - k[h]) * (1.0 + 0.5 * strong[h])
+    if ssq <= 0.0:
+        return 0.0
+    return PLACEMENT_ROBBER_Q * num / ssq
 
 
 def robber_exposure(state: GameState, player: int, extra_settlement: Optional[int] = None,
                     extra_city: Optional[int] = None, scarcity: Optional[Sequence[float]] = None,
                     hex_w: Optional[Sequence[float]] = None, strong: Optional[Sequence[int]] = None) -> float:
-    """Expected demand-weighted pips of ``player`` blocked by the robber (see the module comment).
+    """Demand-weighted pips of ``player`` one robber placement blocks *because* buildings share hexes.
 
-    ``extra_settlement`` / ``extra_city`` evaluate the position *after* that
-    building is added (``extra_city`` on one of our settlements = its upgrade).
-    Pure function of the state, O(#our buildings x 3 + #opponent buildings x 3).
+    See the module comment for the model; it is 0 for a layout in which no two
+    of our buildings share a hex.  ``extra_settlement`` / ``extra_city``
+    evaluate the position *after* that building is added (``extra_city`` on
+    one of our settlements = its upgrade).  Pure function of the state,
+    O(#our buildings x 3 + #opponent buildings x 3).
     """
     hex_w = hex_block_weights(state, scarcity) if hex_w is None else hex_w
     strong = strong_opponent_hexes(state, player) if strong is None else strong
-    return _exposure_of(_building_block_weights(state, player, hex_w, extra_settlement, extra_city), strong)
+    w, k = _stack_weights(state, player, hex_w, extra_settlement, extra_city)
+    return _exposure_of(w, k, strong)
 
 
 def block_penalty(state: GameState, player: int, extra_settlement: Optional[int] = None,
@@ -323,23 +347,26 @@ def block_penalty(state: GameState, player: int, extra_settlement: Optional[int]
 class BlockContext:
     """Everything the blockability term of :func:`score_settlement_spot` needs once per (state, player).
 
-    ``settlement_penalty(v)`` is ``block_penalty(state, player, extra_settlement=v)`` computed from the
-    cached weights; callers scoring many candidates build one context and pass it as ``block_ctx``.
+    ``settlement_penalty(v)`` equals ``block_penalty(state, player, extra_settlement=v)`` computed from
+    the cached weights; callers scoring many candidates build one context and pass it as ``block_ctx``.
     """
 
-    __slots__ = ("hex_w", "strong", "base", "exposure_before")
+    __slots__ = ("hex_w", "strong", "base_w", "base_k", "exposure_before")
 
     def __init__(self, state: GameState, player: int, scarcity: Optional[Sequence[float]] = None):
         self.hex_w = hex_block_weights(state, scarcity)
         self.strong = strong_opponent_hexes(state, player)
-        self.base = _building_block_weights(state, player, self.hex_w)
-        self.exposure_before = _exposure_of(self.base, self.strong)
+        self.base_w, self.base_k = _stack_weights(state, player, self.hex_w)
+        self.exposure_before = _exposure_of(self.base_w, self.base_k, self.strong)
 
     def exposure_with_settlement(self, v: int) -> float:
-        w = list(self.base)
+        w = list(self.base_w)
+        k = list(self.base_k)
         for h in B.VERTEX_HEXES[v]:
-            w[h] += self.hex_w[h]
-        return _exposure_of(w, self.strong)
+            c = self.hex_w[h]
+            w[h] += c
+            k[h] += c * c * c
+        return _exposure_of(w, k, self.strong)
 
     def settlement_penalty(self, v: int) -> float:
         return PLACEMENT_BLOCK_WEIGHT * (self.exposure_with_settlement(v) - self.exposure_before)

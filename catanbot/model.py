@@ -10,22 +10,66 @@ probability in ``[0, 1]``.  It is a plain multilayer perceptron:
 * binary cross-entropy loss (computed from the logit for stability),
 * Adam with classic L2 weight decay (on weights, not biases), global-norm
   gradient clipping, mini-batches with shuffling, optional validation set
-  with early stopping (patience) restoring the best weights.
+  with early stopping (patience) restoring the best weights,
+* an optional **input mask** (:func:`feature_mask`): features the net must
+  never see are zeroed after standardisation, at training and at inference
+  alike, and the mask is stored with the weights.  The self-play labels are
+  Monte-Carlo outcomes under a policy that spends every affordable build at
+  once, so the net learns that cards in hand are worth the builds they will
+  become and then, used as a search evaluator, ranks "hold the cards" level
+  with "build now".  Masking the own-hand features (resources, hand size,
+  can-afford flags) removes that confound; the heuristic side of the blend
+  (``selfplay.BlendedEvaluator``) still sees affordability and the 7-risk.
+
+:meth:`ValueNet.evaluate` returns the exact value (1 / 0) for finished games,
+like the heuristic evaluator, because game-over states are never recorded.
 
 Weights are saved with ``np.savez`` and loaded with :meth:`ValueNet.load`.
 """
 from __future__ import annotations
 
+import fnmatch
 import math
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from .features import NUM_FEATURES, extract_batch
+from .features import FEATURE_NAMES, NUM_FEATURES, extract_batch
+from .state import PHASE_GAME_OVER
 
-__all__ = ["ValueNet", "binary_auc", "MODEL_VERSION"]
+__all__ = ["ValueNet", "binary_auc", "feature_mask", "HAND_BLIND_FEATURES", "MODEL_VERSION"]
 
-MODEL_VERSION = 1
+# Files written by this module: version 1 has no input mask (readable by older code), version 2
+# carries one (older loaders refuse it instead of silently using the net without its mask).
+MODEL_VERSION = 2
+
+# Own-hand features (see the module docstring): what a net trained on self-play outcomes must not
+# see if it is to rank building now above holding the cards.  Glob patterns over FEATURE_NAMES.
+HAND_BLIND_FEATURES = ("me_res_*", "me_hand_size", "me_cards_over_7", "me_discard_exposure",
+                       "me_can_build_*", "me_can_buy_dev")
+
+
+def feature_mask(patterns: Union[str, Iterable[str], None], names: Sequence[str] = FEATURE_NAMES) -> Optional[np.ndarray]:
+    """Input mask (float32 ``(len(names),)``, 1 = keep, 0 = hide) from glob patterns over feature names.
+
+    ``patterns`` is a comma-separated string or an iterable of glob patterns
+    (``"me_res_*"``); every pattern must match at least one name (typos are
+    errors).  ``None`` / an empty string / no patterns gives ``None`` (no mask).
+    """
+    if patterns is None:
+        return None
+    if isinstance(patterns, str):
+        patterns = [p for p in patterns.split(",")]
+    pats = [p.strip() for p in patterns if p and p.strip()]
+    if not pats:
+        return None
+    mask = np.ones(len(names), np.float32)
+    for pat in pats:
+        hits = [i for i, n in enumerate(names) if fnmatch.fnmatchcase(n, pat)]
+        if not hits:
+            raise ValueError(f"feature mask pattern {pat!r} matches no feature name")
+        mask[hits] = 0.0
+    return mask
 
 
 def _sigmoid(z: np.ndarray) -> np.ndarray:
@@ -71,11 +115,13 @@ class ValueNet:
     """Numpy MLP with sigmoid output; see the module docstring."""
 
     def __init__(self, n_in: int = NUM_FEATURES, hidden: Sequence[int] = (256, 128), seed: int = 0,
-                 dtype=np.float32):
+                 dtype=np.float32, input_mask: Optional[np.ndarray] = None):
         self.n_in = int(n_in)
         self.hidden: Tuple[int, ...] = tuple(int(h) for h in hidden)
         self.dtype = np.dtype(dtype)
         self.seed = int(seed)
+        self._input_mask: Optional[np.ndarray] = None
+        self.input_mask = input_mask
         rng = np.random.default_rng(seed)
         sizes = (self.n_in, *self.hidden, 1)
         self.W: List[np.ndarray] = []
@@ -94,6 +140,30 @@ class ValueNet:
         self._t = 0
 
     # ------------------------------------------------------------------
+    # input mask
+    # ------------------------------------------------------------------
+    @property
+    def input_mask(self) -> Optional[np.ndarray]:
+        """``(n_in,)`` 0/1 vector of the features the net uses (``None`` = all), see :func:`feature_mask`."""
+        return self._input_mask
+
+    @input_mask.setter
+    def input_mask(self, mask: Optional[np.ndarray]) -> None:
+        if mask is None:
+            self._input_mask = None
+            return
+        m = np.asarray(mask, dtype=self.dtype).ravel()
+        if m.shape != (self.n_in,):
+            raise ValueError(f"input mask must have shape ({self.n_in},), got {m.shape}")
+        self._input_mask = None if bool(np.all(m == 1.0)) else (m != 0.0).astype(self.dtype)
+
+    def masked_features(self, names: Sequence[str] = FEATURE_NAMES) -> List[str]:
+        """Names of the hidden (masked) features."""
+        if self._input_mask is None or len(names) != self.n_in:
+            return []
+        return [n for n, m in zip(names, self._input_mask) if m == 0.0]
+
+    # ------------------------------------------------------------------
     # forward / backward
     # ------------------------------------------------------------------
     def _prep(self, X: np.ndarray) -> np.ndarray:
@@ -102,7 +172,10 @@ class ValueNet:
             X = X[None, :]
         if X.shape[1] != self.n_in:
             raise ValueError(f"expected {self.n_in} features, got {X.shape[1]}")
-        return (X - self.mean) / self.std
+        H = (X - self.mean) / self.std
+        if self._input_mask is not None:
+            H = H * self._input_mask   # hidden features are exactly 0 whatever the input holds
+        return H
 
     def _forward(self, H: np.ndarray, keep: bool = False):
         """Logits ``(N,)`` for standardised input; with ``keep`` also the activations."""
@@ -137,10 +210,20 @@ class ValueNet:
     __call__ = predict
 
     def evaluate(self, states, players) -> np.ndarray:
-        """Evaluator interface for the search: ``extract_batch`` + :meth:`predict`."""
+        """Evaluator interface for the search: ``extract_batch`` + :meth:`predict`.
+
+        Finished games are exact (1 for the winner, 0 for everyone else): the
+        self-play buffer holds no game-over states, so the net's own guess for
+        a won afterstate (~0.6 on average) would rank a winning build below a
+        trade proposal.
+        """
         if len(states) == 0:
             return np.zeros(0, np.float32)
-        return self.predict(extract_batch(states, players))
+        out = self.predict(extract_batch(states, players))
+        for k, (s, p) in enumerate(zip(states, players)):
+            if s.phase == PHASE_GAME_OVER and s.winner >= 0:
+                out[k] = 1.0 if s.winner == p else 0.0
+        return out
 
     def loss_and_grads(self, X: np.ndarray, y: np.ndarray, weight_decay: float = 0.0
                        ) -> Tuple[float, List[np.ndarray], List[np.ndarray]]:
@@ -284,6 +367,8 @@ class ValueNet:
                     # from the same game are near-duplicates, and without noise the net memorises
                     # game identity instead of learning position value.
                     Hb = Hb + rng.normal(0.0, input_noise, Hb.shape).astype(self.dtype)
+                    if self._input_mask is not None:
+                        Hb = Hb * self._input_mask   # hidden features stay hidden (no noise either)
                 yb = y[bi]
                 z, acts = self._forward(Hb, keep=True)
                 total += _bce_from_logits(z, yb) * len(bi)
@@ -347,7 +432,8 @@ class ValueNet:
     def save(self, path: str) -> None:
         """Write weights, normalisation and layer sizes to an ``.npz`` file."""
         arrays = {
-            "version": np.asarray(MODEL_VERSION, np.int64),
+            # nets without a mask stay readable by code that predates the mask (version 1)
+            "version": np.asarray(MODEL_VERSION if self._input_mask is not None else 1, np.int64),
             "n_in": np.asarray(self.n_in, np.int64),
             "hidden": np.asarray(self.hidden, np.int64),
             "n_layers": np.asarray(len(self.W), np.int64),
@@ -356,6 +442,8 @@ class ValueNet:
             "norm_fitted": np.asarray(1 if self.norm_fitted else 0, np.int64),
             "seed": np.asarray(self.seed, np.int64),
         }
+        if self._input_mask is not None:
+            arrays["input_mask"] = self._input_mask
         for i, (W, b) in enumerate(zip(self.W, self.b)):
             arrays[f"W{i}"] = W
             arrays[f"b{i}"] = b
@@ -377,7 +465,10 @@ class ValueNet:
             net.mean = z["mean"].astype(net.dtype)
             net.std = z["std"].astype(net.dtype)
             net.norm_fitted = bool(int(z["norm_fitted"])) if "norm_fitted" in z else True
+            if "input_mask" in z:
+                net.input_mask = z["input_mask"]
         return net
 
     def __repr__(self) -> str:
-        return f"ValueNet(n_in={self.n_in}, hidden={self.hidden}, dtype={self.dtype.name})"
+        masked = f", masked={int((self._input_mask == 0).sum())}" if self._input_mask is not None else ""
+        return f"ValueNet(n_in={self.n_in}, hidden={self.hidden}, dtype={self.dtype.name}{masked})"
