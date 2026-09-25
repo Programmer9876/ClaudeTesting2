@@ -80,11 +80,13 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
             history = []
     X_buf = np.zeros((0, NUM_FEATURES), np.float16)
     y_buf = np.zeros(0, np.float32)
+    g_buf = np.zeros(0, np.int32)          # game id of every sample (validation is split by game)
     buffer_path = os.path.splitext(args.out)[0] + "_replay.npz"
     if args.resume and os.path.exists(buffer_path):
         try:
             d = np.load(buffer_path)
             X_buf, y_buf = d["X"], d["y"]
+            g_buf = d["g"] if "g" in d else np.arange(len(y_buf), dtype=np.int32)
             _log(f"loaded replay buffer with {len(y_buf)} samples", fh)
         except Exception:
             pass
@@ -112,15 +114,20 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
         avg_turns = sum(r.turns for r in results) / max(1, len(results))
         _log(f"  generated {len(y)} samples from {len(results)} games (avg {avg_turns:.0f} turns); "
              f"win rates: " + ", ".join(f"{s}: {w:.2f} ({n})" for s, (w, n) in gen_stats.items()), fh)
+        gids = np.concatenate([np.full(len(r.y), it * 100000 + k, dtype=np.int32)
+                               for k, r in enumerate(results) if r.y is not None]) if len(y) else np.zeros(0, np.int32)
         X_buf = np.concatenate([X_buf, X])[-args.buffer:]
         y_buf = np.concatenate([y_buf, y])[-args.buffer:]
-        np.savez_compressed(buffer_path, X=X_buf, y=y_buf)
+        g_buf = np.concatenate([g_buf, gids])[-args.buffer:]
+        np.savez_compressed(buffer_path, X=X_buf, y=y_buf, g=g_buf)
 
-        # ---- fit ----------------------------------------------------------
+        # ---- fit (validation = 10 % of whole games, never positions of a training game) ----
         n = len(y_buf)
-        perm = np.random.default_rng(args.seed + it).permutation(n)
-        n_val = max(1, int(0.1 * n))
-        val_idx, tr_idx = perm[:n_val], perm[n_val:]
+        games_all = np.unique(g_buf)
+        rs = np.random.default_rng(args.seed + it)
+        val_games = set(rs.choice(games_all, size=max(1, int(0.1 * len(games_all))), replace=False).tolist())
+        is_val = np.array([g in val_games for g in g_buf])
+        val_idx, tr_idx = np.nonzero(is_val)[0], np.nonzero(~is_val)[0]
         Xtr, ytr = X_buf[tr_idx].astype(np.float32), y_buf[tr_idx]
         Xva, yva = X_buf[val_idx].astype(np.float32), y_buf[val_idx]
         if best_path and args.warm_start:

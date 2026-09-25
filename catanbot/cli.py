@@ -251,6 +251,10 @@ def board_ascii(state: GameState) -> str:
         indent = " " * (3 * (5 - len(row)))
         lines.append(indent + "  ".join(cells))
     lines.append("(* = robber; ids are hex indices)")
+    lines.append("Bank: " + ", ".join(f"{state.bank[r]} {B.RESOURCE_NAMES[r]}" for r in range(5))
+                 + f"; dev deck {sum(state.dev_deck)} left"
+                 + (" (" + ", ".join(f"{state.dev_deck[t]} {B.DEV_NAMES[t]}" for t in range(5) if state.dev_deck[t]) + ")"
+                    if sum(state.dev_deck) else ""))
     ports = {}
     for v, t in state.ports.items():
         ports.setdefault(B.PORT_NAMES[t], []).append(v)
@@ -357,6 +361,19 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
     except Exception as ex:  # pragma: no cover
         advice["trading"] = [f"(trade advice unavailable: {ex})"]
     advice["seven_risk"] = [explain_seven_risk(state, me)]
+    if state.players[me].total_resources > 7 and state.phase == PHASE_MAIN and E.acting_player(state) == me:
+        from .discard import choose_discard, surplus_dump_actions
+        try:
+            legal_now = E.legal_actions(state)
+            dumps = surplus_dump_actions(state, me, legal_now)[:4]
+            if dumps:
+                advice["seven_risk"].append("Ways to get under 8 cards before the next roll: "
+                                            + "; ".join(A.describe(a, state) for a in dumps))
+            d = choose_discard(state, me)
+            advice["seven_risk"].append("If a 7 hits now you would " + A.describe(d, state).lower()
+                                        + " (keeping the cards for your next build).")
+        except Exception:
+            pass
     ok, why = should_play_knight(state, me)
     h, victim, reason = best_robber_move(state, me, target_weights=politics.robber_target_weights(state, me))
     advice["robber"] = [("Play a knight now: " if ok else "Hold the knight: ") + why,
