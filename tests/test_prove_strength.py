@@ -134,6 +134,10 @@ def test_holm_step_down_and_adjusted_pvalues():
 # ---------------------------------------------------------------------------
 COLORS = ["RED", "BLUE", "ORANGE", "WHITE"]
 STAT0 = {"decisions": 100, "errors": 0, "observe_errors": 0, "fallback": 0, "unmapped_top": 0}
+#: A counted-mode game's tracker counters (bench ``info_stats``) without tracker errors or resets.
+INFO0 = {"info_samples": 160, "info_uncertain": 12, "info_errors": 0, "info_resets": 0, "info_max_hypotheses": 3,
+         "hidden_steals": 2, "hidden_discards": 5, "hidden_dev_draws": 3}
+COUNTED_META = {"mode": "counted", "samples": 4, "discards_public": False}
 
 
 def _spread(i: int, rate: float) -> bool:
@@ -159,9 +163,15 @@ def synthetic(tid: str, rate: float = None, seat_rates=None, games: int = None, 
         vps = [5, 5, 5, 5]
         vps[ws] = 10
         r = {"game": g, "seed": PS.game_seed(base, g), "our_seats": list(seats),
-             "seat": seats[0] if t.fmt == "1v3" else None, "winner": COLORS[ws], "winner_seat": ws,
+             "seat": seats[0] if t.fmt != "2v2" else None, "winner": COLORS[ws], "winner_seat": ws,
              "vps": vps, "turns": 80, "actions": 400, "won": won, "stats": dict(STAT0),
              "trades": {"opp_errors": 0}, "crashes": 0}
+        if t.opponents:        # the mixed table (amendment 3): what bench_catanatron.py records per game
+            lineup = list(PS.mixed_lineup(g, t.opponents))
+            r.update(lineup=lineup, relative=[lineup[(seats[0] + k) % 4] for k in (1, 2, 3)],
+                     winner_name=lineup[ws])
+        if t.info == "counted":   # amendment 2: the counted mode's tracker counters
+            r["info_stats"] = dict(INFO0)
         if record_hook:
             record_hook(r)
         recs.append(r)
@@ -169,19 +179,38 @@ def synthetic(tid: str, rate: float = None, seat_rates=None, games: int = None, 
             "opponent_params": {}, "trades": "off", "catanatron": t.engine,
             "hash_seed": "0", "seed": t.seed, "format": t.fmt, "our_seats": 2 if t.fmt == "2v2" else 1,
             "vps_to_win": 10, "discard_limit": 7}
+    if tid in PS.AMENDED_TESTS:    # T1-T6 / R1-R2 keep the metadata of the original tooling
+        meta["info"] = dict(COUNTED_META) if t.info == "counted" else {"mode": "full"}
+        if t.opponents:
+            meta["opponents"] = list(t.opponents)
     meta.update(meta_overrides or {})
     return dict(meta, results=recs, games=len(recs))
 
 
-GOOD = {"T1": 0.5, "T2": 0.5, "T3": 0.5, "T4": 0.7, "T5": 0.7, "T6": 0.7, "R1": 0.3, "R2": 0.3}
+GOOD = {"T1": 0.5, "T2": 0.5, "T3": 0.5, "T4": 0.7, "T5": 0.7, "T6": 0.7, "R1": 0.3, "R2": 0.3,
+        "T7": 0.5, "T8": 0.5, "T9": 0.5, "T10": 0.5, "T11": 0.5}
+_BASELINE: dict = {}
+
+
+def _analyze(tid, summ, source=None):
+    return PS.analyze_test(tid, [(source or f"{tid}.json", {k: v for k, v in summ.items() if k != "results"},
+                                  summ["results"])])
 
 
 def verdict_for(overrides=None, drop=()):
-    data = {tid: synthetic(tid, rate) for tid, rate in GOOD.items() if tid not in drop}
-    for tid, summ in (overrides or {}).items():
-        data[tid] = summ
-    analysis = {tid: PS.analyze_test(tid, [(f"{tid}.json", {k: v for k, v in s.items() if k != "results"},
-                                            s["results"])]) for tid, s in data.items()}
+    """Analysis and verdict of the passing baseline GOOD with some tests replaced / dropped (the
+    baseline analyses are cached: analyze_test and evaluate never modify them)."""
+    overrides = overrides or {}
+    analysis = {}
+    for tid, rate in GOOD.items():
+        if tid in drop:
+            continue
+        if tid in overrides:
+            analysis[tid] = _analyze(tid, overrides[tid])
+        else:
+            if tid not in _BASELINE:
+                _BASELINE[tid] = _analyze(tid, synthetic(tid, rate))
+            analysis[tid] = _BASELINE[tid]
     return analysis, PS.evaluate(analysis)
 
 
@@ -388,6 +417,385 @@ def test_cli_reads_files_directories_and_infers_ids(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0 and "T1   value" in out and "T4   value" in out and "R2   ab" in out
     assert "T2: no results" in out
+    # the amendments' tests: inferred by information mode and mixed format too
+    rc = PS.main([paths["T1"], paths["T7"], paths["T10"], paths["T11"]])
+    out = capsys.readouterr().out
+    assert rc == 0 and "T7   value      1v3       counted" in out and "T1   value      1v3       full" in out
+    assert "T10  mixed      1v3-mixed full" in out and "T11  mixed      1v3-mixed counted" in out
+    assert "T8: no results" in out and "READINESS" in out and ": FAIL" in out
+
+
+# ---------------------------------------------------------------------------
+# Amendments 2 and 3: T7-T11, claims 3 and 4, readiness (synthetic results)
+# ---------------------------------------------------------------------------
+A57 = F(57, 10 ** 8)
+
+
+def _set_outcome(r, won):
+    """Make record ``r`` a catanbot win / loss (winner seat, colour, VPs, winner name all consistent)."""
+    seats = r["our_seats"]
+    ws = seats[0] if won else [i for i in range(4) if i not in seats][0]
+    vps = [5, 5, 5, 5]
+    vps[ws] = 10
+    r.update(won=won, winner=COLORS[ws], winner_seat=ws, vps=vps)
+    if "lineup" in r:
+        r["winner_name"] = r["lineup"][ws]
+
+
+def with_wins(tid, k, **kw):
+    """Synthetic results of ``tid`` with exactly ``k`` catanbot wins (from the 0.5 baseline)."""
+    s = synthetic(tid, 0.5, **kw)
+    wins = [r for r in s["results"] if r["won"]]
+    for r in reversed(wins[k:]):
+        _set_outcome(r, False)
+    assert sum(r["won"] for r in s["results"]) == k
+    return s
+
+
+def test_amended_tests_are_registered_as_in_the_protocol():
+    want = {"T7": ("value", "ValueFunctionPlayer", "1v3", 1000, 900201, "counted"),
+            "T8": ("alphabeta", "AlphaBetaPlayer", "1v3", 400, 900201, "counted"),
+            "T9": ("sameturn", "SameTurnAlphaBetaPlayer", "1v3", 400, 900201, "counted"),
+            "T10": ("value,alphabeta,sameturn", "ValueFunctionPlayer+AlphaBetaPlayer+SameTurnAlphaBetaPlayer",
+                    "1v3-mixed", 400, 900301, "full"),
+            "T11": ("value,alphabeta,sameturn", "ValueFunctionPlayer+AlphaBetaPlayer+SameTurnAlphaBetaPlayer",
+                    "1v3-mixed", 400, 900401, "counted")}
+    for tid, row in want.items():
+        t = PS.TESTS[tid]
+        assert (t.opponent, t.opponent_class, t.fmt, t.games, t.seed, t.info, t.engine) == row + ("3.3.0",), tid
+    assert PS.TESTS["T10"].opponents == PS.TESTS["T11"].opponents == ("value", "alphabeta", "sameturn")
+    assert PS.C3_TESTS == ("T7", "T8", "T9") and PS.C4_TESTS == ("T10", "T11")
+    assert PS.CLAIM3_ALPHA == PS.CLAIM4_ALPHA == A57 and PS.PROTOCOL_INFO_SAMPLES == 4
+    assert PS.NULL["1v3-mixed"] == F(1, 4) and PS.EFFECT_LOWER["1v3-mixed"] == PS.EFFECT_LOWER["1v3"] == 0.35
+    # T1-T6 / R1-R2 are unchanged: full information, three copies of one opponent
+    assert all(PS.TESTS[t].info == "full" and PS.TESTS[t].opponents == () for t in PS.T_TESTS + PS.R_TESTS)
+    assert [PS.TESTS[t][:7] for t in ("T1", "T4", "R2")] == [
+        ("T1", "value", "ValueFunctionPlayer", "1v3", 1000, 900001, "3.3.0"),
+        ("T4", "value", "ValueFunctionPlayer", "2v2", 1000, 900001, "3.3.0"),
+        ("R2", "ab", "AlphaBetaPlayer", "1v3", 400, 900101, "3.2.1")]
+    # the protocol text registers the same tests
+    doc = open(os.path.join(ROOT, "docs", "PROOF_PROTOCOL.md")).read()
+    for line in ("| T7 | V (catanatron ValueFunctionPlayer) | 1v3 | 1000 |",
+                 "| T8 | A (catanatron AlphaBetaPlayer) | 1v3 | 400 |",
+                 "| T9 | S (catanatron SameTurnAlphaBetaPlayer) | 1v3 | 400 |",
+                 "| T10 | full (as T1-T6) | 400 | 900301 |", "| T11 | counted (as T7-T9) | 400 | 900401 |",
+                 "seed 900201", "default 4 samples per decision", "permutation `(g // 4) % 6`"):
+        assert line in doc, line
+
+
+def test_mixed_lineup_follows_the_protocol_rule():
+    names = PS.MIXED_OPPONENTS
+    orders = [tuple(names[i] for i in p) for p in PS.MIXED_PERMUTATIONS]
+    assert orders == [("value", "alphabeta", "sameturn"), ("value", "sameturn", "alphabeta"),
+                      ("alphabeta", "value", "sameturn"), ("alphabeta", "sameturn", "value"),
+                      ("sameturn", "value", "alphabeta"), ("sameturn", "alphabeta", "value")]
+    for g in range(1000):
+        lu = PS.mixed_lineup(g)
+        s = g % 4                                          # catanbot's seat rotates g % 4
+        assert lu[s] == "catanbot" and sorted(lu) == sorted(("catanbot",) + names)
+        assert tuple(lu[(s + k) % 4] for k in (1, 2, 3)) == orders[(g // 4) % 6]   # permutation (g // 4) % 6
+        assert PS.our_seats_for(g, "1v3-mixed") == (s,)
+    assert PS.mixed_lineup(0) == ("catanbot", "value", "alphabeta", "sameturn")
+    assert PS.mixed_lineup(5) == ("alphabeta", "catanbot", "value", "sameturn")
+    assert PS.mixed_lineup(23) == ("sameturn", "alphabeta", "value", "catanbot")
+    assert PS.mixed_lineup(24) == PS.mixed_lineup(0)
+    # "every opponent sits in every relative position equally often over each 24 consecutive games"
+    # (and every player in every seat): all windows, not only the aligned blocks
+    for start in range(0, 400 - 23):
+        window = range(start, start + 24)
+        rel = Counter((PS.mixed_lineup(g)[(g % 4 + k) % 4], k) for g in window for k in (1, 2, 3))
+        assert len(rel) == 9 and set(rel.values()) == {8}
+        seat = Counter((PS.mixed_lineup(g)[s], s) for g in window for s in range(4))
+        assert len(seat) == 16 and set(seat.values()) == {6}
+    # 400 games = 16 blocks of 24 + 16: every seat exactly 100 games
+    assert Counter(PS.our_seats_for(g, "1v3-mixed")[0] for g in range(400)) == {0: 100, 1: 100, 2: 100, 3: 100}
+
+
+def test_claims_3_and_4_pass_on_strong_conforming_results():
+    analysis, v = verdict_for()
+    assert all(a["conforms"] for a in analysis.values()), {t: a["problems"] for t, a in analysis.items()}
+    for c in ("claim1", "claim2", "claim3", "claim4"):
+        assert v[c]["pass"], (c, [x["failures"] for x in failed(v, c)])
+    assert v["readiness"] == {"pass": True, "claims": {"claim2": True, "claim3": True, "claim4": True}, "failed": []}
+    assert analysis["T7"]["seats"][3]["games"] == 250 and analysis["T10"]["seats"][0]["games"] == 100
+    assert analysis["T11"]["info"] == "counted" and analysis["T10"]["info"] == "full"
+    mw = analysis["T10"]["mixed_wins"]
+    assert mw["catanbot"] == analysis["T10"]["wins"] == 200 and sum(mw.values()) == 400 and mw["none"] == 0
+    # Holm families: claim 3 over three tests, claim 4 over two, at 5.7e-7
+    assert sorted(v["holm_claim3"]["threshold"].values()) == [A57 / 3, A57 / 2, A57]
+    assert sorted(v["holm_claim4"]["threshold"].values()) == [A57 / 2, A57]
+    assert set(v["holm_claim3"]["order"]) == set(PS.C3_TESTS) and set(v["holm_claim4"]["order"]) == set(PS.C4_TESTS)
+    txt = PS.report_text(analysis, v)
+    for line in ("CLAIM 3 - strong under Colonist information (T7-T9): PASS",
+                 "CLAIM 4 - beats a mixed Catanatron table (T10-T11): PASS",
+                 "READINESS for (supervised) human testing = claims 2, 3 and 4 (amendments 2 and 3): PASS",
+                 "Holm-Bonferroni over T7-T9 at family alpha 5.7e-7 (claim 3):",
+                 "Holm-Bonferroni over T10-T11 at family alpha 5.7e-7 (claim 4):", "T10 wins by player"):
+        assert line in txt, line
+    md = PS.report_markdown(analysis, v, ["x.json"])
+    for line in ("| 3 - strong under Colonist information (T7-T9) | **PASS** | - |",
+                 "| 4 - beats a mixed Catanatron table (T10-T11) | **PASS** | - |",
+                 "| readiness for supervised human testing (claims 2, 3 and 4) | **PASS** | - |",
+                 "## Holm-Bonferroni over T7-T9 (claim 3)", "## Holm-Bonferroni over T10-T11 (claim 4)",
+                 "**Claim 4: PASS**", "counted (K = 4, discards hidden)"):
+        assert line in md, line
+
+
+def test_claims_1_and_2_do_not_depend_on_the_amended_tests():
+    base, vb = verdict_for(drop=PS.AMENDED_TESTS)
+    assert vb["claim1"]["pass"] and vb["claim2"]["pass"]
+    assert not vb["claim3"]["pass"] and not vb["claim4"]["pass"] and vb["readiness"]["failed"] == ["claim3", "claim4"]
+    assert all("no results" in f for c in failed(vb, "claim3") for f in c["failures"])
+
+    def broken(r):
+        r["stats"]["errors"] = 1
+        r["crashes"] = 1
+    bad = {t: synthetic(t, 0.2, seed=5, meta_overrides={"seed": 5, "spec": "x"}, record_hook=broken)
+           for t in PS.AMENDED_TESTS}
+    analysis, v = verdict_for(bad)
+    for key in ("claim1", "claim2", "holm_claim1", "holm_claim2"):
+        assert v[key] == vb[key], key
+    assert not v["claim3"]["pass"] and not v["claim4"]["pass"]
+    assert len(failed(v, "claim3")) == 5 and len(failed(v, "claim4")) == 5
+
+
+def test_readiness_needs_claims_2_3_and_4():
+    _, v = verdict_for({"T1": synthetic("T1", 0.36)})          # claim 2 fails (effect size), 3 and 4 pass
+    assert v["claim1"]["pass"] and not v["claim2"]["pass"] and v["claim3"]["pass"] and v["claim4"]["pass"]
+    assert not v["readiness"]["pass"] and v["readiness"]["failed"] == ["claim2"]
+    _, v = verdict_for({"T8": synthetic("T8", 0.27)})          # claim 3 fails, claims 1 and 2 are untouched
+    assert v["claim1"]["pass"] and v["claim2"]["pass"] and not v["claim3"]["pass"] and v["claim4"]["pass"]
+    assert v["readiness"]["failed"] == ["claim3"]
+    assert "READINESS for (supervised) human testing = claims 2, 3 and 4 (amendments 2 and 3): FAIL (failed: claim 3)" \
+        in PS.report_text(*verdict_for({"T8": synthetic("T8", 0.27)}))
+    _, v = verdict_for(drop=("T11",))                          # a missing test fails its claim
+    assert not v["claim4"]["pass"] and v["readiness"]["failed"] == ["claim4"]
+    assert any("T11: no results (enters Holm with p = 1)" in f for c in failed(v, "claim4") for f in c["failures"])
+    assert v["holm_claim4"]["adjusted"]["T11"] == 1
+
+
+def test_claim3_and_claim4_holm_step_down():
+    # T8 = T9 = 146/400 (p = 2.2e-7 in (alpha/3, alpha/2]) after a tiny T7 p: steps alpha/2 and alpha reject
+    _, v = verdict_for({"T8": with_wins("T8", 146), "T9": with_wins("T9", 146)})
+    holm3 = [c for c in v["claim3"]["conditions"] if "Holm" in c["name"]][0]
+    assert holm3["pass"] and holm3["name"] == "T7-T9 reject their nulls at family-wise alpha = 5.7e-7 (Holm over T7-T9)"
+    # 145/400 (p = 3.9e-7 > alpha/2): the second step accepts, so the claim fails although p < alpha
+    analysis, v = verdict_for({"T8": with_wins("T8", 145), "T9": with_wins("T9", 145)})
+    assert A57 / 2 < analysis["T8"]["p_one_sided"] <= A57
+    holm3 = [c for c in v["claim3"]["conditions"] if "Holm" in c["name"]][0]
+    assert not holm3["pass"] and any("T8" in f or "T9" in f for f in holm3["failures"])
+    # claim 4: one test at 145 and the other strong passes (alpha/2 then alpha); both at 145 fail
+    _, v = verdict_for({"T10": with_wins("T10", 145)})
+    assert [c for c in v["claim4"]["conditions"] if "Holm" in c["name"]][0]["pass"]
+    _, v = verdict_for({"T10": with_wins("T10", 145), "T11": with_wins("T11", 145)})
+    holm4 = [c for c in v["claim4"]["conditions"] if "Holm" in c["name"]][0]
+    assert not holm4["pass"] and "(Holm over T10-T11)" in holm4["name"]
+    assert v["claim1"]["pass"] and v["claim2"]["pass"] and v["claim3"]["pass"]
+
+
+def test_claim3_and_claim4_five_sigma_and_effect_size():
+    # not significant at all
+    analysis, v = verdict_for({"T9": synthetic("T9", 0.33)})       # 132/400: p = 2e-4
+    assert F(57, 10 ** 8) < analysis["T9"]["p_one_sided"] < F(1, 1000) and not v["claim3"]["pass"]
+    names = [c["name"] for c in failed(v, "claim3")]
+    assert any("5.7e-7" in n for n in names) and any("effect size" in n for n in names)
+    # effect size alone: 360/1000 in T7 and 160/400 in T10 are far beyond 5 sigma, lower 99 % bound < 0.35
+    analysis, v = verdict_for({"T7": synthetic("T7", 0.36), "T10": synthetic("T10", 0.40)})
+    assert analysis["T7"]["p_one_sided"] < F(1, 10 ** 14) and analysis["T10"]["p_one_sided"] < F(1, 10 ** 10)
+    assert analysis["T7"]["cp99"][0] < 0.35 and 0.33 < analysis["T10"]["cp99"][0] < 0.35
+    for claim, tid in (("claim3", "T7"), ("claim4", "T10")):
+        bad = failed(v, claim)
+        assert [c["name"][:11] for c in bad] == ["effect size"] and bad[0]["failures"][0].startswith(tid)
+    assert v["claim1"]["pass"] and v["claim2"]["pass"]
+
+
+@pytest.mark.parametrize("tid,claim", [("T9", "claim3"), ("T11", "claim4")])
+def test_amended_seat_robustness(tid, claim):
+    analysis, v = verdict_for({tid: synthetic(tid, seat_rates={0: 0.8, 1: 0.8, 2: 0.8, 3: 0.25})})
+    assert analysis[tid]["seats"][3]["p_one_sided"] > F(1, 2) and analysis[tid]["p_one_sided"] < F(1, 10 ** 20)
+    bad = failed(v, claim)
+    assert len(bad) == 1 and "seat robustness" in bad[0]["name"] and f"{tid} seat 3" in bad[0]["failures"][0]
+    assert v["claim1"]["pass"] and v["claim2"]["pass"] and not v["readiness"]["pass"]
+
+
+@pytest.mark.parametrize("tid,where,field,text", [
+    ("T7", "stats", "errors", "adapter errors"),
+    ("T8", "stats", "fallback", "illegal-action fallbacks"),
+    ("T9", "stats", "observe_errors", "observe errors"),
+    ("T10", "stats", "errors", "adapter errors"),
+    ("T7", "info_stats", "info_errors", "counted-mode tracker errors"),
+    ("T9", "info_stats", "info_resets", "belief resets"),
+    ("T11", "info_stats", "info_errors", "counted-mode tracker errors"),
+    ("T11", "info_stats", "info_resets", "belief resets"),
+    ("T11", "stats", "fallback", "illegal-action fallbacks"),
+])
+def test_any_error_fallback_or_tracker_error_fails_claims_3_4(tid, where, field, text):
+    def hook(r):
+        if r["game"] == 7:
+            r[where][field] = 2
+    analysis, v = verdict_for({tid: synthetic(tid, GOOD[tid], record_hook=hook)})
+    claim, other = ("claim3", "claim4") if tid in PS.C3_TESTS else ("claim4", "claim3")
+    bad = failed(v, claim)
+    assert len(bad) == 1 and "zero adapter errors" in bad[0]["name"] and f"{tid}: 2 {text}" == bad[0]["failures"][0]
+    assert v[other]["pass"] and v["claim1"]["pass"] and v["claim2"]["pass"]
+    assert v["readiness"]["failed"] == [claim] and analysis[tid]["conforms"]
+    assert "2/0/0" in PS.report_text(analysis, v) or "0/2/0" in PS.report_text(analysis, v)
+
+
+def test_crashes_fail_claims_3_4_and_count_as_losses():
+    def rerun(r):
+        if r["game"] == 9:
+            r["crashes"] = 1
+    _, v = verdict_for({"T8": synthetic("T8", 0.5, record_hook=rerun)})
+    bad = failed(v, "claim3")
+    assert len(bad) == 1 and bad[0]["failures"] == ["T8: 1 crashed attempts"]
+
+    def crashed(r):
+        if r["game"] == 4:        # a win in the synthetic pattern
+            assert r["won"]
+            r.update(crashed=True, crashes=2, winner=None, winner_seat=-1, won=False, vps=[0, 0, 0, 0],
+                     winner_name=None, info_stats={k: 0 for k in INFO0})
+    analysis, v = verdict_for({"T11": synthetic("T11", 0.5, record_hook=crashed)})
+    a = analysis["T11"]
+    assert a["crashed_games"] == 1 and a["turn_cap_games"] == 0 and a["wins"] == 199 and a["conforms"]
+    assert a["mixed_wins"]["none"] == 1 and a["mixed_wins"]["catanbot"] == 199
+    assert failed(v, "claim4")[0]["failures"] == ["T11: 2 crashed attempts, 1 games crashed twice"]
+
+
+def test_amended_conformance_information_mode():
+    def problems(tid, summ):
+        analysis, v = verdict_for({tid: summ})
+        claim = "claim3" if tid in PS.C3_TESTS else "claim4"
+        assert not analysis[tid]["conforms"] and not v[claim]["pass"] and not v["readiness"]["pass"]
+        assert v["claim1"]["pass"] and v["claim2"]["pass"]
+        conf = failed(v, claim)[0]
+        assert conf["name"].startswith("results of") and all(f.startswith(tid) for f in conf["failures"])
+        return analysis[tid]["problems"]
+
+    # a counted-mode run labelled full: T7 (registered counted) with info mode "full"
+    probs = problems("T7", synthetic("T7", 0.5, meta_overrides={"info": {"mode": "full"}}))
+    assert any("information mode is 'full', protocol 'counted'" in p for p in probs), probs
+    # ... and given as T10 (registered full): the metadata says full, the games carry the tracker counters
+    def counted_records(r):
+        r["info_stats"] = dict(INFO0)
+    probs = problems("T10", synthetic("T10", 0.5, record_hook=counted_records))
+    assert probs == ["400 game(s) carry counted-mode tracker counters (info_stats): played in counted mode, "
+                     "protocol 'full'"], probs
+    # a counted run honestly labelled, given as T10
+    probs = problems("T10", synthetic("T10", 0.5, meta_overrides={"info": dict(COUNTED_META)},
+                                      record_hook=counted_records))
+    assert any("information mode is 'counted', protocol 'full'" in p for p in probs)
+    # a full-information run labelled counted, given as T11: no tracker counters in the games
+    def full_records(r):
+        r.pop("info_stats")
+    probs = problems("T11", synthetic("T11", 0.5, record_hook=full_records))
+    assert probs == ["400 game(s) without the counted mode's tracker counters (info_stats): not played in counted "
+                     "mode, or its tracker errors cannot be verified"], probs
+    # other samples, public discards, missing fields
+    for info, text in (({"mode": "counted", "samples": 8, "discards_public": False}, "info samples is 8"),
+                       ({"mode": "counted", "samples": True, "discards_public": False}, "info samples is True"),
+                       ({"mode": "counted", "discards_public": False}, "info samples is None"),
+                       ({"mode": "counted", "samples": 4, "discards_public": True}, "discards_public is True"),
+                       ({"mode": "counted", "samples": 4}, "discards_public is None"),
+                       ({"samples": 4, "discards_public": False}, "information mode missing"),
+                       ("counted", "information mode missing"), (None, "information mode missing")):
+        for tid in ("T8", "T11"):
+            probs = problems(tid, synthetic(tid, 0.5, meta_overrides={"info": info}))
+            assert any(text in p for p in probs), (tid, info, probs)
+    s = synthetic("T9", 0.5)
+    s.pop("info")
+    assert any("information mode missing" in p for p in problems("T9", s))
+
+
+def test_amended_conformance_mixed_table():
+    def problems(tid, summ):
+        analysis, v = verdict_for({tid: summ})
+        assert not analysis[tid]["conforms"] and not v["readiness"]["pass"] and v["claim2"]["pass"]
+        return analysis[tid]["problems"]
+
+    # the opponents in another order: another permutation rule, every game's lineup differs
+    wrong = ("value", "sameturn", "alphabeta")
+
+    def relineup(r):
+        r["lineup"] = list(PS.mixed_lineup(r["game"], wrong))
+    s = synthetic("T10", 0.5, record_hook=relineup,
+                  meta_overrides={"opponent": ",".join(wrong), "opponents": list(wrong),
+                                  "opponent_class": "ValueFunctionPlayer+SameTurnAlphaBetaPlayer+AlphaBetaPlayer"})
+    probs = problems("T10", s)
+    assert any("opponents ['value', 'sameturn', 'alphabeta'], protocol ['value', 'alphabeta', 'sameturn']" in p
+               for p in probs), probs
+    assert any(p.startswith("400 game(s) whose lineup is not the protocol's") for p in probs)
+    assert any("opponent 'value,sameturn,alphabeta'" in p for p in probs)
+    # a wrong opponent list in the metadata alone (lineups as registered)
+    for opps in (["value", "alphabeta"], ["value", "alphabeta", "sameturn", "value"], ["value", "value", "value"],
+                 ["alphabeta", "value", "sameturn"], "value,alphabeta,sameturn", None):
+        probs = problems("T11", synthetic("T11", 0.5, meta_overrides={"opponents": opps}))
+        assert len(probs) == 1 and "opponents" in probs[0], (opps, probs)
+    # another table: three different presets
+    probs = problems("T10", synthetic("T10", 0.5, meta_overrides={
+        "opponent": "value,alphabeta,mcts", "opponent_class": "ValueFunctionPlayer+AlphaBetaPlayer+MCTSPlayer",
+        "opponents": ["value", "alphabeta", "mcts"]}))
+    assert any("opponent 'value,alphabeta,mcts'" in p for p in probs) and any("opponents" in p for p in probs)
+    # a game without / with a shuffled lineup
+    def drop_one(r):
+        if r["game"] == 17:
+            r.pop("lineup")
+        if r["game"] == 30:
+            r["lineup"] = r["lineup"][::-1]
+    probs = problems("T11", synthetic("T11", 0.5, record_hook=drop_one))
+    assert probs == ["2 game(s) whose lineup is not the protocol's (catanbot seat g % 4, opponents in permutation "
+                     "(g // 4) % 6 of value, alphabeta, sameturn)"], probs
+    # a mixed run given as a single-opponent test, and a single-opponent run given as a mixed test
+    probs = problems("T7", synthetic("T11", 0.5, seed=900201, meta_overrides={"seed": 900201}))
+    assert any("format is '1v3-mixed', protocol '1v3'" in p for p in probs)
+    assert any("(a mixed table)" in p for p in probs) and any("no mixed lineup" in p for p in probs)
+    probs = problems("T10", synthetic("T1", 0.5, seed=900301, meta_overrides={"seed": 900301, "info": {"mode": "full"}}))
+    assert any("format is '1v3', protocol '1v3-mixed'" in p for p in probs)
+    assert any("400 game(s) whose lineup" in p for p in probs) and any("opponents None" in p for p in probs)
+
+
+@pytest.mark.parametrize("tid", ["T7", "T8", "T10", "T11"])
+def test_amended_conformance_needs_every_registered_field(tid):
+    keys = ["format", "info", "seed", "hash_seed", "trades", "spec", "catanatron", "vps_to_win", "discard_limit",
+            "opponent", "opponent_class"] + (["opponents"] if PS.TESTS[tid].opponents else [])
+    claim = "claim3" if tid in PS.C3_TESTS else "claim4"
+    base = synthetic(tid, 0.5)
+    for key in keys:
+        s = dict(base)
+        s.pop(key)
+        analysis, v = verdict_for({tid: s})
+        assert analysis[tid]["problems"] and not v[claim]["pass"] and v["claim2"]["pass"], key
+    t = PS.TESTS[tid]
+    for over, text in (({"catanatron": "3.3.1"}, "catanatron"), ({"catanatron": "3.2.1"}, "catanatron"),
+                       ({"trades": "value"}, "trades"), ({"hash_seed": "1"}, "PYTHONHASHSEED"),
+                       ({"spec": "search:depth=1,evaluator=heuristic"}, "spec"),
+                       ({"opponent_params": {"depth": "3"}}, "params"), ({"vps_to_win": 12}, "vps_to_win"),
+                       ({"discard_limit": 9}, "discard_limit"),
+                       ({"opponent_class": "MCTSPlayer"}, "opponent")):
+        analysis, v = verdict_for({tid: synthetic(tid, 0.5, meta_overrides=over)})
+        assert any(text in p for p in analysis[tid]["problems"]), (over, analysis[tid]["problems"])
+        assert not v[claim]["pass"]
+    # another test's seed (e.g. T1's 900001 or T10's 900301), metadata and per-game seeds
+    other = 900001 if tid != "T10" else 900401
+    analysis, _ = verdict_for({tid: synthetic(tid, 0.5, seed=other, meta_overrides={"seed": other})})
+    probs = analysis[tid]["problems"]
+    assert any(f"seed is {other}, protocol {t.seed}" in p for p in probs) and any("per-game seed" in p for p in probs)
+    # games missing / outside 0..N-1
+    analysis, _ = verdict_for({tid: synthetic(tid, 0.5, games=t.games - 4)})
+    assert any(f"{t.games - 4} of the {t.games} protocol games" in p for p in analysis[tid]["problems"])
+    # bare per-game records cannot be verified
+    an = PS.analyze_test(tid, [("bare.jsonl", {}, synthetic(tid, 0.5)["results"])])
+    assert not an["conforms"] and "no run metadata" in an["problems"][0]
+
+
+def test_infer_test_uses_information_mode_and_mixed_format():
+    for tid in ("T1", "T2", "T4", "R1", "T7", "T8", "T9", "T10", "T11"):
+        s = synthetic(tid, 0.5)
+        assert PS.infer_test({k: v for k, v in s.items() if k != "results"}, s["results"]) == tid, tid
+    # results without the info field (the original tooling) are full information
+    s = synthetic("T7", 0.5)
+    s.pop("info")
+    assert PS.infer_test({k: v for k, v in s.items() if k != "results"}, s["results"]) == "T1"
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +911,55 @@ def test_game_range_chunks_reproduce_an_uninterrupted_run(bench, tmp_path, capsy
             == [[r[k] for k in key] for r in c1["results"] + c2["results"]])
     with pytest.raises(SystemExit):
         bench.main(common + ["--game-range", "0:3", "--game-offset", "1"])
+
+
+def test_bench_mixed_lineup_is_the_protocol_rule(bench):
+    names = ["value", "alphabeta", "sameturn"]
+    assert bench.MIXED_PERMUTATIONS == PS.MIXED_PERMUTATIONS and bench.CATANBOT == PS.CATANBOT
+    assert all(bench.mixed_lineup(g, names) == PS.mixed_lineup(g, tuple(names)) for g in range(2400))
+    assert all(bench.our_seats_for(g) == PS.our_seats_for(g, "1v3-mixed") for g in range(48))
+    # the bench's game-range chunks give the same lineups as one run (a function of the game index only)
+    assert [bench.mixed_lineup(g, names) for g in range(40, 80)] == [PS.mixed_lineup(g) for g in range(40, 80)]
+
+
+def test_bench_counted_defaults_are_the_registered_ones(bench):
+    from catanbot.bench.catanatron_adapter import DEFAULT_INFO_SAMPLES
+    assert DEFAULT_INFO_SAMPLES == PS.PROTOCOL_INFO_SAMPLES == 4
+    # what `--info counted` (default --info-samples, no --discards-public) records, and plain full information
+    opts = {"info": "counted", "info_samples": DEFAULT_INFO_SAMPLES, "discards_public": False}
+    assert bench.info_meta(opts) == COUNTED_META
+    assert bench.info_meta({"info": "full", "info_samples": 4, "discards_public": False}) == {"mode": "full"}
+    assert bench.info_meta(None) == {"mode": "full"}
+
+
+@pytest.mark.parametrize("tid", ["T7", "T10", "T11"])
+def test_bench_summary_metadata_passes_the_conformance_check(bench, tid, monkeypatch):
+    """The metadata bench_catanatron.py writes for a protocol chunk (no game played: summarize() on
+    protocol-shaped records) is exactly what prove_strength.py checks - field names and values."""
+    from catanbot.bench import catanatron_adapter as AD
+    if not AD.API_33:
+        pytest.skip("catanatron's value / alphabeta / sameturn players need the 3.3 engine")
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    t = PS.TESTS[tid]
+    recs = synthetic(tid, 0.5)["results"][:48]
+    for r in recs:
+        r.update(our_vp=r["vps"][r["seat"]], opp_vps=[v for i, v in enumerate(r["vps"]) if i != r["seat"]],
+                 duration=1.0)
+    mixed = list(t.opponents) or None
+    info = bench.info_meta({"info": t.info, "info_samples": AD.DEFAULT_INFO_SAMPLES, "discards_public": False})
+    opponent = ",".join(mixed) if mixed else t.opponent       # as main() names a mixed run
+    s = bench.summarize(recs, PS.PROTOCOL_SPEC, opponent, t.seed, "off", {}, our_seats=1, game_range=(0, 48),
+                        mixed=mixed, info=info)
+    s.update(vps_to_win=10, discard_limit=7)                   # as main() adds them
+    s = json.loads(json.dumps(bench._strip_raw(s), default=str))
+    meta = {k: v for k, v in s.items() if k != "results"}
+    an = PS.analyze_test(tid, [("chunk.json", meta, s["results"])])
+    assert an["problems"] == [f"48 of the {t.games} protocol games (missing 48-{t.games - 1})"], an["problems"]
+    assert PS.infer_test(meta, s["results"]) == tid
+    # the same chunk under the other information mode is a deviation
+    other = {"info": "full"} if t.info == "counted" else {"info": "counted", "info_samples": 4}
+    meta2 = dict(meta, info=bench.info_meta(other))
+    assert any("information mode" in p for p in PS.analyze_test(tid, [("c.json", meta2, s["results"])])["problems"])
 
 
 def test_rerun_crashes(bench, monkeypatch):

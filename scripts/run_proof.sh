@@ -3,13 +3,18 @@
 #
 # Usage:
 #   scripts/run_proof.sh [TEST ...]      # default: T1 T2 T3 T4 T5 T6 R1 R2, then replay checks + prove_strength.py
-#   scripts/run_proof.sh --analyze       # only the replay checks and the analysis of what exists
+#   scripts/run_proof.sh T7 T8 T9 T10 T11  # the amendments' tests (claims 3 and 4); any subset, resumable
+#   scripts/run_proof.sh --analyze       # only the replay checks and the analysis of what exists (all tests)
 #   PROOF_SMOKE=1 scripts/run_proof.sh   # smoke test of the tooling (see below)
 #
 # Every test plays exactly the protocol's opponent, format, games and base seed (T1-T6: catanatron 3.3.0,
-# the venv interpreter, seed 900001; R1-R2: catanatron 3.2.1, system python3, seed 900101) with the default
-# bot spec, --trades off, --hash-seed 0 (PYTHONHASHSEED=0), --rerun-crashes (a crashed game is re-played once
-# with the same seed; a second crash is recorded as a loss) and --log-actions (replayable action logs).
+# the venv interpreter, seed 900001; R1-R2: catanatron 3.2.1, system python3, seed 900101; T7-T9: 3.3.0,
+# seed 900201, --info counted; T10 / T11: 3.3.0, --mixed-opponents value,alphabeta,sameturn, seed 900301
+# full information / 900401 --info counted) with the default bot spec, --trades off, --hash-seed 0
+# (PYTHONHASHSEED=0), --rerun-crashes (a crashed game is re-played once with the same seed; a second crash is
+# recorded as a loss) and --log-actions (replayable action logs).  --info counted keeps the bench defaults
+# (--info-samples 4, discards hidden); no test passes --opponent-params.  With no TEST the default is still
+# T1-T6 R1-R2 only; T7-T11 run only when named.
 # A test is split into chunks of consecutive games [a, b) of the SAME base seed (bench --game-range a:b),
 # so the per-game seeds and seats are those of one uninterrupted run; each chunk runs under
 # `timeout $PROOF_TIMEOUT` (default 1200 s = 20 min).  A chunk whose JSON exists is skipped, so the script
@@ -27,7 +32,8 @@
 # every action log with --check before the analysis).
 # PROOF_SMOKE=1 plays 4 games per test in chunks of 2 with 2 workers under NON-protocol seeds (424201 /
 # 424301, so no proof game is played before the proof) into .../scratchpad/proof/smoke; its verdict is
-# meaningless (it fails the protocol-conformance checks by construction).
+# meaningless (it fails the protocol-conformance checks by construction).  T7-T9 / T10 / T11 smoke with
+# 424401 / 424501 / 424601; PROOF_SMOKE_GAMES / PROOF_SMOKE_CHUNK (4 / 2) change the smoke's size.
 set -u -o pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,27 +45,32 @@ SMOKE="${PROOF_SMOKE:-0}"
 if [ "$SMOKE" = "1" ]; then
     OUT="${PROOF_OUT:-$SCRATCH/smoke}"
     WORKERS="${PROOF_WORKERS:-2}"
-    SEED_T=424201
-    SEED_R=424301
 else
     OUT="${PROOF_OUT:-$SCRATCH/run}"
     WORKERS="${PROOF_WORKERS:-3}"
-    SEED_T=900001
-    SEED_R=900101
 fi
 TIMEOUT="${PROOF_TIMEOUT:-1200}"
 CHECK_LOGS="${PROOF_CHECK_LOGS:-1}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# id  engine  opponent   our-seats  games  chunk   (docs/PROOF_PROTOCOL.md; chunk sizes fit 20 min at 3 workers)
-TABLE="T1 33 value 1 1000 250
-T2 33 alphabeta 1 400 40
-T3 33 sameturn 1 400 50
-T4 33 value 2 1000 250
-T5 33 alphabeta 2 400 40
-T6 33 sameturn 2 400 50
-R1 321 vf 1 1000 250
-R2 321 ab 1 400 80"
+# id  engine  opponent  our-seats  games  chunk  seed  smoke-seed  info   (docs/PROOF_PROTOCOL.md and its
+# amendments; chunk sizes fit 20 min at 3 workers with a wide margin: counted mode costs about 4x our
+# decision time, i.e. ~3 s more per game; alpha-beta / same-turn games take 20-45 s, a mixed table ~20 s).
+# "mixed:A,B,C" plays --mixed-opponents A,B,C instead of --opponent.
+TABLE="T1 33 value 1 1000 250 900001 424201 full
+T2 33 alphabeta 1 400 40 900001 424201 full
+T3 33 sameturn 1 400 50 900001 424201 full
+T4 33 value 2 1000 250 900001 424201 full
+T5 33 alphabeta 2 400 40 900001 424201 full
+T6 33 sameturn 2 400 50 900001 424201 full
+R1 321 vf 1 1000 250 900101 424301 full
+R2 321 ab 1 400 80 900101 424301 full
+T7 33 value 1 1000 200 900201 424401 counted
+T8 33 alphabeta 1 400 40 900201 424401 counted
+T9 33 sameturn 1 400 40 900201 424401 counted
+T10 33 mixed:value,alphabeta,sameturn 1 400 50 900301 424501 full
+T11 33 mixed:value,alphabeta,sameturn 1 400 40 900401 424601 counted"
+ALL_IDS=$(echo "$TABLE" | awk '{ printf "%s ", $1 }')
 
 mkdir -p "$OUT/json" "$OUT/logs" "$OUT/out"
 MASTER="$OUT/run_proof.log"
@@ -67,13 +78,18 @@ FAILED=0
 
 say() { echo "[$(date '+%F %T')] $*" | tee -a "$MASTER"; }
 
-row() {  # row ID -> "engine opponent seats games chunk"
-    echo "$TABLE" | awk -v id="$1" '$1 == id { print $2, $3, $4, $5, $6 }'
+row() {  # row ID -> "engine opponent seats games chunk seed smoke-seed info"
+    echo "$TABLE" | awk -v id="$1" '$1 == id { print $2, $3, $4, $5, $6, $7, $8, $9 }'
 }
 
-# run_range ID PY OPPONENT SEATS SEED A B : play games [A, B) as one chunk, splitting it on a timeout.
+# run_range ID PY OPPONENT SEATS SEED A B [INFO] : play games [A, B) as one chunk, splitting it on a timeout.
+# OPPONENT "mixed:A,B,C" is the mixed table; INFO "counted" adds --info counted (default: full, no option).
 run_range() {
-    local id=$1 py=$2 opp=$3 seats=$4 seed=$5 a=$6 b=$7
+    local id=$1 py=$2 opp=$3 seats=$4 seed=$5 a=$6 b=$7 info=${8:-full}
+    local oppargs=(--opponent "$opp") infoargs=() fmt=1v3 itxt=""
+    case "$opp" in mixed:*) oppargs=(--mixed-opponents "${opp#mixed:}"); fmt=1v3-mixed ;; esac
+    [ "$seats" = 2 ] && fmt=2v2
+    if [ "$info" = counted ]; then infoargs=(--info counted); itxt=", info counted"; fi
     local tag
     tag=$(printf "g%05d-%05d" "$a" "$b")
     local json="$OUT/json/$id/$tag.json"
@@ -83,11 +99,11 @@ run_range() {
         local part="$OUT/logs/$id/.partial-$tag"
         rm -rf "$part" "$json.tmp"
         mkdir -p "$OUT/json/$id" "$OUT/logs/$id" "$part"
-        say "$id games $a..$((b - 1)) ($opp, $([ "$seats" = 2 ] && echo 2v2 || echo 1v3), seed $seed) starting"
+        say "$id games $a..$((b - 1)) (${opp#mixed:}, $fmt$itxt, seed $seed) starting"
         local t0=$SECONDS rc=0
-        timeout "$TIMEOUT" "$py" "$ROOT/scripts/bench_catanatron.py" --opponent "$opp" --spec "$SPEC" \
+        timeout "$TIMEOUT" "$py" "$ROOT/scripts/bench_catanatron.py" "${oppargs[@]}" --spec "$SPEC" \
             --our-seats "$seats" --seed "$seed" --game-range "$a:$b" --workers "$WORKERS" --trades off \
-            --hash-seed 0 --rerun-crashes --log-actions "$part" --verbose --json "$json.tmp" \
+            --hash-seed 0 --rerun-crashes --log-actions "$part" --verbose --json "$json.tmp" "${infoargs[@]}" \
             > "$OUT/out/${id}_$tag.txt" 2>&1 || rc=$?
         if [ "$rc" = 0 ] && [ -f "$json.tmp" ]; then
             mv "$part"/*.jsonl.gz "$OUT/logs/$id/" && rmdir "$part"
@@ -110,8 +126,8 @@ run_range() {
         touch "$marker"
     fi
     local m=$(((a + b) / 2))
-    run_range "$id" "$py" "$opp" "$seats" "$seed" "$a" "$m"
-    run_range "$id" "$py" "$opp" "$seats" "$seed" "$m" "$b"
+    run_range "$id" "$py" "$opp" "$seats" "$seed" "$a" "$m" "$info"
+    run_range "$id" "$py" "$opp" "$seats" "$seed" "$m" "$b" "$info"
 }
 
 run_test() {
@@ -125,17 +141,17 @@ run_test() {
     fi
     # shellcheck disable=SC2086
     set -- $spec_row
-    local engine=$1 opp=$2 seats=$3 games=$4 chunk=$5
+    local engine=$1 opp=$2 seats=$3 games=$4 chunk=$5 seed=$6 smoke_seed=$7 info=$8
     local var="PROOF_CHUNK_$id"
     chunk="${!var:-$chunk}"
-    local py=$PY33 seed=$SEED_T
-    if [ "$engine" = 321 ]; then py=$PY321; seed=$SEED_R; fi
-    if [ "$SMOKE" = "1" ]; then games=4; chunk=2; fi
+    local py=$PY33
+    if [ "$engine" = 321 ]; then py=$PY321; fi
+    if [ "$SMOKE" = "1" ]; then games=${PROOF_SMOKE_GAMES:-4}; chunk=${PROOF_SMOKE_CHUNK:-2}; seed=$smoke_seed; fi
     local a=0
     while [ "$a" -lt "$games" ]; do
         local b=$((a + chunk))
         [ "$b" -gt "$games" ] && b=$games
-        run_range "$id" "$py" "$opp" "$seats" "$seed" "$a" "$b"
+        run_range "$id" "$py" "$opp" "$seats" "$seed" "$a" "$b" "$info"
         a=$b
     done
 }
@@ -145,7 +161,7 @@ TESTS=()
 for arg in "$@"; do
     case "$arg" in
         --analyze) ANALYZE_ONLY=1 ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
         *) TESTS+=("$arg") ;;
     esac
 done
@@ -159,7 +175,7 @@ if [ "$ANALYZE_ONLY" = 0 ]; then
 fi
 
 if [ "$CHECK_LOGS" = 1 ]; then
-    for id in T1 T2 T3 T4 T5 T6 R1 R2; do
+    for id in $ALL_IDS; do
         [ -d "$OUT/logs/$id" ] || continue
         ls "$OUT/logs/$id"/*.jsonl.gz > /dev/null 2>&1 || continue
         py=$PY33
@@ -175,7 +191,7 @@ if [ "$CHECK_LOGS" = 1 ]; then
 fi
 
 ARGS=()
-for id in T1 T2 T3 T4 T5 T6 R1 R2; do
+for id in $ALL_IDS; do
     if ls "$OUT/json/$id"/*.json > /dev/null 2>&1; then
         ARGS+=(--test "$id=$OUT/json/$id")
     fi
