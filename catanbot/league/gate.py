@@ -397,7 +397,7 @@ def verdict(cfg: GateConfig, ev: Dict[str, Any], external: Optional[Dict[str, An
     return {"verdict": v, "reasons": reasons, "stop": ev["stop"], "a": a, "b": b, "c": c, "valid": valid,
             "errors": errors, "voids": voids, "decided": now_iso(), "gate_id": cfg.gate_id,
             "candidate": cfg.candidate, "champions": [c_["name"] for c_ in cfg.champions],
-            "comparisons": {k: {kk: s.get(kk) for kk in ("games", "decisive", "draws", "wins", "share", "p0", "ci",
+            "comparisons": {k: {kk: s.get(kk) for kk in ("games", "decisive", "draws", "wins", "share", "p0", "ci", "ci_level",
                                                            "p_greater", "p_less", "p_two_sided", "vp_diff", "vp_diff_se",
                                                            "arrangements", "errors", "decide_ms", "overhead_ms", "turns")}
                             for k, s in S.items()}}
@@ -632,8 +632,11 @@ def run_gate(cfg: GateConfig, gate_dir: Path, seat_factory: Optional[SeatFactory
                 break
             k = ev["complete_looks"] + 1
             end = cfg.look_end(k)
+            start = cfg.look_end(k - 1) if k > 1 else 0
+            # missing games of this look (and, defensively, of earlier ones); a voided game of this
+            # not-yet-evaluated look is retried (voids never depend on the outcome)
             jobs = [(c, i) for c in comps for i in range(end)
-                    if i not in recs.get(c, {}) or recs[c][i].get("void")]
+                    if i not in recs.get(c, {}) or (i >= start and recs[c][i].get("void"))]
             if stop_after is not None and progress.run_games >= stop_after:
                 progress.update(k, len(jobs), state="interrupted")
                 return {"interrupted": True, "games_done": progress.done}
@@ -762,7 +765,7 @@ def format_verdict(v: Dict[str, Any]) -> str:
     for k, s in v["comparisons"].items():
         share = "-" if s["share"] is None else f"{s['share']:.3f}"
         L.append(f"  {k}: {s['wins']}/{s['decisive']} decisive = {share} (null {s['p0']:.3f}), "
-                 f"{s['ci'] and round(100 * 0.95)}% CI [{s['ci'][0]:.3f}, {s['ci'][1]:.3f}], p(better) {s['p_greater']:.3g}, "
+                 f"{round(100 * s.get('ci_level', 0.95))}% CI [{s['ci'][0]:.3f}, {s['ci'][1]:.3f}], p(better) {s['p_greater']:.3g}, "
                  f"p(worse) {s['p_less']:.3g}, VP diff {s['vp_diff']:+.2f} +- {s['vp_diff_se']:.2f}, "
                  f"draws {s['draws']}")
     for r in v["reasons"]:
