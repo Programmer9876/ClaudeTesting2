@@ -407,16 +407,21 @@ PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/be
     --opponent value,alphabeta,sameturn --games 40 --workers 2 --seed 0 \
     --spec "search:depth=1,evaluator=heuristic" --json ladder_330_strong.json
 PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/bench_catanatron.py \
-    --opponent mcts --games 4 --workers 2 --seed 0 --json ladder_330_mcts.json
+    --opponent mcts --games 40 --workers 2 --seed 0 --json ladder_330_mcts.json      # ~48 s/game: ~16 min
 PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/bench_catanatron.py \
-    --opponent playouts --games 2 --workers 2 --seed 0 --json ladder_330_playouts.json
+    --opponent playouts --games 2 --workers 2 --seed 0 --json ladder_330_playouts.json  # ~12 min/game: too slow for more
 # --ladder strong runs all five in this order: value, alphabeta, sameturn, playouts, mcts (mind the slow two)
 ```
 
 Per-game cost of the 3.3 opponents with the depth-1 heuristic bot on this
 machine (one game, one worker, `--seed 1`): `value` 1.1 s, `alphabeta` 19 s,
 `sameturn` 22 s, so with two workers 20 minutes cover roughly 1000 / 120 /
-110 games of those; PLAYOUTS_MCTS_TIMING.  The stand-ins on 3.2.1 cost 1.3 s
+110 games of those; `mcts` 48 s (about 50 games in 20 minutes, use
+`--games 40`); `playouts` 696 s = 11.6 minutes per game (25 random playouts
+per playable action, about 1 s per action per opponent decision), so
+`--games 2` (one game per worker, ~12 minutes) is all that 20 minutes
+tolerate: it is the one preset that is too slow for a real ladder with its
+default `num_playouts`.  The stand-ins on 3.2.1 cost 1.3 s
 (`vf`) and 6.8 s (`ab`) per game, the stock controls 0.4-0.5 s.
 
 Presets: `random`, `weighted`, `vp` (stock controls), `vf`, `ab` (our

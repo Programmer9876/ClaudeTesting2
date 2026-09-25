@@ -4,6 +4,11 @@ These functions only depend on the board tables and the state; they are used
 by the heuristic evaluator, by move ordering in the search and to produce
 human readable explanations ("best spot: 10 pips, wheat/ore, gives a 2:1 ore
 port").  Nothing here mutates the state.
+
+Spot scores also charge *blockability*: buildings stacked on one hex (or a
+city on a hex we already work, or a hex the leader also works) are worth less
+than their pips because one robber placement blocks all of them - see the
+"Blockability" section below.
 """
 from __future__ import annotations
 
@@ -177,6 +182,170 @@ def reachable_spots(state: GameState, player: int, max_roads: int = 3,
 
 
 # ---------------------------------------------------------------------------
+# Blockability: how much of our income one robber placement can switch off
+# ---------------------------------------------------------------------------
+# The robber sits on one hex.  Two of our buildings on the same hex (or a city
+# on it) concentrate our income where a single robber placement - and the
+# robber goes to the juiciest hex of its victim - blocks all of it.  The spot
+# scorers therefore charge a candidate building for the *increase* of our
+# robber exposure, on the same pips-equivalent scale as their production term:
+#
+#   W(h)        = our demand-weighted pips on hex h (settlement = pips, city = 2 x pips,
+#                 times RESOURCE_DEMAND[res] x scarcity[res] ** 0.5; the robber's current
+#                 position is ignored - the term is about where it *can* go)
+#   P_block(h)  = PLACEMENT_ROBBER_Q x W(h)^2 / sum_h' W(h')^2 x (1 + 0.5 x shared_strong(h))
+#   exposure    = sum_h P_block(h) x W(h)
+#   penalty     = PLACEMENT_BLOCK_WEIGHT x (exposure_after - exposure_before)
+#
+# The square in P_block models opponents aiming the robber at our best hex, so
+# concentration is costly; shared_strong(h) = 1 when an opponent with
+# robber.threat >= PLACEMENT_STRONG_THREAT (5+ estimated VP) has a building on
+# h, because the robber visits the hexes of strong players anyway.  See
+# docs/STRATEGY.md (Placement) for worked examples.  cpp/heuristic.cpp mirrors
+# every function below bit for bit (score_spot / BlockContext).
+PLACEMENT_ROBBER_Q = 0.35
+"""Fraction of the time the robber sits on one of *our* hexes when we are an
+ordinary target (nobody singles us out).  Tunable; the penalty scales with it."""
+
+PLACEMENT_BLOCK_WEIGHT = 1.5
+"""Weight of the blockability penalty on the pips-equivalent scale of
+``score_settlement_spot`` / ``score_city``.  1.5 makes a second settlement on a
+6 we already build on cost ~1.7 pips against a second 6 elsewhere (a 5-pip hex
+with ordinary demand weights); set to 0 to switch the term off."""
+
+PLACEMENT_STRONG_THREAT = 1.3
+"""An opponent whose ``robber.threat`` is at least this (5+ estimated VP: the
+threat is 1 + 0.3 x (VP - 4)) attracts the robber to their hexes regardless of
+us; a hex we share with such a player counts as blocked 1.5x as often.  An
+absolute threshold (not "the strongest at the table") so that early in the
+game, when nobody is a robber magnet yet, only concentration is charged."""
+
+
+def hex_block_weights(state: GameState, scarcity: Optional[Sequence[float]] = None) -> List[float]:
+    """Per hex: pips x RESOURCE_DEMAND x scarcity ** 0.5 (0 for the desert) - a settlement's W(h)."""
+    scarcity = resource_scarcity(state) if scarcity is None else scarcity
+    out = [0.0] * B.NUM_HEXES
+    for h in range(B.NUM_HEXES):
+        res, num = state.hexes[h]
+        if res == B.DESERT or num == 0:
+            continue
+        out[h] = B.PIPS[num] * RESOURCE_DEMAND[res] * (scarcity[res] ** 0.5)
+    return out
+
+
+def strong_opponent_hexes(state: GameState, player: int) -> List[int]:
+    """1 for every hex on which an opponent with ``robber.threat >= PLACEMENT_STRONG_THREAT`` has a building."""
+    from .robber import threat  # local import: robber.py imports this module
+
+    strong = [0] * B.NUM_HEXES
+    for i in range(state.num_players):
+        if i == player:
+            continue
+        if threat(state, i) < PLACEMENT_STRONG_THREAT:
+            continue
+        q = state.players[i]
+        for v in q.settlements:
+            for h in B.VERTEX_HEXES[v]:
+                strong[h] = 1
+        for v in q.cities:
+            for h in B.VERTEX_HEXES[v]:
+                strong[h] = 1
+    return strong
+
+
+def _building_block_weights(state: GameState, player: int, hex_w: Sequence[float],
+                            extra_settlement: Optional[int] = None,
+                            extra_city: Optional[int] = None) -> List[float]:
+    """W(h) of the player's buildings (settlements, then cities, then the extras; a city counts twice).
+
+    ``extra_city`` equal to one of our settlements is the upgrade of that settlement.
+    """
+    w = [0.0] * B.NUM_HEXES
+    p = state.players[player]
+    for v in p.settlements:
+        if v == extra_city:
+            continue
+        for h in B.VERTEX_HEXES[v]:
+            w[h] += hex_w[h]
+    for v in p.cities:
+        for h in B.VERTEX_HEXES[v]:
+            w[h] += 2.0 * hex_w[h]
+    if extra_settlement is not None:
+        for h in B.VERTEX_HEXES[extra_settlement]:
+            w[h] += hex_w[h]
+    if extra_city is not None:
+        for h in B.VERTEX_HEXES[extra_city]:
+            w[h] += 2.0 * hex_w[h]
+    return w
+
+
+def _exposure_of(w: Sequence[float], strong: Sequence[int]) -> float:
+    """sum_h P_block(h) x W(h) for the per-hex weights ``w`` (0 without buildings)."""
+    ssq = 0.0
+    for h in range(B.NUM_HEXES):
+        ssq += w[h] * w[h]
+    if ssq <= 0.0:
+        return 0.0
+    total = 0.0
+    for h in range(B.NUM_HEXES):
+        x = w[h]
+        if x <= 0.0:
+            continue
+        p_block = PLACEMENT_ROBBER_Q * (x * x) / ssq * (1.0 + 0.5 * strong[h])
+        total += p_block * x
+    return total
+
+
+def robber_exposure(state: GameState, player: int, extra_settlement: Optional[int] = None,
+                    extra_city: Optional[int] = None, scarcity: Optional[Sequence[float]] = None,
+                    hex_w: Optional[Sequence[float]] = None, strong: Optional[Sequence[int]] = None) -> float:
+    """Expected demand-weighted pips of ``player`` blocked by the robber (see the module comment).
+
+    ``extra_settlement`` / ``extra_city`` evaluate the position *after* that
+    building is added (``extra_city`` on one of our settlements = its upgrade).
+    Pure function of the state, O(#our buildings x 3 + #opponent buildings x 3).
+    """
+    hex_w = hex_block_weights(state, scarcity) if hex_w is None else hex_w
+    strong = strong_opponent_hexes(state, player) if strong is None else strong
+    return _exposure_of(_building_block_weights(state, player, hex_w, extra_settlement, extra_city), strong)
+
+
+def block_penalty(state: GameState, player: int, extra_settlement: Optional[int] = None,
+                  extra_city: Optional[int] = None, scarcity: Optional[Sequence[float]] = None) -> float:
+    """``PLACEMENT_BLOCK_WEIGHT x (exposure after the building - exposure before)``; 0 for a first building."""
+    hex_w = hex_block_weights(state, scarcity)
+    strong = strong_opponent_hexes(state, player)
+    before = robber_exposure(state, player, hex_w=hex_w, strong=strong)
+    after = robber_exposure(state, player, extra_settlement, extra_city, hex_w=hex_w, strong=strong)
+    return PLACEMENT_BLOCK_WEIGHT * (after - before)
+
+
+class BlockContext:
+    """Everything the blockability term of :func:`score_settlement_spot` needs once per (state, player).
+
+    ``settlement_penalty(v)`` is ``block_penalty(state, player, extra_settlement=v)`` computed from the
+    cached weights; callers scoring many candidates build one context and pass it as ``block_ctx``.
+    """
+
+    __slots__ = ("hex_w", "strong", "base", "exposure_before")
+
+    def __init__(self, state: GameState, player: int, scarcity: Optional[Sequence[float]] = None):
+        self.hex_w = hex_block_weights(state, scarcity)
+        self.strong = strong_opponent_hexes(state, player)
+        self.base = _building_block_weights(state, player, self.hex_w)
+        self.exposure_before = _exposure_of(self.base, self.strong)
+
+    def exposure_with_settlement(self, v: int) -> float:
+        w = list(self.base)
+        for h in B.VERTEX_HEXES[v]:
+            w[h] += self.hex_w[h]
+        return _exposure_of(w, self.strong)
+
+    def settlement_penalty(self, v: int) -> float:
+        return PLACEMENT_BLOCK_WEIGHT * (self.exposure_with_settlement(v) - self.exposure_before)
+
+
+# ---------------------------------------------------------------------------
 # Scoring
 # ---------------------------------------------------------------------------
 def _expansion_potential(state: GameState, v: int, occ: Dict[int, int], eocc: Dict[int, int]) -> int:
@@ -203,13 +372,17 @@ def score_settlement_spot(state: GameState, player: int, v: int,
                           occ: Optional[Dict[int, int]] = None,
                           own_prod: Optional[Sequence[float]] = None,
                           scarcity: Optional[Sequence[float]] = None,
-                          setup: bool = False) -> float:
+                          setup: bool = False,
+                          block_ctx: Optional["BlockContext"] = None) -> float:
     """Heuristic value of placing a settlement on ``v`` for ``player``.
 
     Combines pips weighted by resource demand and board scarcity, diminishing
     returns on resources the player already produces, diversity, new
-    resource types, port synergy and expansion potential.  Scale: roughly
-    "pips-equivalents" (a 10-pip diverse spot scores ~12-16).
+    resource types, port synergy and expansion potential, minus the
+    blockability penalty (the extra robber exposure of stacking buildings on
+    a hex, see :func:`robber_exposure`; ``block_ctx`` caches its per-player
+    part).  Scale: roughly "pips-equivalents" (a 10-pip diverse spot scores
+    ~12-16).  ``cpp/heuristic.cpp::score_spot`` is the bit-exact port.
     """
     occ = state.occupied_vertices() if occ is None else occ
     own_prod = player_production(state, player, ignore_robber=True) if own_prod is None else own_prod
@@ -241,6 +414,10 @@ def score_settlement_spot(state: GameState, player: int, v: int,
             score += 0.5 + 6.0 * (own_prod[port] + prod[port])
     eocc = state.occupied_edges()
     score += 0.35 * _expansion_potential(state, v, occ, eocc)
+    # Blockability: how much more of our income one robber placement could switch off.
+    if block_ctx is None:
+        block_ctx = BlockContext(state, player, scarcity)
+    score -= PLACEMENT_BLOCK_WEIGHT * (block_ctx.exposure_with_settlement(v) - block_ctx.exposure_before)
     return score
 
 
@@ -284,7 +461,8 @@ def road_block_values(state: GameState, player: int, edges: Iterable[int],
         # Spot scores are computed once; taking an edge can only remove spots / lengthen paths.
         scarcity = resource_scarcity(state) if scarcity is None else scarcity
         own_prod = player_production(state, i, ignore_robber=True)
-        scores = {v: score_settlement_spot(state, i, v, occ=occ, own_prod=own_prod, scarcity=scarcity)
+        bctx = BlockContext(state, i, scarcity)
+        scores = {v: score_settlement_spot(state, i, v, occ=occ, own_prod=own_prod, scarcity=scarcity, block_ctx=bctx)
                   for v in reach}
         base = max(scores[v] / (1.0 + 0.9 * d) for v, (d, _) in reach.items())
         if base <= 0.0:
@@ -324,9 +502,11 @@ def best_settlement_spots(state: GameState, player: int, k: int = 5,
         candidates = [v for v in range(B.NUM_VERTICES) if is_free_vertex(occ, v)]
     own_prod = player_production(state, player, ignore_robber=True)
     scarcity = resource_scarcity(state)
+    bctx = BlockContext(state, player, scarcity)
     scored = []
     for v in candidates:
-        s = score_settlement_spot(state, player, v, occ=occ, own_prod=own_prod, scarcity=scarcity, setup=setup)
+        s = score_settlement_spot(state, player, v, occ=occ, own_prod=own_prod, scarcity=scarcity, setup=setup,
+                                  block_ctx=bctx)
         if include_blocking:
             s += 0.25 * blocking_value(state, player, v, occ=occ)
         scored.append((v, s))
@@ -335,7 +515,12 @@ def best_settlement_spots(state: GameState, player: int, k: int = 5,
 
 
 def score_city(state: GameState, player: int, v: int) -> float:
-    """Value of upgrading the settlement on ``v`` (extra production, demand-weighted)."""
+    """Value of upgrading the settlement on ``v`` (extra production, demand-weighted).
+
+    Minus the blockability penalty: the city doubles W(h) on every hex of ``v``,
+    so a city next to our other buildings (or on a hex the leader also works)
+    is charged for concentrating our income (:func:`block_penalty`).
+    """
     prod = vertex_production(state, v, ignore_robber=True)
     scarcity = resource_scarcity(state)
     score = 0.0
@@ -344,6 +529,7 @@ def score_city(state: GameState, player: int, v: int) -> float:
     # A city on a hex the robber currently sits on is slightly less attractive.
     if state.robber in B.VERTEX_HEXES[v]:
         score *= 0.85
+    score -= block_penalty(state, player, extra_city=v, scarcity=scarcity)
     return score
 
 
@@ -367,9 +553,10 @@ def road_targets(state: GameState, player: int, max_roads: int = 3, k: int = 5) 
     own_prod = player_production(state, player, ignore_robber=True)
     scarcity = resource_scarcity(state)
     blocks = road_block_values(state, player, {e for _, e in reach.values() if e >= 0}, occ=occ)
+    bctx = BlockContext(state, player, scarcity)
     out = []
     for v, (d, e) in reach.items():
-        spot = score_settlement_spot(state, player, v, occ=occ, own_prod=own_prod, scarcity=scarcity)
+        spot = score_settlement_spot(state, player, v, occ=occ, own_prod=own_prod, scarcity=scarcity, block_ctx=bctx)
         contest = blocking_value(state, player, v, occ=occ)
         block = blocks.get(e, 0.0)
         score = (spot + 0.15 * contest) / (1.0 + 0.9 * d) + 0.15 * block
@@ -389,6 +576,7 @@ def setup_road_pick(state: GameState, player: int, settlement: int) -> Tuple[int
     eocc = state.occupied_edges()
     own_prod = player_production(state, player, ignore_robber=True)
     scarcity = resource_scarcity(state)
+    bctx = BlockContext(state, player, scarcity)
     best_e, best_s = -1, -1.0
     for e in B.VERTEX_EDGES[settlement]:
         if e in eocc:
@@ -404,7 +592,8 @@ def setup_road_pick(state: GameState, player: int, settlement: int) -> Tuple[int
             a2, b2 = B.EDGE_VERTICES[e2]
             x = b2 if a2 == w else a2
             if is_free_vertex(occ, x) and x != settlement:
-                s = max(s, score_settlement_spot(state, player, x, occ=occ, own_prod=own_prod, scarcity=scarcity))
+                s = max(s, score_settlement_spot(state, player, x, occ=occ, own_prod=own_prod, scarcity=scarcity,
+                                                 block_ctx=bctx))
         if s > best_s:
             best_s, best_e = s, e
     if best_e == -1:
