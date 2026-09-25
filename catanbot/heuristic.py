@@ -24,7 +24,7 @@ from .discard import choose_discard, needed_vector
 from .placement import (RESOURCE_DEMAND, best_city_spots, best_settlement_spots, buildable_settlements,
                         player_production, reachable_spots, resource_scarcity, road_block_values, road_targets,
                         score_city, score_settlement_spot, setup_pick, setup_road_pick)
-from .robber import best_robber_move, estimated_vp, hex_damage, should_play_knight, steal_exposure_fast, threat
+from .robber import target_weight, best_robber_move, estimated_vp, hex_damage, should_play_knight, steal_exposure_fast, threat
 from .state import GameState, PHASE_GAME_OVER
 from .trading import candidate_offers, offer_is_feeding_leader, plan_trades, should_accept
 
@@ -278,7 +278,7 @@ def action_priors(state: GameState, actions: Sequence[Action], player: Optional[
             if a[1] == h and a[2] == victim:
                 v += 40.0
             elif a[2] >= 0:
-                v += 2.0 + (tw[a[2]] if tw is not None else threat(state, a[2]))
+                v += 2.0 + (tw[a[2]] if tw is not None else target_weight(state, a[2]))
         elif k == A.PLAY_ROAD_BUILDING:
             v = 70.0 if len(p.roads) <= B.MAX_ROADS - 1 else 5.0
         elif k == A.PLAY_YEAR_OF_PLENTY:
