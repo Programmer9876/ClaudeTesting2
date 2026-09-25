@@ -4,6 +4,11 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 16:00 UTC - late-game trade damping follow-up (400 games)
+
+The weak +4-5 pp signal from sweep 2 did not hold: stage drop 0.0 is +0.8
+pp and 0.4 is -3.5 pp (s.e. 2.5) against the default 0.7.  Default kept.
+
 ## 2026-09-25 15:40 UTC - lookahead fix verified: parity at best; depth 1 is the default everywhere
 
 The de-noising fix landed (every end-of-turn node gets the lookahead, 12
