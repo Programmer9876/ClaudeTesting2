@@ -4,6 +4,31 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 21:20 UTC - fairness audit of the Catanatron benchmark
+
+The user asked whether the wins could come from a harness bug or a leak.
+Code audit: dice, steals and dev draws are Catanatron's own (our bot has a
+separate RNG and never reads Catanatron's); the dev deck is exposed as
+composition, not order; every action goes through Catanatron's validated
+execute; opponents' decisions pass through our wrapper unchanged; the
+re-seating happens before the first action when all seats are identical.
+One real caveat: in T1-T6 both sides see every hand and dev card
+(Catanatron exposes the full state; its bots read it too), which is fair
+between the sides but is not the Colonist game - hence the pre-registered
+counted-information tests T7-T9 and the mixed table T10-T11.
+
+Controls through the same harness (non-proof seeds, 1 process):
+
+| control | games | result | reading |
+|---|---|---|---|
+| C1: Catanatron ValueFunction in our rotated seat vs 3x ValueFunction | 400 | 23.5 % +- 2.1 | the harness favours no seat (fair = 25 %) |
+| C2: Catanatron AlphaBeta in that seat vs 3x ValueFunction | 100 | 20 % +- 4 | AlphaBeta is not stronger than ValueFunction here |
+| C3: our bot fully blind (opponents' cards replaced by random guesses, no counting) vs 3x ValueFunction | 300 | 56.7 % +- 2.9 | vs 62.8 % with full information: the view is worth ~6 points, not the win |
+
+Pending: C4 (blind vs 3x AlphaBeta) and C2b (AlphaBeta vs ValueFunction in
+a plain Catanatron game without any of our code, to separate "AlphaBeta is
+just not stronger" from "our harness weakens it").
+
 ## 2026-09-25 19:55 UTC - pre-registered strength proof launched
 
 Protocol: docs/PROOF_PROTOCOL.md (pre-registered in 704849b, tooling
