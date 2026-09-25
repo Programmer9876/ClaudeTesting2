@@ -472,6 +472,145 @@ def test_accel_disables_a_build_without_the_heuristic_port(monkeypatch, game_sta
 
 
 # ---------------------------------------------------------------------------
+# unsupported states: rejected by the extension (UnsupportedStateError), served by the Python fallback
+# ---------------------------------------------------------------------------
+def _unsupported_variants(s: GameState) -> List[GameState]:
+    """States the C++ structs cannot hold but the Python reference evaluates."""
+    out: List[GameState] = []
+    v = s.copy()
+    v.robber = 2 ** 32 + 5  # Python: no hex matches -> "no robber" (C++ used to wrap it to hex 5)
+    out.append(v)
+    v = s.copy()
+    v.phase = PHASE_GAME_OVER
+    v.winner = 2 ** 35  # Python: nobody is the winner -> -1000 / 0.0 for everyone (C++ used to say player 0)
+    out.append(v)
+    v = s.copy()
+    v.hexes = list(s.hexes) + [(B.WOOD, 8)]  # a 20th hex nobody indexes
+    out.append(v)
+    v = s.copy()
+    v.bank = list(s.bank) + [0]  # a 6th bank entry
+    out.append(v)
+    five = new_game(5, rng=random.Random(5))
+    five.phase = PHASE_MAIN
+    vs = B.HEX_VERTICES[9]
+    five.players[0].settlements = [vs[0]]
+    five.players[0].roads = [B.edge_between(vs[0], vs[1])]
+    five.players[4].settlements = [vs[3]]
+    five.players[4].resources = [1, 2, 0, 1, 0]
+    out.append(five)
+    return out
+
+
+def test_out_of_range_integers_are_rejected(game_states):
+    """Integers outside the 32-bit fields raise instead of wrapping (winner = 2**35 is nobody, not player 0)."""
+    s = game_states[400]
+    assert issubclass(core.UnsupportedStateError, ValueError)
+    for value in (2 ** 31, 2 ** 32 + 5, 2 ** 35, 2 ** 63, 2 ** 70, -2 ** 31 - 1):
+        for attr in ("robber", "winner", "current", "longest_road_owner", "largest_army_owner", "longest_road_len"):
+            bad = s.copy()
+            setattr(bad, attr, value)
+            with pytest.raises(core.UnsupportedStateError):
+                core.static_values(bad)
+            with pytest.raises(ValueError):
+                core.static_value(bad, 0)
+            with pytest.raises(ValueError):
+                core.heuristic_evaluate([bad], [0], 16.0)
+            with pytest.raises(ValueError):
+                core.reachable_spots(bad, 0)
+        bad = s.copy()
+        bad.players[0].played_knights = value
+        with pytest.raises(core.UnsupportedStateError):
+            core.static_values(bad)
+        bad = s.copy()
+        bad.dev_deck = [value, 0, 0, 0, 0]
+        with pytest.raises(core.UnsupportedStateError):
+            core.static_values(bad)
+    # the 32-bit boundaries themselves are accepted and agree with Python
+    ok = []
+    for value in (2 ** 31 - 1, -2 ** 31):
+        v = s.copy()
+        v.robber = value  # no hex matches: "no robber" on both sides
+        ok.append(v)
+        v = s.copy()
+        v.phase = PHASE_GAME_OVER
+        v.winner = value
+        ok.append(v)
+        v = s.copy()
+        v.longest_road_owner = (s.current + 1) % s.num_players
+        v.longest_road_len = value
+        ok.append(v)
+    _assert_static_values_match(ok)
+    _assert_evaluate_matches(ok, temperatures=(16.0,))
+
+
+def test_desert_number_is_ignored(game_states):
+    """(DESERT, None) - or any number on the desert - is accepted like in Python, robber on it or not."""
+    eps = 1e-12
+    states = []
+    for s in game_states[::400]:
+        d = _desert(s)
+        v = s.copy()
+        v.hexes = list(s.hexes)  # copy() shares the hexes list
+        v.hexes[d] = (B.DESERT, None)
+        states.append(v)
+        w = v.copy()
+        w.robber = d
+        states.append(w)
+        u = s.copy()
+        u.hexes = list(s.hexes)
+        u.hexes[d] = [B.DESERT, 8]
+        states.append(u)
+    _assert_static_values_match(states)
+    _assert_evaluate_matches(states, temperatures=(16.0,))
+    for s in states:
+        assert core.resource_scarcity(s) == P.resource_scarcity(s)
+        for i in range(s.num_players):
+            for ignore in (False, True):
+                got = core.player_production(s, i, ignore)
+                ref = P.player_production(s, i, ignore_robber=ignore)
+                assert all(abs(a - b) <= eps for a, b in zip(got, ref)), (got, ref)
+
+
+def test_accel_falls_back_to_python_for_unsupported_states(monkeypatch, game_states):
+    """HeuristicEvaluator.evaluate / accel.static_value* keep the pure-Python behaviour for rejected states."""
+    s = game_states[400]
+    n = s.num_players
+    variants = _unsupported_variants(s)
+    refs = [(HeuristicEvaluator(4.0).evaluate([v] * v.num_players, range(v.num_players)),
+             [static_value(v, i) for i in range(v.num_players)]) for v in variants]  # Python (AVAILABLE False)
+    assert refs[1][1] == [-1000.0] * n and list(refs[1][0]) == [0.0] * n  # winner = 2**35: nobody won
+    monkeypatch.setattr(accel, "_core", core)
+    monkeypatch.setattr(accel, "AVAILABLE", True)
+    monkeypatch.setattr(accel, "_verified", False)
+    calls = []
+    real = core.heuristic_evaluate
+
+    def spy(states, players, temperature):
+        calls.append((len(states), temperature))
+        return real(states, players, temperature)
+
+    monkeypatch.setattr(core, "heuristic_evaluate", spy)
+    ev = HeuristicEvaluator(4.0)
+    for v, (ref_ev, ref_sv) in zip(variants, refs):
+        m = v.num_players
+        with pytest.raises(core.UnsupportedStateError):
+            core.static_values(v)
+        np.testing.assert_array_equal(ev.evaluate([v] * m, range(m)), ref_ev)  # accel -> core raises -> Python
+        assert accel.static_values(v) == ref_sv
+        assert accel.static_value(v, m - 1) == ref_sv[m - 1]
+        assert accel.AVAILABLE is True  # the fallback is per call: the extension stays enabled
+    assert calls == [(v.num_players, 4.0) for v in variants]
+    calls.clear()  # a supported state still goes through the extension afterwards
+    x = ev.evaluate([s] * n, range(n))
+    assert calls == [(n, 4.0)]
+    np.testing.assert_array_equal(x, real([s] * n, range(n), 4.0))
+    with pytest.raises(ValueError):  # other errors are not swallowed
+        ev.evaluate([s, s], [0])
+    with pytest.raises(IndexError):
+        accel.static_value(s, n)
+
+
+# ---------------------------------------------------------------------------
 # benchmark
 # ---------------------------------------------------------------------------
 def _timed(fn, *args) -> float:

@@ -671,15 +671,17 @@ _DIGITS = None
 
 
 def _digit_classifier():
+    """The shared :class:`~catanbot.vision.digits.DigitClassifier` (located via ``digits.find_model_path``)."""
     global _DIGITS
     if _DIGITS is None:
-        from .digits import DEFAULT_MODEL_PATH, DigitClassifier
-        _DIGITS = DigitClassifier.load(DEFAULT_MODEL_PATH)
+        from .digits import DigitClassifier
+        _DIGITS = DigitClassifier.load()
     return _DIGITS
 
 
-def _cream_fraction(arr: np.ndarray, cx: float, cy: float, r: float, cal: Calibration) -> float:
-    px = _ring_pixels(arr, cx, cy, 0.0, r).astype(np.int16)
+def _cream_fraction(arr: np.ndarray, cx: float, cy: float, r: float, cal: Calibration, r0: float = 0.0) -> float:
+    """Fraction of token-coloured pixels in the disc (or ring ``r0..r``) around (cx, cy)."""
+    px = _ring_pixels(arr, cx, cy, r0, r).astype(np.int16)
     if len(px) == 0:
         return 0.0
     ref = np.array(cal.token, dtype=np.int16)
@@ -687,14 +689,47 @@ def _cream_fraction(arr: np.ndarray, cx: float, cy: float, r: float, cal: Calibr
     return float((d < 60).mean())
 
 
+def _token_visibility(arr: np.ndarray, geom: Dict[str, float], cal: Calibration) -> List[float]:
+    """Per hex: fraction of token-coloured pixels within 0.28 hex sizes of the centre."""
+    hs = geom["hex_size"]
+    return [_cream_fraction(arr, cx, cy, 0.28 * hs, cal) for cx, cy in _lattice_pixels(geom, "hex")]
+
+
+def _token_like(arr: np.ndarray, cx: float, cy: float, hs: float, cal: Calibration) -> bool:
+    """A number token is cream inside and tile-coloured around it; a sandy desert is cream everywhere."""
+    inner = _cream_fraction(arr, cx, cy, 0.28 * hs, cal)
+    ring = _cream_fraction(arr, cx, cy, 0.60 * hs, cal, r0=0.42 * hs)
+    return inner > 0.5 and ring < 0.3
+
+
 def read_numbers(arr: np.ndarray, geom: Dict[str, float], resources: Sequence[int], cal: Calibration,
-                 assume_standard: bool = True, robber_hex: int = -1) -> Tuple[List[int], List[float], List[str]]:
+                 assume_standard: bool = True, robber_hex: int = -1,
+                 creams: Optional[Sequence[float]] = None) -> Tuple[List[int], List[float], List[str]]:
+    """Number token of every hex (0 = none / unknown), per-hex confidence and warnings.
+
+    With ``assume_standard`` the digits are assigned under the standard
+    multiset of 18 numbers, so a single hidden token (e.g. under the robber)
+    still gets the only number left.  When two or more tokens are hidden
+    (hand bar, crop, robber plus another) their numbers cannot be told apart
+    and are reported as 0 with one warning listing the leftover numbers,
+    instead of being guessed.  ``creams`` are the per-hex token visibilities
+    from :func:`_token_visibility` (computed here when not given).
+    """
     from .digits import CLASSES
     hs = geom["hex_size"]
     centers = _lattice_pixels(geom, "hex")
-    clf = _digit_classifier()
+    warnings: List[str] = []
+    numbers = [0] * B.NUM_HEXES
+    conf = [0.0] * B.NUM_HEXES
+    numbered = [i for i in range(B.NUM_HEXES) if resources[i] != B.DESERT]
+    if creams is None:
+        creams = _token_visibility(arr, geom, cal)
+    try:
+        clf = _digit_classifier()
+    except (FileNotFoundError, OSError, ValueError) as ex:
+        warnings.append(f"number tokens not read ({ex}); set them with --fix \"hex N=RESOURCE NUMBER\"")
+        return numbers, conf, warnings
     crops = []
-    creams = []
     half = int(round(0.42 * hs))
     h, w = arr.shape[:2]
     for cx, cy in centers:
@@ -705,20 +740,17 @@ def read_numbers(arr: np.ndarray, geom: Dict[str, float], resources: Sequence[in
         if sx1 > sx0 and sy1 > sy0:
             crop[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = arr[sy0:sy1, sx0:sx1]
         crops.append(crop)
-        creams.append(_cream_fraction(arr, cx, cy, 0.28 * hs, cal))
     probs = np.asarray(clf.predict_proba(crops), dtype=np.float64)
     probs = np.clip(probs, 1e-6, 1.0)
-    warnings: List[str] = []
-    numbers = [0] * B.NUM_HEXES
-    conf = [0.0] * B.NUM_HEXES
-    numbered = [i for i in range(B.NUM_HEXES) if resources[i] != B.DESERT]
-    # A hex whose token is hidden (robber on it) or missing gets a flat distribution.
+    # A hex whose token is hidden (robber on it, UI panel, crop) gets a flat distribution.
+    hidden: List[int] = []
     for i in range(B.NUM_HEXES):
         if creams[i] < 0.25 and resources[i] != B.DESERT:
             probs[i] = np.full(len(CLASSES), 1.0 / len(CLASSES))
+            hidden.append(i)
             if i != robber_hex:
                 warnings.append(f"hex {i}: number token not clearly visible")
-        if creams[i] > 0.5 and resources[i] == B.DESERT:
+        if resources[i] == B.DESERT and _token_like(arr, centers[i][0], centers[i][1], hs, cal):
             warnings.append(f"hex {i}: looks like it has a number token but was classified as desert")
     if assume_standard and len(numbered) == 18:
         from collections import Counter
@@ -729,11 +761,25 @@ def read_numbers(arr: np.ndarray, geom: Dict[str, float], resources: Sequence[in
         for k, i in enumerate(numbered):
             numbers[i] = CLASSES[assign[k]]
             conf[i] = float(probs[i][assign[k]])
+        if len(hidden) == 1:
+            conf[hidden[0]] = 0.9      # the unique number left over from the other 17 tokens
+        elif len(hidden) >= 2:
+            leftover = sorted(numbers[i] for i in hidden)
+            for i in hidden:
+                numbers[i] = 0
+                conf[i] = 0.0
+            warnings.append(f"hexes {', '.join(str(i) for i in hidden)} hidden; their numbers are {leftover} in "
+                            "unknown order - set them with --fix \"hex N=RESOURCE NUMBER\"")
     else:
         for i in numbered:
+            if i in hidden:
+                continue
             k = int(np.argmax(probs[i]))
             numbers[i] = CLASSES[k]
             conf[i] = float(probs[i][k])
+        if hidden:
+            warnings.append(f"hexes {', '.join(str(i) for i in hidden)} hidden; numbers unknown - set them with "
+                            "--fix \"hex N=RESOURCE NUMBER\"")
         if assume_standard:
             warnings.append("non-standard number of desert hexes; numbers read independently")
     return numbers, conf, warnings
@@ -742,15 +788,70 @@ def read_numbers(arr: np.ndarray, geom: Dict[str, float], resources: Sequence[in
 # ---------------------------------------------------------------------------
 # Robber
 # ---------------------------------------------------------------------------
+def _box_mean(a: np.ndarray, kw: int, kh: int) -> np.ndarray:
+    """Mean of ``a`` over a ``kw x kh`` window centred on every pixel (float32 in, float32 out)."""
+    if cv2 is not None:
+        return cv2.boxFilter(a, -1, (kw, kh), normalize=True)
+    # integral-image fallback (zero padding at the border)
+    h, w = a.shape
+    ii = np.zeros((h + 1, w + 1), np.float64)
+    ii[1:, 1:] = a.cumsum(0).cumsum(1)
+    ys = np.arange(h)
+    xs = np.arange(w)
+    y0 = np.clip(ys - kh // 2, 0, h)
+    y1 = np.clip(ys - kh // 2 + kh, 0, h)
+    x0 = np.clip(xs - kw // 2, 0, w)
+    x1 = np.clip(xs - kw // 2 + kw, 0, w)
+    s = ii[y1][:, x1] - ii[y0][:, x1] - ii[y1][:, x0] + ii[y0][:, x0]
+    return (s / float(kw * kh)).astype(np.float32)
+
+
 def find_robber(arr: np.ndarray, geom: Dict[str, float], cal: Calibration) -> Tuple[int, float]:
+    """Hex holding the robber pawn (-1 if none found) and a confidence 0..1.
+
+    Works on the board's bounding box only.  A pawn-sized (0.20 x 0.50 hex
+    sizes) box filter over the dark, unsaturated mask scores every hex by
+    its densest dark patch; the pawn scores ~0.7-0.95 while dark tile art
+    stays below ~0.6.  Unlike a connected-component search this is immune to
+    the thin piece outlines that touch the pawn on crowded hexes.  The
+    component search is kept as a fallback for weak scores.
+    """
     hs = geom["hex_size"]
-    hue, sat, val = rgb_to_hsv(arr)
-    dark = (val < 0.42) & (sat < 0.30)
-    # restrict to the board area
-    inside = _hex_inside_mask(arr.shape[:2], geom, scale=1, shrink=1.0)
-    dark &= inside
-    n, labels, stats, cents = _components(dark)
-    centers = _lattice_pixels(geom, "hex")
+    h, w = arr.shape[:2]
+    cx, cy = geom["cx"], geom["cy"]
+    x0, x1 = max(0, int(cx - 4.6 * hs)), min(w, int(cx + 4.6 * hs))
+    y0, y1 = max(0, int(cy - 4.3 * hs)), min(h, int(cy + 4.3 * hs))
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return -1, 0.0
+    sub = arr[y0:y1, x0:x1]
+    hue, sat, val = rgb_to_hsv(sub)
+    g2 = {"cx": cx - x0, "cy": cy - y0, "hex_size": hs}
+    inside_small = _hex_inside_mask(sub.shape[:2], g2, scale=2, shrink=0.94)
+    inside = np.repeat(np.repeat(inside_small, 2, axis=0), 2, axis=1)[: sub.shape[0], : sub.shape[1]]
+    if inside.shape != sub.shape[:2]:   # odd sizes: pad the last row / column
+        full = np.zeros(sub.shape[:2], dtype=bool)
+        full[: inside.shape[0], : inside.shape[1]] = inside
+        inside = full
+    centers = _lattice_pixels(g2, "hex")
+    # 1. box-filter score
+    dark = ((val < 0.36) & (sat < 0.40)).astype(np.float32)
+    kw, kh = max(3, int(round(0.20 * hs))), max(3, int(round(0.50 * hs)))
+    box = _box_mean(dark, kw, kh)
+    box[~inside] = 0.0
+    best_h, best_s = -1, 0.0
+    for i, (hx, hy) in enumerate(centers):
+        yy0, yy1 = max(0, int(hy - 0.9 * hs)), min(box.shape[0], int(hy + 0.9 * hs))
+        xx0, xx1 = max(0, int(hx - 0.9 * hs)), min(box.shape[1], int(hx + 0.9 * hs))
+        if yy1 <= yy0 or xx1 <= xx0:
+            continue
+        m = float(box[yy0:yy1, xx0:xx1].max())
+        if m > best_s:
+            best_h, best_s = i, m
+    if best_s >= 0.6:
+        return best_h, float(min(1.0, (best_s - 0.6) / 0.3))
+    # 2. fallback: dark connected component of pawn size near a hex centre
+    dark2 = (val < 0.42) & (sat < 0.30) & inside
+    n, labels, stats, cents = _components(dark2)
     best_h, best_score = -1, 0.0
     amin, amax = 0.06 * hs * hs, 0.30 * hs * hs
     for i in range(1, n):
@@ -759,8 +860,8 @@ def find_robber(arr: np.ndarray, geom: Dict[str, float], cal: Calibration) -> Tu
             continue
         if bw > 0.7 * hs or bh > 0.8 * hs:
             continue
-        cx, cy = cents[i]
-        d = np.hypot(centers[:, 0] - cx, centers[:, 1] - cy)
+        bx, by = cents[i]
+        d = np.hypot(centers[:, 0] - bx, centers[:, 1] - by)
         hidx = int(d.argmin())
         if d[hidx] > 0.8 * hs:
             continue
@@ -792,15 +893,25 @@ def _background_palette(cal: Calibration) -> np.ndarray:
 
 
 def _classify_pixels(px: np.ndarray, pal: np.ndarray, bg: np.ndarray, max_dist: float) -> np.ndarray:
-    """Return index into ``pal`` for each pixel, or -1 if closer to a background colour / too far."""
+    """Return index into ``pal`` for each pixel, or -1 if closer to a background colour / too far.
+
+    Squared distances are computed as ``|p|^2 + |r|^2 - 2 p.r`` with one
+    matrix product, so only an ``N x K`` array is allocated (the naive
+    ``N x K x 3`` differences cost ~800 MB on a 2560x1440 panel region).
+    """
     if len(px) == 0:
         return np.zeros(0, dtype=np.int64)
-    p = px.astype(np.float32)
-    dp = np.linalg.norm(p[:, None, :] - pal[None, :, :], axis=2)
-    db = np.linalg.norm(p[:, None, :] - bg[None, :, :], axis=2).min(axis=1)
+    p = np.asarray(px, dtype=np.float32).reshape(-1, 3)
+    pal = np.asarray(pal, dtype=np.float32).reshape(-1, 3)
+    bg = np.asarray(bg, dtype=np.float32).reshape(-1, 3)
+    refs = np.concatenate([pal, bg], axis=0)
+    d2 = (p * p).sum(axis=1)[:, None] + (refs * refs).sum(axis=1)[None, :] - 2.0 * (p @ refs.T)
+    k = len(pal)
+    dp = d2[:, :k]
     j = dp.argmin(axis=1)
     dmin = dp[np.arange(len(p)), j]
-    ok = (dmin < max_dist) & (dmin < db)
+    db = d2[:, k:].min(axis=1) if len(bg) else np.full(len(p), np.inf, dtype=np.float32)
+    ok = (dmin < max_dist * max_dist) & (dmin < db)
     return np.where(ok, j, -1)
 
 

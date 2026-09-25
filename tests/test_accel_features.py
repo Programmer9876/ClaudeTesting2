@@ -372,6 +372,216 @@ def test_env_switch_helper(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# unsupported states: rejected by the extension (UnsupportedStateError), served by the Python fallback
+# ---------------------------------------------------------------------------
+def _five_player_state() -> GameState:
+    five = new_game(5, rng=random.Random(5))
+    five.phase = PHASE_MAIN
+    vs = B.HEX_VERTICES[9]
+    five.players[0].settlements = [vs[0]]
+    five.players[0].roads = [B.edge_between(vs[0], vs[1])]
+    five.players[4].settlements = [vs[3]]
+    five.players[4].resources = [1, 2, 0, 1, 0]
+    return five
+
+
+def _unsupported_variants(s: GameState) -> List[GameState]:
+    """States the C++ structs cannot hold but the Python reference evaluates."""
+    n = s.num_players
+    out: List[GameState] = []
+    v = s.copy()
+    v.robber = 2 ** 32 + 5  # Python: no hex matches -> "no robber" (C++ used to wrap it to hex 5)
+    out.append(v)
+    v = s.copy()
+    v.turn = 2 ** 40 + 3  # Python: the turn / stage features saturate at 1
+    out.append(v)
+    v = s.copy()
+    v.hexes = list(s.hexes) + [(B.WOOD, 8)]  # a 20th hex nobody indexes
+    out.append(v)
+    v = s.copy()
+    v.bank = list(s.bank) + [0]  # a 6th bank entry
+    out.append(v)
+    v = s.copy()
+    v.phase = PHASE_DISCARD
+    v.discard_queue = [i % n for i in range(9)]  # longer than the C++ queue
+    out.append(v)
+    out.append(_five_player_state())
+    v = new_game(4)  # 65 road entries; every vertex holds an opponent building so the Python trail DFS stays cheap
+    v.phase = PHASE_MAIN
+    v.players[0].roads = list(range(65))
+    v.players[1].settlements = list(range(B.NUM_VERTICES))
+    out.append(v)
+    return out
+
+
+def test_unsupported_state_error_is_a_value_error():
+    assert issubclass(core.UnsupportedStateError, ValueError)
+    with pytest.raises(core.UnsupportedStateError, match="unsupported GameState"):
+        core.extract(_five_player_state(), 0)
+
+
+def test_out_of_range_integers_are_rejected(game_states):
+    """Integers outside the 32-bit fields raise instead of wrapping (robber = 2**32 + 5 is not hex 5)."""
+    s = game_states[400]
+    for value in (2 ** 31, 2 ** 32 + 5, 2 ** 40 + 3, 2 ** 63, 2 ** 70, -2 ** 31 - 1):
+        for attr in ("robber", "turn", "winner", "current", "dice", "free_roads", "longest_road_len", "max_turns"):
+            bad = s.copy()
+            setattr(bad, attr, value)
+            with pytest.raises(core.UnsupportedStateError):
+                core.extract(bad, 0)
+            with pytest.raises(ValueError):
+                core.extract_batch([bad], [0])
+            with pytest.raises(ValueError):
+                core.longest_road_length(bad, 0)
+        for attr in ("played_knights", "hand_size", "dev_count"):
+            bad = s.copy()
+            setattr(bad.players[1], attr, value)
+            with pytest.raises(core.UnsupportedStateError):
+                core.extract(bad, 0)
+        bad = s.copy()
+        bad.players[0].resources = [value, 0, 0, 0, 0]
+        with pytest.raises(core.UnsupportedStateError):
+            core.extract(bad, 0)
+        bad = s.copy()
+        bad.bank = [0, 0, value, 0, 0]
+        with pytest.raises(core.UnsupportedStateError):
+            core.extract(bad, 0)
+        bad = s.copy()
+        bad.phase = PHASE_DISCARD
+        bad.discard_queue = [value]
+        with pytest.raises(core.UnsupportedStateError):
+            core.extract(bad, 0)
+        bad = s.copy()
+        bad.players[0].roads = [value]
+        with pytest.raises(core.UnsupportedStateError):
+            core.extract(bad, 0)
+    # the 32-bit boundaries themselves are accepted and agree with Python
+    ok = []
+    for value in (2 ** 31 - 1, -2 ** 31):
+        v = s.copy()
+        v.robber = value  # no hex matches: "no robber" on both sides
+        ok.append(v)
+        v = s.copy()
+        v.turn = value
+        ok.append(v)
+        v = s.copy()
+        v.phase = PHASE_GAME_OVER
+        v.winner = value
+        ok.append(v)
+    _assert_match(ok)
+
+
+def test_huge_dict_keys_are_ignored(game_states):
+    """A port / trade-response key that does not fit in a C long can never match and must not leave an error pending."""
+    s = game_states[400].copy()
+    s.ports = dict(s.ports)
+    s.ports[2 ** 70] = B.PORT_GENERIC
+    s.ports[-2 ** 70] = B.ORE
+    s.ports["x"] = B.WOOD
+    s.phase = PHASE_TRADE_RESPONSE
+    s.pending_trade = TradeOffer(s.current, [1, 0, 0, 0, 0], [0, 1, 0, 0, 0], {2 ** 70: True, -1: True})
+    s.trade_responder = (s.current + 1) % s.num_players
+    _assert_match([s])
+
+
+def test_desert_number_is_ignored(game_states):
+    """(DESERT, None) - or any number on the desert - is accepted like in Python, robber on it or not."""
+    states = []
+    for s in game_states[::400]:
+        d = _desert(s)
+        v = s.copy()
+        v.hexes = list(s.hexes)  # copy() shares the hexes list
+        v.hexes[d] = (B.DESERT, None)
+        states.append(v)
+        w = v.copy()
+        w.robber = d
+        states.append(w)
+        u = s.copy()
+        u.hexes = list(s.hexes)
+        u.hexes[d] = [B.DESERT, 8]  # a list instead of a tuple, with a number
+        states.append(u)
+    _assert_match(states)
+    for s in states:
+        for i in range(s.num_players):
+            assert core.longest_road_length(s, i) == F.longest_road_length(s, i)
+
+
+def test_accel_falls_back_to_python_for_unsupported_states(monkeypatch, game_states):
+    """features.extract* keep the pure-Python behaviour for states the extension rejects."""
+    s = game_states[400]
+    variants = _unsupported_variants(s)
+    refs = [F.extract_batch([v] * v.num_players, range(v.num_players)) for v in variants]  # Python (AVAILABLE False)
+    monkeypatch.setattr(accel, "_core", core)
+    monkeypatch.setattr(accel, "AVAILABLE", True)
+    monkeypatch.setattr(accel, "_verified", False)
+    calls = []
+    real_batch, real_single, real_lr = core.extract_batch, core.extract, core.longest_road_length
+
+    def spy_batch(states, players):
+        calls.append("batch")
+        return real_batch(states, players)
+
+    def spy_single(state, player):
+        calls.append("single")
+        return real_single(state, player)
+
+    def spy_lr(state, player):
+        calls.append("lr")
+        return real_lr(state, player)
+
+    monkeypatch.setattr(core, "extract_batch", spy_batch)
+    monkeypatch.setattr(core, "extract", spy_single)
+    monkeypatch.setattr(core, "longest_road_length", spy_lr)
+    for v, ref in zip(variants, refs):
+        n = v.num_players
+        with pytest.raises(core.UnsupportedStateError):
+            real_single(v, 0)
+        np.testing.assert_array_equal(F.extract_batch([v] * n, range(n)), ref)  # accel -> core raises -> Python
+        np.testing.assert_array_equal(F.extract(v, n - 1), ref[n - 1])
+        assert accel.longest_road_length(v, 0) == F.longest_road_length(v, 0)
+        assert accel.AVAILABLE is True  # the fallback is per call: the extension stays enabled
+    assert calls == ["batch", "single", "lr"] * len(variants)
+    calls.clear()  # a supported state still goes through the extension afterwards
+    x = F.extract_batch([s], [s.current])
+    assert calls == ["batch"]
+    np.testing.assert_array_equal(x, real_batch([s], [s.current]))
+    with pytest.raises(ValueError):  # other errors are not swallowed
+        F.extract_batch([s, s], [0])
+    with pytest.raises(IndexError):
+        F.extract(s, s.num_players)
+
+
+def test_fallback_is_thread_safe(monkeypatch, game_states):
+    """Concurrent fallbacks (which briefly clear accel.AVAILABLE) restore the switch and return Python's result."""
+    import threading
+
+    s = game_states[400]
+    five = _five_player_state()
+    ref_five = F.extract(five, 0)  # Python
+    ref_s = core.extract(s, 0)
+    monkeypatch.setattr(accel, "_core", core)
+    monkeypatch.setattr(accel, "AVAILABLE", True)
+    monkeypatch.setattr(accel, "_verified", False)
+    errors: List[BaseException] = []
+
+    def work() -> None:
+        try:
+            for _ in range(25):
+                np.testing.assert_array_equal(F.extract(five, 0), ref_five)
+                np.testing.assert_array_equal(F.extract_batch([s], [0])[0], ref_s)
+        except BaseException as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert accel.AVAILABLE is True
+
+
+# ---------------------------------------------------------------------------
 # benchmark
 # ---------------------------------------------------------------------------
 def test_benchmark_speedup(game_states):
