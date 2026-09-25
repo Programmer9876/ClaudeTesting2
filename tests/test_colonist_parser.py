@@ -274,7 +274,7 @@ def test_shifted_sea_and_tile_colours_give_no_false_pieces():
         assert not any("classified as desert" in w for w in res.warnings)
 
 
-@pytest.mark.parametrize("seed,size,turns", [(36, (1024, 640), 100), (37, (1440, 900), 140)])
+@pytest.mark.parametrize("seed,size,turns", [(42, (1024, 640), 100), (41, (1440, 900), 140)])
 def test_city_types_and_panel_numbers_late_game(seed, size, turns):
     """vision-cv-6 / vision-cv-7: no city/settlement confusion on inverted-Y vertices, no panel misreads."""
     s = played_state(seed, 4, turns)

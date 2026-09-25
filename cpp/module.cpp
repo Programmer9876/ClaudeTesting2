@@ -313,7 +313,10 @@ PyObject* check(PyObject* o) {
     return o;
 }
 
-inline PyObject* incref(PyObject* o);
+inline PyObject* incref(PyObject* o) {
+    Py_INCREF(o);
+    return o;
+}
 
 // --- the IllegalActionError class ------------------------------------------------------
 // catanbot.engine.IllegalActionError itself (looked up lazily, after the package is imported),
@@ -592,11 +595,6 @@ const StateClasses& classes() {
 // object.__new__(cls): a bare instance, like GameState.copy() does.
 PyObject* new_instance(PyObject* cls) {
     return check(PyBaseObject_Type.tp_new((PyTypeObject*)cls, enames().empty_tuple, nullptr));
-}
-
-inline PyObject* incref(PyObject* o) {
-    Py_INCREF(o);
-    return o;
 }
 
 // Attribute stores / loads on one object.  Plain PyObject_SetAttr on purpose: storing straight
