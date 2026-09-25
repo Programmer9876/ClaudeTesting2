@@ -685,12 +685,16 @@ INFO_STAT_KEYS = ["info_samples", "info_uncertain", "info_errors", "info_resets"
 def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: int,
               trades: str = "off", opponent_params: Optional[Dict[str, str]] = None,
               our_seats: Optional[int] = None, game_range: Optional[Tuple[int, int]] = None,
-              vps_to_win: Optional[int] = None, discard_limit: Optional[int] = None) -> Dict[str, object]:
+              vps_to_win: Optional[int] = None, discard_limit: Optional[int] = None,
+              mixed: Optional[Sequence[str]] = None, info: Optional[Dict[str, object]] = None) -> Dict[str, object]:
     """Aggregate per-game records.  ``our_seats`` (1 = 1v3, 2 = 2v2; default: read from the
     records) switches the per-seat table to 2v2 (``by_seat``: games where the seat was ours /
     won by that seat; ``by_arrangement``: per turn-order pattern) and the per-seat compute
     figures to per catanbot seat.  Crashed games (``--rerun-crashes``) count as losses and are
-    not counted as turn-cap games."""
+    not counted as turn-cap games.  ``mixed`` (the ``--mixed-opponents`` presets) adds
+    ``format: "1v3-mixed"``, ``opponents`` and the ``mixed`` table (wins and average VP per
+    preset and for catanbot, games per preset and relative position); ``info`` is the
+    information mode (:func:`info_meta`, default ``{"mode": "full"}``)."""
     n = len(results)
     if our_seats is None:
         our_seats = max([len(r.get("our_seats") or [0]) for r in results] or [1])
@@ -738,7 +742,8 @@ def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: 
     out = {
         "spec": spec,
         "opponent": opponent,
-        "opponent_class": resolve_opponent(opponent).__name__,
+        "opponent_class": ("+".join(resolve_opponent(nm).__name__ for nm in mixed) if mixed
+                           else resolve_opponent(opponent).__name__),
         "opponent_params": dict(opponent_params or {}),
         "trades": trades,
         "catanatron": CATANATRON_VERSION,
@@ -764,6 +769,16 @@ def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: 
         "crashed_games": sum(1 for r in results if r.get("crashed")),
         "crash_attempts": sum(int(r.get("crashes", 0)) for r in results),
     }
+    out["info"] = dict(info) if info else {"mode": "full"}
+    if out["info"].get("mode", "full") != "full":
+        agg = {k: sum(int(r.get("info_stats", {}).get(k, 0)) for r in results) for k in INFO_STAT_KEYS}
+        agg["info_max_hypotheses"] = max([int(r.get("info_stats", {}).get("info_max_hypotheses", 0))
+                                          for r in results] or [0])
+        out["info_stats"] = agg
+    if mixed:
+        out["format"] = "1v3-mixed"
+        out["opponents"] = list(mixed)
+        out["mixed"] = mixed_table(results, mixed)
     if our_seats == 2:
         out["by_arrangement"] = {k: {"wins": w, "games": g} for k, (w, g) in by_arr.items()}
     if game_range is not None:
@@ -776,10 +791,42 @@ def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: 
     return out
 
 
+def mixed_table(results: List[Dict[str, object]], names: Sequence[str]) -> Dict[str, object]:
+    """Per-player figures of a ``--mixed-opponents`` run: ``wins`` (catanbot and every preset;
+    ``none`` = turn-cap / crashed games), ``win_rate``, ``avg_vp`` and ``positions``
+    (games per preset per relative position 1-3 after catanbot in turn order)."""
+    who = [CATANBOT] + [nm for nm in dict.fromkeys(names)]
+    wins = {k: 0 for k in who}
+    wins["none"] = 0
+    vps: Dict[str, List[int]] = {k: [] for k in who}
+    positions = {nm: {str(k): 0 for k in (1, 2, 3)} for nm in who[1:]}
+    for r in results:
+        w = r.get("winner_name")
+        wins[w if w in wins else "none"] += 1
+        lineup = r.get("lineup") or []
+        for seat, nm in enumerate(lineup):
+            if nm in vps and not r.get("crashed"):
+                vps[nm].append(int(r["vps"][seat]))
+        for k, nm in enumerate(r.get("relative") or [], start=1):
+            if nm in positions:
+                positions[nm][str(k)] += 1
+    n = len(results)
+    return {"wins": wins, "win_rate": {k: (wins[k] / n if n else 0.0) for k in who},
+            "avg_vp": {k: (sum(v) / len(v) if v else 0.0) for k, v in vps.items()},
+            "positions": positions}
+
+
 def _timing_row(label: str, t: Dict[str, float], c: Dict[str, float], games: int, seats: int, s_per_game: float) -> str:
     per = max(1, games * seats)
     return (f"    {label:<34} {t['n'] / per:8.1f} {t['mean_ms']:9.2f} {t['p95_ms']:9.2f}   | "
             f"{c['n'] / per:8.1f} {c['mean_ms']:9.2f} {c['p95_ms']:9.2f}   | {s_per_game:9.2f}")
+
+
+def _info_text(s: Dict[str, object]) -> str:
+    info = s.get("info") or {}
+    if info.get("mode", "full") == "full":
+        return ""
+    return f'info {info["mode"]} K={info.get("samples")}{" discards-public" if info.get("discards_public") else ""}, '
 
 
 def print_summary(s: Dict[str, object], wall: float) -> None:
@@ -802,10 +849,23 @@ def print_summary(s: Dict[str, object], wall: float) -> None:
         print(f"  by pattern  : {arr}   (C = catanbot, o = opponent, in turn order)")
         seats = ", ".join(f'seat{k} {v["wins"]}/{v["games"]}' for k, v in s["by_seat"].items())
         print(f"  by seat     : {seats}   (wins by that catanbot seat / games it was ours)")
+    elif s.get("mixed"):
+        mx = s["mixed"]
+        print(f'catanbot "{s["spec"]}" vs {" + ".join(s["opponents"])} ({s["opponent_class"]}){ptxt}: {s["games"]} '
+              f'games{rtxt}, mixed lineup (catanbot seat g%4, opponent order (g//4)%6), seed {s["seed"]} '
+              f'(catanatron {s.get("catanatron", CATANATRON_VERSION)}, trades {s.get("trades", "off")}, '
+              f'info {s.get("info", {}).get("mode", "full")}, PYTHONHASHSEED={s.get("hash_seed")})')
+        print(f'  wins        : catanbot {s["wins"]}/{s["games"]} = {100.0 * s["win_rate"]:.1f}%   (a random seat wins 25%)')
+        per = " | ".join(f'{k} {v}/{s["games"]} ({100.0 * mx["win_rate"].get(k, 0.0):.1f}%)'
+                         for k, v in mx["wins"].items() if k != "none")
+        print(f'  mixed wins  : {per} | no winner {mx["wins"]["none"]}')
+        print("  mixed VP    : " + " | ".join(f"{k} {v:.2f}" for k, v in mx["avg_vp"].items()))
+        pos = "; ".join(f'{k} ' + "/".join(str(v[p]) for p in ("1", "2", "3")) for k, v in mx["positions"].items())
+        print(f"  positions   : {pos}   (games at relative position 1/2/3 after catanbot)")
     else:
         print(f'catanbot "{s["spec"]}" vs 3 x {s["opponent_class"]}{ptxt}: {s["games"]} games{rtxt}, seat rotation, '
               f'seed {s["seed"]} (catanatron {s.get("catanatron", CATANATRON_VERSION)}, trades {s.get("trades", "off")}, '
-              f'PYTHONHASHSEED={s.get("hash_seed")})')
+              f'{_info_text(s)}PYTHONHASHSEED={s.get("hash_seed")})')
         print(f'  wins        : {s["wins"]}/{s["games"]} = {100.0 * s["win_rate"]:.1f}%   (a random seat wins 25%)')
         print(f'  avg VP      : catanbot {s["avg_vp"]:.2f} | opponents {s["avg_opp_vp"]:.2f} (best opponent {s["avg_best_opp_vp"]:.2f})')
         seats = ", ".join(f'seat{k} {v["wins"]}/{v["games"]}' for k, v in s["by_seat"].items())
@@ -826,6 +886,17 @@ def print_summary(s: Dict[str, object], wall: float) -> None:
           f'{int(st["unmapped_top"])} unmapped top actions, {int(st["observe_errors"])} observe errors, '
           f'{st["observed"] / n:.0f} observed actions/game{extra}'
           + (f'; unmapped top actions: {s["unmapped_kinds"]}' if s["unmapped_kinds"] else ""))
+    info = s.get("info") or {}
+    if info.get("mode", "full") != "full":
+        ist = s.get("info_stats") or {}
+        srch = max(1, int(st["searched"]))
+        print(f'  information : {info["mode"]} (K={info.get("samples")} determinizations per searched decision, '
+              f'discards {"public" if info.get("discards_public") else "hidden"}): '
+              f'{ist.get("hidden_steals", 0) / n:.1f} hidden steals, {ist.get("hidden_discards", 0) / n:.1f} hidden '
+              f'discard cards, {ist.get("hidden_dev_draws", 0) / n:.1f} hidden dev draws per game; opponents\' hands '
+              f'uncertain at {100.0 * ist.get("info_uncertain", 0) / srch:.1f}% of searched decisions (max '
+              f'{ist.get("info_max_hypotheses", 0)} hypotheses); {ist.get("info_errors", 0)} tracker errors, '
+              f'{ist.get("info_resets", 0)} belief resets')
     tt = s.get("trade_totals") or {}
     if s.get("trades", "off") != "off" and tt:
         answerable = tt["opp_accepted"] + tt["opp_rejected"]
