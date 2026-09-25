@@ -129,7 +129,13 @@ def resolve_opponent(name: str):
                                   "or an import path module:Class)")
     mod, cls = path.split(":", 1)
     try:
-        return getattr(importlib.import_module(mod), cls)
+        module = importlib.import_module(mod)
+        if hasattr(module, "USE_MULTIPROCESSING"):
+            # catanatron 3.3's GreedyPlayoutsPlayer opens a Pool(cpu_count()) per decision, which
+            # would exceed --workers and cannot run inside our (daemonic) worker processes; the
+            # seeded playouts give the same result in-process.
+            module.USE_MULTIPROCESSING = False
+        return getattr(module, cls)
     except (ImportError, AttributeError) as ex:
         hint = ("; the strong players need the 3.3 engine: pip install -e <GitHub clone of catanatron>"
                 if mod.startswith("catanatron.") else "")

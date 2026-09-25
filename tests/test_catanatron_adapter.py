@@ -1,5 +1,12 @@
-"""Tests for the catanatron <-> catanbot adapter (skipped when catanatron is not installed)."""
+"""Tests for the catanatron <-> catanbot adapter (skipped when catanatron is not installed).
+
+They run on catanatron 3.2.1 (PyPI wheel) and on the 3.3 engine (GitHub
+checkout); version-specific behaviour is selected by ``AD.API_33`` and the
+tests of features one version lacks skip with the reason.
+"""
 from __future__ import annotations
+
+import random
 
 import pytest
 
@@ -24,7 +31,17 @@ from catanbot.state import (  # noqa: E402
     PHASE_SETUP_SETTLEMENT,
 )
 
-ALL_TYPES = set(ActionType)
+# catanatron 3.3's domestic-trade actions never appear in ``playable_actions`` unless a
+# player *offers* a trade (no stock player does), so they cannot be round-tripped in a game.
+DOMESTIC_TRADE_TYPES = {t for t in ActionType
+                        if t.name in ("OFFER_TRADE", "ACCEPT_TRADE", "REJECT_TRADE", "CONFIRM_TRADE", "CANCEL_TRADE")}
+ALL_TYPES = set(ActionType) - DOMESTIC_TRADE_TYPES
+GAME_PROMPTS = set(ActionPrompt) - set(AD.TRADE_PROMPTS)
+API_33 = AD.API_33
+needs_33 = pytest.mark.skipif(not API_33, reason=f"catanatron {AD.CATANATRON_VERSION} has no 3.3 API "
+                                                  "(per-card discards / trade prompts)")
+needs_321 = pytest.mark.skipif(API_33, reason=f"catanatron {AD.CATANATRON_VERSION} is the 3.3 API "
+                                                "(no random DISCARD / hard-coded discard rule)")
 
 
 def fresh_game(seed: int = 123, seat_players=None):
@@ -193,7 +210,12 @@ def _check_conversion(g, m):
     elif prompt == ActionPrompt.DISCARD:
         assert cb.phase == PHASE_DISCARD and cb.dice == 7
         assert cb.discard_queue[0] == st.current_player_index
-        assert all(cb.players[j].total_resources > 7 for j in cb.discard_queue)
+        if API_33:  # the discarders (and their counts) were fixed at the roll; hands shrink card by card
+            assert all(st.discard_counts[j] > 0 for j in cb.discard_queue)
+            assert [j for j in range(len(st.colors)) if st.discard_counts[j] > 0
+                    and j >= st.current_player_index] == cb.discard_queue
+        else:
+            assert all(cb.players[j].total_resources > 7 for j in cb.discard_queue)
     elif prompt == ActionPrompt.MOVE_ROBBER:
         assert cb.phase == PHASE_ROBBER
     else:
@@ -222,10 +244,10 @@ def test_converted_states_match_catanatron_through_a_game():
         if g.winning_color() is not None:
             cb = AD.to_catanbot_state(g)
             assert cb.phase == "game_over" and g.state.colors[cb.winner] == g.winning_color()
-        if prompts == set(ActionPrompt):
+        if prompts == GAME_PROMPTS:
             break
     assert ticks > 100
-    assert prompts == set(ActionPrompt)
+    assert prompts == GAME_PROMPTS
 
 
 def test_me_color_must_be_seated():
@@ -246,9 +268,10 @@ def test_action_round_trips_for_every_action_type():
             st = g.state
             cb = AD.to_catanbot_state(g)
             legal = set(E.legal_actions(cb))
-            index = AD.index_playable(st.playable_actions)
-            assert len(index) == len(st.playable_actions)
-            for a in st.playable_actions:
+            playable = AD.playable_actions_of(g)
+            index = AD.index_playable(playable)
+            assert len(index) == len(playable)
+            for a in playable:
                 seen.add(a.action_type)
                 cb_action = AD.catanatron_action_to_catanbot(a, cb, m)
                 assert cb_action is not None or (a.action_type == ActionType.PLAY_KNIGHT_CARD
@@ -258,9 +281,9 @@ def test_action_round_trips_for_every_action_type():
                 key = AD.catanbot_action_to_key(cb_action, cb, m, st.colors)
                 assert key == AD.playable_key(a)
                 assert index[key] is a
-                # Whatever catanatron offers, catanbot's rules agree it is legal
-                # (except the engine-chosen random discard).
-                if a.action_type != ActionType.DISCARD:
+                # Whatever catanatron offers, catanbot's rules agree it is legal (except the
+                # discards: 3.2.1's is chosen by the engine, 3.3's is one card of the whole discard).
+                if a.action_type not in AD.DISCARD_TYPES:
                     assert cb_action in legal, (a, cb_action, cb.phase)
             # ... and every mappable catanbot action catanatron does not offer is one of the
             # two documented rule differences.
@@ -280,16 +303,30 @@ def test_logged_actions_convert_with_context():
     cb = AD.to_catanbot_state(g)
     colors = g.state.colors
     knight = AD.CAction(colors[0], ActionType.PLAY_KNIGHT_CARD, None)
-    robber = AD.CAction(colors[0], ActionType.MOVE_ROBBER, ((0, 0, 0), colors[1], "WOOD"))
+    # robber values: (coordinate, victim, stolen card) on 3.2.1, (coordinate, victim) on 3.3
+    stolen = () if API_33 else ("WOOD",)
+    robber = AD.CAction(colors[0], ActionType.MOVE_ROBBER, ((0, 0, 0), colors[1]) + stolen)
     assert AD.catanatron_action_to_catanbot(knight, cb, m) is None
     assert AD.catanatron_action_to_catanbot(robber, cb, m, knight) == (A.PLAY_KNIGHT, B.HEX_INDEX[(0, 0)], 1)
     assert AD.catanatron_action_to_catanbot(robber, cb, m, None) == (A.MOVE_ROBBER, B.HEX_INDEX[(0, 0)], 1)
-    nobody = AD.CAction(colors[0], ActionType.MOVE_ROBBER, ((1, -1, 0), None, None))
+    nobody = AD.CAction(colors[0], ActionType.MOVE_ROBBER, ((1, -1, 0), None) + (() if API_33 else (None,)))
     assert AD.catanatron_action_to_catanbot(nobody, cb, m) == (A.MOVE_ROBBER, m.coord_to_hex[(1, -1, 0)], -1)
+    assert AD.catanbot_action_to_key((A.MOVE_ROBBER, B.HEX_INDEX[(0, 0)], 1), cb, m, colors) == AD.playable_key(robber)
     roll = AD.CAction(colors[0], ActionType.ROLL, (3, 4))
     assert AD.catanatron_action_to_catanbot(roll, cb, m) == (A.ROLL, 7)
-    discard = AD.CAction(colors[0], ActionType.DISCARD, ["WOOD", "ORE", "ORE"])
-    assert AD.catanatron_action_to_catanbot(discard, cb, m) == (A.DISCARD, (1, 0, 0, 0, 2))
+    if API_33:
+        # one card per logged DISCARD_RESOURCE; a catanbot discard maps to its first card
+        discard = AD.CAction(colors[0], AD.DISCARD_RESOURCE, "ORE")
+        assert AD.catanatron_action_to_catanbot(discard, cb, m) == (A.DISCARD, (0, 0, 0, 0, 1))
+        assert AD.catanbot_action_to_key((A.DISCARD, (0, 0, 0, 0, 1)), cb, m, colors) == AD.playable_key(discard)
+        assert AD.catanbot_action_to_key((A.DISCARD, (0, 1, 0, 0, 2)), cb, m, colors) == (AD.DISCARD_RESOURCE, "BRICK")
+        assert AD.catanbot_action_to_key((A.DISCARD, (0, 0, 0, 0, 0)), cb, m, colors) is None
+    else:
+        discard = AD.CAction(colors[0], AD.DISCARD_LEGACY, ["WOOD", "ORE", "ORE"])
+        assert AD.catanatron_action_to_catanbot(discard, cb, m) == (A.DISCARD, (1, 0, 0, 0, 2))
+        prompt = AD.CAction(colors[0], AD.DISCARD_LEGACY, None)   # the engine's random discard
+        assert AD.catanatron_action_to_catanbot(prompt, cb, m) == (A.DISCARD, (0, 0, 0, 0, 0))
+        assert AD.catanbot_action_to_key((A.DISCARD, (1, 0, 0, 0, 2)), cb, m, colors) == AD.playable_key(prompt)
     trade = AD.CAction(colors[0], ActionType.MARITIME_TRADE, ("SHEEP", "SHEEP", "SHEEP", None, "ORE"))
     assert AD.catanatron_action_to_catanbot(trade, cb, m) == (A.BANK_TRADE, B.SHEEP, B.ORE)
     yop = AD.CAction(colors[0], ActionType.PLAY_YEAR_OF_PLENTY, ("ORE", "WOOD"))
@@ -320,8 +357,13 @@ def test_make_game_seats_players_in_order():
         g = AD.make_game(players, seed=seat + 1)
         assert g.state.colors == tuple(p.color for p in players)
         assert g.state.players == players
-        assert all(a.color == players[0].color for a in g.state.playable_actions)
+        playable = AD.playable_actions_of(g)
+        assert playable and all(a.color == players[0].color for a in playable)
         assert g.state.color_to_index[players[0].color] == 0
+        # the first tick must ask the first seated player (3.3 keeps the actions on the Game)
+        first = g.play_tick()
+        assert AD.log_action(AD.action_log(g.state)[-1]).color == players[0].color
+        assert AD.log_action(first).color == players[0].color
     with pytest.raises(ValueError):
         AD.make_game(players, seed=0)
 
@@ -359,7 +401,8 @@ def _hand_build(st, color, node=None, edge=None):
     if edge is not None:
         prev, road_color, road_lengths = st.board.build_road(color, edge)
         SF.build_road(st, color, edge, True)
-        SF.mantain_longest_road(st, prev, road_color, road_lengths)
+        maintain = getattr(SF, "maintain_longest_road", None) or SF.mantain_longest_road  # renamed in 3.3
+        maintain(st, prev, road_color, road_lengths)
 
 
 def test_road_ending_at_enemy_settlement_counts_in_catanbot_but_not_catanatron():
@@ -451,39 +494,86 @@ def test_longest_road_lengths_never_differ_by_more_than_one_through_games():
     assert award_ticks > 0
 
 
-def test_discard_queue_mirrors_catanatron_hard_coded_limit():
-    """Limitation 12: catanatron chooses the first discarder with ``discard_limit`` but the later
-    ones with a hard-coded ``> 7``; the converted ``discard_queue`` lists exactly the seats
-    catanatron goes on to prompt, for any limit."""
+def _roll_seven_with_hands(limit, hands):
+    """A game right after a 7 with every hand set to ``hands[i]`` wood and catanatron's ``discard_limit``."""
     from catanatron.models.enums import Action as CAction
-    try:
-        from catanatron.state import apply_action
-    except ImportError:
-        from catanatron.apply_action import apply_action
 
+    g = AD.make_game([WeightedRandomPlayer(c) for c in AD.COLORS], seed=11, discard_limit=limit)
+    st = g.state
+    assert st.discard_limit == limit
+    while not (st.current_prompt == ActionPrompt.PLAY_TURN
+               and not st.player_state[f"P{st.current_turn_index}_HAS_ROLLED"]):
+        g.play_tick()
+    for i in range(4):
+        for r in AD.CB_TO_RESOURCE:
+            st.player_state[f"P{i}_{r}_IN_HAND"] = 0
+        st.player_state[f"P{i}_WOOD_IN_HAND"] = hands[i]
+    roll = CAction(st.current_color(), ActionType.ROLL, (3, 4))
+    if API_33:  # 3.3 ignores the value of a ROLL unless the record fixes the dice
+        AD.apply_action(st, roll, AD.ActionRecord(action=roll, result=(3, 4)))
+    else:
+        AD.apply_action(st, roll)
+    assert AD.log_action(AD.action_log(st)[-1]).value == (3, 4)
+    return g
+
+
+def _prompted_discarders(g):
+    """Seats catanatron prompts to discard, in order (a 3.3 seat is prompted once per card)."""
+    from catanatron.models.enums import Action as CAction
+
+    st = g.state
+    prompted = []
+    while st.current_prompt == ActionPrompt.DISCARD:
+        if not prompted or prompted[-1] != st.current_player_index:
+            prompted.append(st.current_player_index)
+        if API_33:
+            AD.apply_action(st, CAction(st.current_color(), AD.DISCARD_RESOURCE, "WOOD"))
+        else:
+            AD.apply_action(st, CAction(st.current_color(), AD.DISCARD_LEGACY, None))
+    assert st.current_prompt == ActionPrompt.MOVE_ROBBER
+    return prompted
+
+
+@needs_321
+def test_discard_queue_mirrors_catanatron_hard_coded_limit():
+    """Limitation 12 (3.2.1): catanatron chooses the first discarder with ``discard_limit`` but the
+    later ones with a hard-coded ``> 7``; the converted ``discard_queue`` lists exactly the seats
+    catanatron goes on to prompt, for any limit."""
     for limit, hands in ((7, [9, 8, 7, 10]), (9, [10, 8, 6, 9]), (5, [6, 6, 8, 3]), (9, [4, 10, 8, 3])):
-        g = AD.make_game([WeightedRandomPlayer(c) for c in AD.COLORS], seed=11, discard_limit=limit)
+        g = _roll_seven_with_hands(limit, hands)
         st = g.state
-        assert st.discard_limit == limit
-        while not (st.current_prompt == ActionPrompt.PLAY_TURN
-                   and not st.player_state[f"P{st.current_turn_index}_HAS_ROLLED"]):
-            g.play_tick()
-        for i in range(4):
-            for r in AD.CB_TO_RESOURCE:
-                st.player_state[f"P{i}_{r}_IN_HAND"] = 0
-            st.player_state[f"P{i}_WOOD_IN_HAND"] = hands[i]
-        apply_action(st, CAction(st.current_color(), ActionType.ROLL, (3, 4)))
         assert st.current_prompt == ActionPrompt.DISCARD
         cb = AD.to_catanbot_state(g)
         assert cb.phase == PHASE_DISCARD and cb.discard_queue[0] == st.current_player_index
-        prompted = []
-        while st.current_prompt == ActionPrompt.DISCARD:
-            prompted.append(st.current_player_index)
-            apply_action(st, CAction(st.current_color(), ActionType.DISCARD, None))
+        prompted = _prompted_discarders(g)
         assert cb.discard_queue == prompted, (limit, hands, cb.discard_queue, prompted)
-        assert st.current_prompt == ActionPrompt.MOVE_ROBBER
     # the default limit is the one case where the two rules coincide
     assert [j for j in range(4) if [9, 8, 7, 10][j] > 7] == [0, 1, 3]
+
+
+@needs_33
+def test_discard_queue_follows_discard_counts():
+    """3.3 applies ``discard_limit`` to every discarder and fixes the counts at the roll: the
+    converted ``discard_queue`` is exactly the prompted seats, and it stays correct while a seat
+    is prompted card by card (the queue then starts at the seat still discarding)."""
+    from catanatron.models.enums import Action as CAction
+
+    for limit, hands in ((7, [9, 8, 7, 10]), (9, [10, 8, 6, 9]), (5, [6, 6, 8, 3]), (9, [4, 10, 8, 3])):
+        g = _roll_seven_with_hands(limit, hands)
+        st = g.state
+        assert st.current_prompt == ActionPrompt.DISCARD
+        expected = [j for j in range(4) if hands[j] > limit]
+        assert list(st.discard_counts) == [h // 2 if h > limit else 0 for h in hands]
+        cb = AD.to_catanbot_state(g)
+        assert cb.phase == PHASE_DISCARD and cb.discard_queue == expected
+        # half-way through the first seat's discards the queue still starts with that seat
+        AD.apply_action(st, CAction(st.current_color(), AD.DISCARD_RESOURCE, "WOOD"))
+        assert st.current_prompt == ActionPrompt.DISCARD and st.current_player_index == expected[0]
+        cb_mid = AD.to_catanbot_state(g)
+        assert cb_mid.discard_queue == expected
+        assert cb_mid.players[expected[0]].total_resources == hands[expected[0]] - 1
+        prompted = _prompted_discarders(g)
+        assert prompted == expected, (limit, hands, prompted)
 
 
 def test_merged_knight_observation_uses_the_state_before_the_knight():
@@ -522,3 +612,149 @@ def test_merged_knight_observation_uses_the_state_before_the_knight():
     robbers = [s for s in seen if s[1][0] == A.MOVE_ROBBER]
     assert robbers and all(s[0] == PHASE_ROBBER and s[3] for s in robbers)
     assert me._knight_state is None
+
+
+# ---------------------------------------------------------------------------
+# Discards and trade prompts across engine versions
+# ---------------------------------------------------------------------------
+SMALL_SPEC = "search:depth=1,beam=2,expand=4,actions=3,evaluator=heuristic"
+
+
+def test_observed_discards_are_whole_and_legal_in_their_state():
+    """Every DISCARD delivered to ``bot.observe`` is the *whole* discard (half the hand) and is
+    applicable in the state it comes with: 3.2.1 logs the card list in one action, 3.3 logs
+    one DISCARD_RESOURCE per card and the adapter merges the run."""
+    me = AD.CatanbotPlayer(AD.COLORS[0], spec=SMALL_SPEC, strict=True, seed=2)
+    seen = []
+    original = me.bot.observe
+
+    def recording_observe(state, action, seat):
+        if action[0] == A.DISCARD:
+            seen.append((state, action, seat))
+        return original(state, action, seat)
+
+    me.bot.observe = recording_observe
+    players = [WeightedRandomPlayer(c) if i != 0 else me for i, c in enumerate(AD.COLORS)]
+    for seed in range(41, 50):
+        res = AD.play_game(players, seed=seed)
+        assert me.stats["errors"] == 0 and me.stats["observe_errors"] == 0
+        assert res["actions"] > 0
+        if len(seen) >= 6 and any(s[2] != 0 for s in seen):
+            break
+    assert len(seen) >= 6
+    for state, action, seat in seen:
+        assert state.phase == PHASE_DISCARD and state.discard_queue[0] == seat
+        counts = action[1]
+        hand = state.players[seat].resources
+        assert sum(counts) == sum(hand) // 2 >= 4
+        assert all(0 <= counts[r] <= hand[r] for r in range(5))
+        after = E.apply(state, action, random.Random(0))      # accepted by catanbot's rules
+        assert after.players[seat].total_resources == sum(hand) - sum(counts)
+    if API_33:
+        assert me.stats["observed"] < res["actions"]   # runs were merged, not delivered card by card
+
+
+@needs_33
+def test_player_hands_over_its_planned_discard_card_by_card():
+    """3.3 prompts one DISCARD_RESOURCE at a time: the bot plans the whole discard once (on the
+    full hand) and the following prompts are answered from that plan without a new search."""
+    me = AD.CatanbotPlayer(AD.COLORS[1], spec=SMALL_SPEC, strict=True, seed=4)
+    events = []
+    bot_decide = me.bot.decide
+
+    def recording_decide(state, legal, rng):
+        chosen = bot_decide(state, legal, rng)
+        if chosen[0] == A.DISCARD:
+            assert state.phase == PHASE_DISCARD and all(a[0] == A.DISCARD for a in legal)
+            events.append(("plan", chosen[1], sum(state.players[1].resources)))
+        return chosen
+
+    me.bot.decide = recording_decide
+    player_decide = me.decide
+
+    def recording_player_decide(game, playable):
+        chosen = player_decide(game, playable)
+        if chosen.action_type == AD.DISCARD_RESOURCE:
+            events.append(("card", chosen.value))
+        return chosen
+
+    me.decide = recording_player_decide
+    players = [WeightedRandomPlayer(c) if i != 1 else me for i, c in enumerate(AD.COLORS)]
+    plans = 0
+    for seed in range(51, 66):
+        AD.play_game(players, seed=seed)
+        assert me.stats["errors"] == 0 and me.stats["observe_errors"] == 0 and me.stats["fallback"] == 0
+        plans = sum(1 for e in events if e[0] == "plan")
+        if plans >= 3:
+            break
+    assert plans >= 3
+    i = 0
+    cards_from_plans = 0
+    while i < len(events):
+        kind = events[i]
+        if kind[0] != "plan":
+            i += 1
+            continue   # a card without a plan: the hand held a single resource type (trivial prompt)
+        counts, hand_size = kind[1], kind[2]
+        n = sum(counts)
+        assert n == hand_size // 2
+        run = events[i + 1:i + 1 + n]
+        assert len(run) == n and all(e[0] == "card" for e in run), run
+        got = [0] * 5
+        for _, card in run:
+            got[AD.RESOURCE_TO_CB[card]] += 1
+        assert tuple(got) == tuple(counts)
+        cards_from_plans += n
+        i += 1 + n
+    assert me.stats["pending_discard"] >= cards_from_plans - plans
+    assert me._pending_discard == []
+
+
+@needs_33
+def test_trade_prompts_are_declined():
+    """3.3 domestic trades: a DECIDE_TRADE prompt is answered with REJECT_TRADE, a
+    DECIDE_ACCEPTEES prompt with CANCEL_TRADE, and both convert to the turn player's
+    PHASE_MAIN (catanbot has no phase for them; no stock player ever offers a trade)."""
+    from catanatron.models.enums import Action as CAction
+    from catanatron.models.actions import generate_playable_actions
+
+    offerer = AD.CatanbotPlayer(AD.COLORS[0], spec=SMALL_SPEC, strict=True, seed=1)
+    responder = AD.CatanbotPlayer(AD.COLORS[1], spec=SMALL_SPEC, strict=True, seed=2)
+    players = [offerer, responder, WeightedRandomPlayer(AD.COLORS[2]), WeightedRandomPlayer(AD.COLORS[3])]
+    g = AD.make_game(players, seed=21)
+    st = g.state
+    while not (st.current_prompt == ActionPrompt.PLAY_TURN and st.current_player_index == 0
+               and st.player_state["P0_HAS_ROLLED"] and not st.is_road_building):
+        g.play_tick()
+    for i in range(4):
+        for r in AD.CB_TO_RESOURCE:
+            st.player_state[f"P{i}_{r}_IN_HAND"] = 0
+    st.player_state["P0_WOOD_IN_HAND"] = 1
+    st.player_state["P1_BRICK_IN_HAND"] = 1
+    g.playable_actions = generate_playable_actions(st)
+    offer = (1, 0, 0, 0, 0, 0, 1, 0, 0, 0)     # one wood for one brick
+    g.execute(CAction(AD.COLORS[0], ActionType.OFFER_TRADE, offer))
+    assert st.current_prompt == ActionPrompt.DECIDE_TRADE and st.current_color() == AD.COLORS[1]
+    cb = AD.to_catanbot_state(g)
+    assert cb.phase == PHASE_MAIN and cb.current == 0 and E.legal_actions(cb)
+    answer = responder.decide(g, g.playable_actions)
+    assert answer.action_type == ActionType.REJECT_TRADE and answer in g.playable_actions
+    assert responder.stats["trade_prompts"] == 1 and responder.stats["errors"] == 0
+    # BLUE accepts after all, the others decline: RED (our offerer) is asked whom to trade with
+    g.execute(next(a for a in g.playable_actions if a.action_type == ActionType.ACCEPT_TRADE))
+    for _ in range(2):
+        assert st.current_prompt == ActionPrompt.DECIDE_TRADE
+        g.execute(next(a for a in g.playable_actions if a.action_type == ActionType.REJECT_TRADE))
+    assert st.current_prompt == ActionPrompt.DECIDE_ACCEPTEES and st.current_color() == AD.COLORS[0]
+    cb = AD.to_catanbot_state(g)
+    assert cb.phase == PHASE_MAIN and cb.current == 0
+    answer = offerer.decide(g, g.playable_actions)
+    assert answer.action_type == ActionType.CANCEL_TRADE and answer in g.playable_actions
+    assert offerer.stats["trade_prompts"] == 1 and offerer.stats["errors"] == 0
+    g.execute(answer)
+    assert st.current_prompt == ActionPrompt.PLAY_TURN and st.current_color() == AD.COLORS[0]
+    assert st.player_state["P0_WOOD_IN_HAND"] == 1 and st.player_state["P1_BRICK_IN_HAND"] == 1
+    # the logged trade actions have no catanbot equivalent and are skipped by observe, not counted as errors
+    before = offerer.stats["observed"]
+    offerer.decide(g, g.playable_actions)
+    assert offerer.stats["observe_errors"] == 0 and offerer.stats["observed"] == before
