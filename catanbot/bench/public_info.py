@@ -376,7 +376,7 @@ class PublicInfoTracker:
                         counts[RESOURCE_TO_CB[card]] += 1
                     c.observe_discard(actor, counts)
                 else:
-                    self.stats["hidden_discards"] += 1
+                    self.stats["hidden_discards"] += k      # cards (3.2.1 logs one action per discarder)
                     c.observe_discard(actor, n=k)
         elif t == ActionType.PLAY_MONOPOLY:
             res = RESOURCE_TO_CB[a.value]

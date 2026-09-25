@@ -337,6 +337,13 @@ def build_runs(args) -> Tuple[List[Dict[str, Any]], bool]:
     cand_extra = parse_overrides(args.cand_set)
     adapter = parse_kv(args.adapter_opt)
     adapter["trades"] = args.trades
+    info = getattr(args, "info", None) or "full"
+    if info != "full":
+        # only non-default information options enter the arm (full-information arm keys stay unchanged)
+        adapter["info"] = info
+        adapter["info_samples"] = int(getattr(args, "info_samples", None) or 4)
+        if getattr(args, "discards_public", False):
+            adapter["discards_public"] = True
     cand_adapter = dict(adapter, **parse_kv(args.cand_adapter_opt))
     runs: List[Dict[str, Any]] = []
     if args.tunable:
@@ -1352,6 +1359,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "see the adapter's TRADE_MODES): anything but off lets catanbot offer trades "
                         "(suppress_trades=False) and sets the opponents' answer rule (BenchOpponent.trade_rule); "
                         "--cand-adapter-opt trades=MODE changes it for the candidate arm only")
+    g.add_argument("--info", choices=("full", "counted"), default="full",
+                   help="information mode of both arms as in bench_catanatron.py --info (full = every card known, "
+                        "the default; counted = Colonist public information); --cand-adapter-opt info=counted "
+                        "switches the candidate arm only")
+    g.add_argument("--info-samples", type=int, default=4, metavar="K",
+                   help="--info counted: determinizations per searched decision (default 4)")
+    g.add_argument("--discards-public", action="store_true",
+                   help="--info counted: the cards of every discard are public")
     g.add_argument("--opponent-params", metavar="KEY=VAL,...",
                    help="constructor parameters of every opponent (bench_catanatron.py --opponent-params syntax)")
     g.add_argument("--opponent", help="bench_catanatron preset: value / alphabeta / sameturn (3.3), vf / ab / vp / "

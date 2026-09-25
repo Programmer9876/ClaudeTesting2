@@ -10,6 +10,8 @@ Usage::
     python3 scripts/bench_catanatron.py --ladder strong --games 20 --workers 2
     python3 scripts/bench_catanatron.py --list-opponents
     python3 scripts/bench_catanatron.py --probe-trades 200 --opponent value,alphabeta,random
+    python3 scripts/bench_catanatron.py --games 24 --info counted [--info-samples 4] [--discards-public]
+    python3 scripts/bench_catanatron.py --games 24 --mixed-opponents value,alphabeta,sameturn
 
 Every game seats one :class:`catanbot.bench.catanatron_adapter.CatanbotPlayer`
 (built from ``--spec``, see ``catanbot.selfplay.make_bot``) against three
@@ -92,6 +94,25 @@ Strength-proof options (``docs/PROOF_PROTOCOL.md``, ``scripts/run_proof.sh``):
 * ``--rerun-crashes``: a game that raises is re-played once with the same
   seed; a second crash is recorded as a loss (``crashed``) instead of
   aborting the run.  Every crash is counted (``crashes``, ``crash_errors``).
+
+Information mode (``docs/BENCHMARKS.md`` "Information modes"):
+``--info full`` (default) hands catanbot catanatron's true state, every hand
+and development card known; ``--info counted`` gives it only what a
+Colonist.io player knows (public events counted from the action log, hidden
+cards sampled: ``--info-samples K`` determinizations per searched decision,
+default 4; ``--discards-public`` shows the cards of every discard).  The mode
+is recorded in the JSON (``info``) with the tracker's counters (``info_stats``).
+
+Mixed opponents: ``--mixed-opponents value,alphabeta,sameturn`` (any three
+presets) seats catanbot in seat ``g % 4`` as usual and one copy of each preset
+in the other seats, in the order ``(g // 4) % 6`` of the six permutations
+(relative positions 1-3 after catanbot in turn order), so any 24 consecutive
+games put every preset in every relative position equally often.  Every game
+records its ``lineup`` (preset per seat), ``relative`` order and
+``winner_name``; the summary (``format: "1v3-mixed"``, ``opponents``) reports
+wins and average VP per preset besides catanbot's (``mixed``).  Composes with
+``--info``, ``--game-range`` chunks, ``--hash-seed`` and ``--log-actions``
+(1v3 only).
 """
 from __future__ import annotations
 
@@ -840,7 +861,7 @@ def print_summary(s: Dict[str, object], wall: float) -> None:
     if two:
         print(f'2 x catanbot "{s["spec"]}" vs 2 x {s["opponent_class"]}{ptxt}: {s["games"]} games{rtxt}, '
               f'6-arrangement rotation, seed {s["seed"]} (catanatron {s.get("catanatron", CATANATRON_VERSION)}, '
-              f'trades {s.get("trades", "off")}, PYTHONHASHSEED={s.get("hash_seed")})')
+              f'trades {s.get("trades", "off")}, {_info_text(s)}PYTHONHASHSEED={s.get("hash_seed")})')
         print(f'  wins        : {s["wins"]}/{s["games"]} = {100.0 * s["win_rate"]:.1f}%   '
               f'(games won by either catanbot seat; the 2v2 null is 50%)')
         print(f'  avg VP      : catanbot seats {s["avg_vp"]:.2f} | opponent seats {s["avg_opp_vp"]:.2f} '
@@ -1153,11 +1174,32 @@ def main(argv=None, reexec: bool = False) -> int:
     ap.add_argument("--rerun-crashes", action="store_true",
                     help="re-play a game that raises once with the same seed; a second crash is recorded as a loss "
                          "(crashed) instead of aborting")
+    ap.add_argument("--info", choices=INFO_MODES, default="full",
+                    help="what catanbot may know: full (default: catanatron's true state, every hand and dev card) | "
+                         "counted (a Colonist.io player's information: public events counted from the action log, "
+                         "hidden cards sampled; see docs/BENCHMARKS.md 'Information modes')")
+    ap.add_argument("--info-samples", type=int, default=DEFAULT_INFO_SAMPLES, metavar="K",
+                    help=f"--info counted: determinizations searched per decision (default {DEFAULT_INFO_SAMPLES})")
+    ap.add_argument("--discards-public", action="store_true",
+                    help="--info counted: the cards of every discard on a 7 are public (default: count only)")
+    ap.add_argument("--mixed-opponents", default=None, metavar="A,B,C",
+                    help="1 catanbot seat (g %% 4) + one copy of each of these three presets, ordered in the other "
+                         "seats by permutation (g // 4) %% 6; reports wins per preset (format 1v3-mixed)")
     args = ap.parse_args(argv)
     if args.game_range is not None and args.game_offset:
         ap.error("--game-range and --game-offset are mutually exclusive")
     if args.game_offset < 0:
         ap.error("--game-offset must be >= 0")
+    if args.info_samples < 1:
+        ap.error("--info-samples must be >= 1")
+    mixed = parse_mixed(args.mixed_opponents)
+    if mixed is not None:
+        if len(mixed) != len(COLORS) - 1:
+            ap.error(f"--mixed-opponents needs exactly {len(COLORS) - 1} presets (one per opponent seat), got {mixed}")
+        if args.our_seats != 1:
+            ap.error("--mixed-opponents is a 1v3 format (--our-seats 1)")
+        if args.ladder:
+            ap.error("--mixed-opponents and --ladder are mutually exclusive")
 
     if reexec:
         _reexec_with_hash_seed(args.hash_seed)
@@ -1177,6 +1219,17 @@ def main(argv=None, reexec: bool = False) -> int:
 
     opponents = LADDERS[args.ladder] if args.ladder else [o.strip() for o in args.opponent.split(",") if o.strip()]
     single = args.ladder is None and len(opponents) == 1
+    if mixed is not None:
+        for name in mixed:
+            try:
+                opponent_factory(resolve_opponent(name), opp_params, name)
+            except OpponentUnavailable as ex:
+                print(ex.message, file=sys.stderr)
+                return 2
+        opponents = [",".join(mixed)]   # one run: the lineup changes per game
+        single = True
+    info_opts = {"info": args.info, "info_samples": args.info_samples, "discards_public": args.discards_public}
+    info = info_meta(info_opts)
 
     if args.probe_trades:
         probe = run_probe(opponents, args.probe_trades, args.seed, opp_params, args.vps_to_win)
@@ -1188,29 +1241,42 @@ def main(argv=None, reexec: bool = False) -> int:
         return 0 if probe["table"] else 2
 
     summaries: List[Dict[str, object]] = []
+    itxt = "" if args.info == "full" else (f", info {args.info} K={args.info_samples}"
+                                           + (" discards-public" if args.discards_public else ""))
     for opponent in opponents:
-        try:
-            cls = resolve_opponent(opponent)
-            opponent_factory(cls, opp_params, opponent)
-        except OpponentUnavailable as ex:
-            if single:
-                print(ex.message, file=sys.stderr)
-                return 2
-            print(f"skipping {opponent}: {ex.message}")
-            continue
+        if mixed is None:
+            try:
+                cls = resolve_opponent(opponent)
+                opponent_factory(cls, opp_params, opponent)
+            except OpponentUnavailable as ex:
+                if single:
+                    print(ex.message, file=sys.stderr)
+                    return 2
+                print(f"skipping {opponent}: {ex.message}")
+                continue
         ptxt = f" [{args.opponent_params}]" if opp_params else ""
         indices = game_indices(args.games, args.game_offset, args.game_range)
         ranged = args.game_range is not None or args.game_offset
         gtxt = f"games {indices.start}..{indices.stop - 1}" if ranged else f"{len(indices)} games"
-        if args.our_seats == 2:
+        if mixed is not None:
+            print(f"== catanbot [{args.spec}] vs {' + '.join(mixed)} (mixed lineup){ptxt}, {gtxt}, "
+                  f"catanatron {CATANATRON_VERSION}, trades {args.trades}{itxt}, "
+                  f"PYTHONHASHSEED={os.environ.get('PYTHONHASHSEED')}")
+        elif args.our_seats == 2:
             print(f"== 2x catanbot [{args.spec}] vs 2x {cls.__name__} ({opponent}){ptxt}, {gtxt}, 2v2 arrangements, "
-                  f"catanatron {CATANATRON_VERSION}, trades {args.trades}, "
+                  f"catanatron {CATANATRON_VERSION}, trades {args.trades}{itxt}, "
                   f"PYTHONHASHSEED={os.environ.get('PYTHONHASHSEED')}")
         else:
             print(f"== catanbot [{args.spec}] vs 3x {cls.__name__} ({opponent}){ptxt}, {gtxt}, "
-                  f"catanatron {CATANATRON_VERSION}, trades {args.trades}, PYTHONHASHSEED={os.environ.get('PYTHONHASHSEED')}")
+                  f"catanatron {CATANATRON_VERSION}, trades {args.trades}{itxt}, "
+                  f"PYTHONHASHSEED={os.environ.get('PYTHONHASHSEED')}")
         opts = {"our_seats": args.our_seats, "log": bool(args.log_actions), "rerun_crashes": args.rerun_crashes}
-        if args.our_seats == 1 and not args.log_actions and not args.rerun_crashes:
+        if args.info != "full":
+            opts.update(info_opts)
+        if mixed is not None:
+            opts["mixed"] = list(mixed)
+        if (args.our_seats == 1 and not args.log_actions and not args.rerun_crashes and args.info == "full"
+                and mixed is None):
             opts = None   # the plain 1v3 job tuple of earlier versions
         jobs = [(g, args.seed, args.spec, opponent, args.vps_to_win, args.discard_limit, args.trades, opp_params)
                 + ((opts,) if opts else ()) for g in indices]
@@ -1219,7 +1285,8 @@ def main(argv=None, reexec: bool = False) -> int:
         log_bytes = 0
         if args.log_actions:
             os.makedirs(args.log_actions, exist_ok=True)
-            log_path = action_log_path(args.log_actions, opponent, args.our_seats, args.seed, indices)
+            log_path = action_log_path(args.log_actions, opponent, args.our_seats, args.seed, indices,
+                                       fmt="1v3-mixed" if mixed is not None else None)
             open(log_path, "wb").close()   # a re-run of the same games replaces the earlier (partial) log
         t0 = time.perf_counter()
 
@@ -1235,9 +1302,10 @@ def main(argv=None, reexec: bool = False) -> int:
                         if args.trades != "off" else "")
                 where = f'seat {r["seat"]}' if args.our_seats == 1 else f'seats {r["pattern"]}'
                 crash = f' CRASHED x{r["crashes"]}' if r.get("crashes") else ""
+                mtxt = (f' lineup={"/".join(r["lineup"])} winner={r.get("winner_name")}' if r.get("lineup") else "")
                 print(f'  game {r["game"]:3d} {where} seed {r["seed"]}: '
                       f'{"WIN " if r["won"] else "loss"} vp={r["vps"]} turns={r["turns"]} {r["duration"]:.1f}s{ttxt}'
-                      f'{crash}', flush=True)
+                      f'{mtxt}{crash}', flush=True)
 
         if args.workers > 1 and len(jobs) > 1:
             ctx = mp.get_context("fork")
@@ -1257,10 +1325,12 @@ def main(argv=None, reexec: bool = False) -> int:
         results.sort(key=lambda r: r["game"])
         wall = time.perf_counter() - t0
         if args.our_seats == 1 and not ranged:
-            summary = summarize(results, args.spec, opponent, args.seed, args.trades, opp_params)
+            summary = summarize(results, args.spec, opponent, args.seed, args.trades, opp_params,
+                                mixed=mixed, info=info)
         else:
             summary = summarize(results, args.spec, opponent, args.seed, args.trades, opp_params,
-                                our_seats=args.our_seats, game_range=(indices.start, indices.stop))
+                                our_seats=args.our_seats, game_range=(indices.start, indices.stop),
+                                mixed=mixed, info=info)
         summary["vps_to_win"] = args.vps_to_win
         summary["discard_limit"] = args.discard_limit
         summary["wall_time"] = wall
