@@ -163,6 +163,19 @@ __all__ = [
     "timing_summary",
     "make_game",
     "play_game",
+    "LOG_FORMAT",
+    "encode_log_entry",
+    "decode_log_action",
+    "decode_log_result",
+    "encode_board",
+    "decode_board",
+    "state_summary",
+    "state_fingerprint",
+    "game_log_header",
+    "game_log",
+    "rebuild_game",
+    "replay_log_action",
+    "ReplayMismatch",
 ]
 
 DEFAULT_SPEC = "search:depth=1,evaluator=heuristic"
@@ -1567,7 +1580,8 @@ class BenchOpponent(Player):
 # ---------------------------------------------------------------------------
 # Game helpers
 # ---------------------------------------------------------------------------
-def make_game(players: Sequence[Player], seed: int, vps_to_win: int = 10, discard_limit: int = 7) -> Game:
+def make_game(players: Sequence[Player], seed: int, vps_to_win: int = 10, discard_limit: int = 7,
+              catan_map: Optional[CatanMap] = None) -> Game:
     """``Game`` with ``players`` seated exactly in the given order.
 
     catanatron shuffles the seating with the game seed; since no action has been
@@ -1575,10 +1589,16 @@ def make_game(players: Sequence[Player], seed: int, vps_to_win: int = 10, discar
     reordered deterministically (``seed`` must be non-zero: catanatron treats 0
     as "pick a random seed").  ``discard_limit`` is catanatron's (it only
     governs who discards *first* on a 7, see :func:`state_to_catanbot`).
+    ``catan_map`` replaces the random board (used to rebuild a logged game,
+    :func:`rebuild_game`); ``None`` keeps catanatron's seeded random board.
     """
     if not seed:
         raise ValueError("seed must be non-zero (catanatron treats 0 as random)")
-    game = Game(list(players), seed=seed, vps_to_win=vps_to_win, discard_limit=discard_limit)
+    if catan_map is None:
+        game = Game(list(players), seed=seed, vps_to_win=vps_to_win, discard_limit=discard_limit)
+    else:
+        game = Game(list(players), seed=seed, vps_to_win=vps_to_win, discard_limit=discard_limit,
+                    catan_map=catan_map)
     st = game.state
     if list(st.players) != list(players):
         st.players = list(players)
@@ -1593,17 +1613,32 @@ def make_game(players: Sequence[Player], seed: int, vps_to_win: int = 10, discar
 
 
 def play_game(players: Sequence[Player], seed: int, vps_to_win: int = 10,
-              discard_limit: int = 7) -> Dict[str, object]:
-    """Play one seated game to the end; returns a summary dict (winner may be ``None`` at the turn cap)."""
+              discard_limit: int = 7, record_log: bool = False) -> Dict[str, object]:
+    """Play one seated game to the end; returns a summary dict (winner may be ``None`` at the turn cap).
+
+    ``record_log=True`` adds ``"log"``: the replayable record of :func:`game_log`
+    (board, initial development deck, every action with its chance outcome, final
+    state).  If the game raises, the partial record is attached to the exception
+    as ``game_log`` before it propagates.
+    """
     for p in players:
         if hasattr(p, 'reset_state'):
             p.reset_state()
     game = make_game(players, seed, vps_to_win, discard_limit)
+    header = game_log_header(game) if record_log else None
     t0 = time.perf_counter()
-    winner = game.play()
+    try:
+        winner = game.play()
+    except Exception as ex:
+        if header is not None:
+            try:
+                ex.game_log = game_log(game, header, crashed=True)
+            except Exception:   # noqa: BLE001 - never mask the original error
+                pass
+        raise
     st = game.state
     vps = [int(st.player_state[f"P{i}_ACTUAL_VICTORY_POINTS"]) for i in range(len(st.colors))]
-    return {
+    res = {
         "seed": seed,
         "winner": winner.value if winner is not None else None,
         "winner_seat": st.color_to_index[winner] if winner is not None else -1,
@@ -1613,3 +1648,6 @@ def play_game(players: Sequence[Player], seed: int, vps_to_win: int = 10,
         "actions": len(action_log(st)),
         "duration": time.perf_counter() - t0,
     }
+    if header is not None:
+        res["log"] = game_log(game, header)
+    return res
