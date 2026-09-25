@@ -447,6 +447,15 @@ def test_campaign_runs_resumes_and_summarises(tmp_path):
     assert prog["complete"] and prog["games"] == 24 and prog["remaining"] == 0 and prog["rate"]
 
 
+def test_campaign_holm_adjustment():
+    camp = _load("campaign_holm_under_test", CAMPAIGN)
+    assert abs(camp.two_sided_p(1.959964 * 0.02, 0.02) - 0.05) < 1e-6
+    assert camp.two_sided_p(0.0, 0.0) == 1.0 and camp.two_sided_p(float("nan"), 0.1) == 1.0
+    adj = camp.holm({"a": 0.01, "b": 0.04, "c": 0.03})
+    assert adj == pytest.approx({"a": 0.03, "c": 0.06, "b": 0.06})   # step-down, monotone
+    assert camp.holm({}) == {}
+
+
 def test_campaign_plan_validation_and_command(tmp_path):
     camp = _load("campaign_under_test2", CAMPAIGN)
     plan = tmp_path / "p.json"

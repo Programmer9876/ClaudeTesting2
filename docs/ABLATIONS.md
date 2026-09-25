@@ -50,7 +50,9 @@ python3 scripts/ablate.py --sweep-all --kinds weight,flag --only danger.TURNS_HA
   into the results block of `--out` (between the `ablate:results` markers).
 * Evaluator mode.  `heuristic.static_value` has a bit-exact C++ port (`cpp/heuristic.cpp`) that
   reads **no Python constants**, so a tunable read by the evaluator (`heuristic.EXPOSURE_WEIGHT`,
-  `placement.RESOURCE_DEMAND`; `needs_python_evaluator` in the registry) only takes effect on the
+  `placement.RESOURCE_DEMAND`, and - flagged since 2026-09-25, see "Adversarial verification" below -
+  `placement.PLACEMENT_BLOCK_WEIGHT` / `PLACEMENT_ROBBER_Q`, which `static_value` reads through
+  `score_settlement_spot`; `needs_python_evaluator` in the registry) only takes effect on the
   Python evaluator.  For such tunables the script re-executes itself with `CATANBOT_NO_ACCEL=1`
   set *before* `catanbot` is imported (`catanbot/accel.py` reads it at import time) so **both**
   sides run the Python evaluator, and prints `evaluator mode: python (CATANBOT_NO_ACCEL=1)`.
@@ -155,8 +157,8 @@ Defaults are read from the modules at import time (the registry never hard-codes
 | `trading.accept_margin` | weight | 0.002 | 0, 0.01, 0.03 |  |  | base win-probability gain should_accept demands (the margin parameter's default) |
 | `trading.feed_leader_guard` | flag | on | off |  |  | off: the don't-feed-the-leader rule never fires (offer_is_feeding_leader patched in trading and heuristic; search/opponent_model import it lazily from trading) |
 | `placement.RESOURCE_DEMAND` | weight | 0.934579/0.934579/0.841121/1.16822/1.1215 | 1/1/1/1/1, 0.833333/0.833333/0.740741/1.2963/1.2963, 1.10577/1.10577/0.865385/0.961538/0.961538 | yes |  | per-resource demand weights wood/brick/sheep/wheat/ore (mean 1; values a/b/c/d/e); mutated in place, also read by static_value so it needs the Python evaluator |
-| `placement.PLACEMENT_BLOCK_WEIGHT` | weight | 1 | 0, 0.5, 2 |  |  | weight of the robber-exposure penalty in settlement scoring |
-| `placement.PLACEMENT_ROBBER_Q` | weight | 0.35 | 0, 0.175, 0.7 |  |  | probability scale of the robber landing on a strong hex |
+| `placement.PLACEMENT_BLOCK_WEIGHT` | weight | 1 | 0, 0.5, 2 | yes |  | weight of the robber-exposure penalty in settlement scoring (also read by static_value, so it needs the Python evaluator) |
+| `placement.PLACEMENT_ROBBER_Q` | weight | 0.35 | 0, 0.175, 0.7 | yes |  | probability scale of the robber landing on a strong hex (also read by static_value, so it needs the Python evaluator) |
 | `devcards.KNIGHT_VALUE` | weight | 0.55 | 0.3, 0.8 |  |  | VP-equivalent value of a drawn knight in should_buy_dev |
 | `devcards.MONOPOLY_BASE_VALUE` | weight | 0.6 | 0.3, 0.9 |  |  | base VP-equivalent value of a drawn monopoly |
 | `search.trade_proposals` | search | 3 | 0, 1, 5 |  | yes | PROPOSE_TRADE candidates per node (0 = never propose) |
@@ -322,6 +324,13 @@ the late-game trade damping may be slightly too strong (stage drop 0.0 /
 the right side (removing it -1.7 pp, halving it -2.5 pp).  Knight value,
 dump candidates and the feed-the-leader guard are neutral at this sample
 size in self-play.
+
+Caveat (found 2026-09-25, see "Adversarial verification" at the end): the
+`placement.PLACEMENT_BLOCK_WEIGHT` rows above ran with the C++ evaluator
+(13 ms/decision), whose port of `static_value` hard-codes the constant, so the
+override only reached the Python-side move priors, not the evaluator.  The
+tunable is now flagged `needs_python_evaluator`; re-measure it (and
+`PLACEMENT_ROBBER_Q`) before reading anything into the -1.7 / -2.5 pp.
 
 ## Paired ablations against Catanatron
 
@@ -538,3 +547,94 @@ of games can move the win rate by at most `f`, and its paired s.e. is at most `s
 at `f = 0.1`, 2000 seeds), so thousands of seeds are needed and the possible effect is small.  The
 search knobs, the evaluator weights and the placement demand vector change almost every game and are
 where a 2000-seed run can find 3-4 pp.  (Win rates in this 20-seed pilot are noise: +-10 pp s.e.)
+
+### Adversarial verification (2026-09-25, 4 cores, no other benchmark running)
+
+Scratch data: `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/campaign/verify/`.
+
+**Pairing is real.**  A/A with a candidate equal to the default (`--tunable danger.TURNS_HALF --values 3.0`,
+which still goes through ParamBot's apply/restore): 10/10 identical games (winner, VPs, turns, full
+action-log hash) vs `value` on 3.3 and 10/10 vs `vf` on 3.2.1.  The same seeds replayed in a fresh
+process with `--workers 1` and a different seed order: 5/5 identical per arm on both engines.  All
+throughput runs below were played at `--workers 2` and again at `--workers 3`: 340/340 games identical,
+alphabeta included.  With a real candidate an independent checker (full action logs, not the harness's
+checkpoints) found the first differing log entry to be a catanbot action with a different action in
+10/10 diverged pairs vs `value` (`search.beam=2`), 10/10 vs `vf` (`search.beam=2`) and 2/2 vs `value`
+(`danger.BLOCK_FLOOR=0`).  No source of nondeterminism was found (3.3 draws dice from `game.state.random`;
+3.2.1 from the global `random`, which no catanbot or stand-in code touches; catanbot draws from its own
+seeded `rng`).
+
+**Fixed: false "inconsistent" pairs.**  The tracer recorded only decisions in which the bot was consulted.
+A knight whose victim differs between the arms logs the same `PLAY_KNIGHT_CARD` in both, and the games part
+at the adapter's follow-up `MOVE_ROBBER` (played from `_pending_robber` without consulting the bot); the
+3.3 per-card discard has the same shape.  Such pairs (1 in 10 vs `value`, 1 in 10 vs `vf`) were reported
+"inconsistent" although only our own decision made them diverge.  The tracer now also records follow-ups
+(`[index, hash, 1]`, records carry `ours_v: 2`; older records are compared on consulted decisions only),
+and the same runs report 10/10 consistent.
+
+**Statistics and resume.**  `--tunable search.expand --values 4,12` vs `vf`, 80 seeds: delta, paired
+s.e. (also via the discordant-pair formula), 95% CI, VP delta / s.e. / CI, wins, concordance and the
+per-seat deltas recomputed from the JSONL by hand match the report to the last digit.  The same command
+killed with SIGTERM at 30 s, then with SIGKILL at 25 s, then finished: 240 records, no duplicate
+(arm, seed), every game identical to the uninterrupted run and identical statistics.  Campaign: a
+3-experiment plan (3.2.1 `vf`, 3.3 `value`, 3.3 `value` with a Python-evaluator tunable) run in a budgeted
+chunk, `--status`, resumed, re-run (no new games), summary rows correct; a 4th experiment sharing the
+default arm reused 10 default games.  Changed: `--status` borrowed an ETA rate across experiments with the
+same interpreter/opponent even when one needs the Python evaluator (3-4x slower); it now borrows only
+within the same interpreter, opponent, opponent params, trade mode and evaluator.
+
+**Multiple comparisons (added to the campaign summary).**  Every row's verdict is a 95% test; a campaign
+with ~60 candidate rows produces ~3 "better"/"worse" verdicts by chance.  SUMMARY.md now has a `Holm p`
+column (two-sided normal p, Holm-adjusted over the rows with >= 30 pairs).  Budget for it: at 2000 seeds and
+s.e. 1.3 pp a single test detects ~3.6 pp with 80% power, a Holm-corrected one over 60 rows ~5.4 pp; a
+surviving row should still be confirmed on fresh seeds (`seeds.base`).
+
+**Fixed: two tunables were silently half-applied.**  `static_value` reads `placement.PLACEMENT_BLOCK_WEIGHT`
+and `PLACEMENT_ROBBER_Q` (via `score_settlement_spot`), but `cpp/heuristic.cpp` has `constexpr` copies, so
+with the extension loaded the override reached only the Python-side move priors.  Measured: `=0` changed
+14/20 games vs `vf` with the Python evaluator but 5/20 with the C++ one; the C++ and Python static values
+differ under both overrides and agree bit for bit at the defaults.  Both are now `needs_python_evaluator`
+(the scripts re-exec with `CATANBOT_NO_ACCEL=1`), and `tests/test_ablate.py::test_cpp_static_value_constants_are_flagged`
+checks every non-search tunable against the C++ static value.  The self-play sweep-2 rows and the 15/20
+pilot counts for these two were measured half-applied.  (`cpp/policy.cpp` also hard-codes the danger
+constants, but only for the native opponent simulation, which runs at depth >= 2.)
+
+**Trading.**  40 games vs 3x `value` with `--trades value` (seed 11): 0 adapter errors, 0 fallbacks,
+0 unmapped actions; 1,680 offers played, every one accepted by the engine.  10 games with a checker after
+every engine tick: 434 offers, all with cards the offerer held and at most 4 per turn; after each of the 92
+`CONFIRM_TRADE`s catanbot's own engine applied to the pre-confirm state predicted exactly catanatron's hands
+and bank; at all 1,636 catanbot decisions the adapter's shadow state and the converted state matched
+catanatron's hands, bank and dev cards; 685 end-of-turn checks matched.  Re-measured on 100 fresh offers
+(my positions and sampler): catanatron `value` rejected 100/100; `alphabeta` raised
+`RuntimeError: Unknown ActionType REJECT_TRADE` on 100/100.  Our value rule accepted 33/100 (1:1 6/34,
+2:1 21/33, 1:2 6/33) and my re-implementation of it agreed with `BenchOpponent.rule_accepts` on all 100.
+Conclusion: trade-related tunables cannot be tested against Catanatron's own players - they never accept
+(native mode can only waste compute) - and with `--trades value` / `fair` they are tested against our
+myopic answer rule, which accepted 13.9% of catanbot's answerable offers (not a blanket accept, so not a
+bug exploit, but also not Catanatron behaviour; `value` even accepts 18% of 1-for-2 offers against itself).
+Report such results as "vs value-rule responders".  Side observation: catanbot cancels about a quarter of
+the offers someone accepted (34 of 126 in the 10 games).
+
+**Openings on the 3.3 adapter path.**  20 seeds x {search bot, heuristic bot} x {standin_book,
+pips_diversity, denial, denial:2, setup_pick}, catanbot seat vs 3x `value`, ParamBot exactly as the harness
+builds it: all 800 setup decisions equal `openings.choose(state, legal, policy)`; before and after every
+decision (and after the games) nothing is patched (`installed() == "current"`, `heuristic.setup_pick` /
+`setup_road_pick` / `SearchBot.decide` are the original objects).  Decisions that differ from the current
+opening: search bot 44-55 of 80 per policy (setup_pick 46), heuristic bot 48-49 for standin_book /
+pips_diversity, 7 for denial, 14 for denial:2, 0 for setup_pick (the null check).
+
+**Throughput for the planner** (games/hour, both arms counted, default spec; `--seed-base 5000`; the
+machine was otherwise idle, load ~1.9 at 2 workers and ~2.6-2.9 at 3):
+
+| engine / opponent | experiment | 2 workers | 3 workers | s / game (2 w) | 2000 seeds x 2 arms at 2 w / 3 w |
+|---|---|---|---|---|---|
+| 3.3 `value` | danger.TURNS_HALF=2 (80 games) | 4,140 | 6,110 | 1.7 | 1.0 h / 0.65 h |
+| 3.3 `value` | heuristic.EXPOSURE_WEIGHT=0, Python evaluator (32) | 1,320 | 1,960 | 5.0-5.5 | 3.0 h / 2.0 h |
+| 3.3 `value` | search.trade_proposals=0 with `--trades value` (40) | 2,320 | 3,550 | 3.9 default / 2.1 cand | 1.7 h / 1.1 h |
+| 3.3 `alphabeta` | danger.TURNS_HALF=2 (4 / 6 games) | 320 | 470 | 16-22 | 12.5 h / 8.5 h |
+| 3.2.1 `vf` | danger.TURNS_HALF=2 (120) | 6,360 | 9,390 | 1.1 | 0.6 h / 0.4 h |
+| 3.2.1 `vf` | heuristic.EXPOSURE_WEIGHT=0, Python evaluator (40) | 2,300 | 3,250 | 3.0 | 1.7 h / 1.2 h |
+| 3.2.1 `ab` | danger.TURNS_HALF=2 (24) | 1,120 | 1,580 | 6.1 | 3.6 h / 2.5 h |
+
+3 workers give ~1.45x the 2-worker rate on an idle 4-core machine; with the other benchmark on 2 cores,
+use 2.  The alphabeta row rests on 4-6 games.

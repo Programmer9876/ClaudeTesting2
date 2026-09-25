@@ -28,6 +28,42 @@ def _load_script():
 # ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
+def test_cpp_static_value_constants_are_flagged():
+    """Every tunable that changes ``heuristic.static_value`` must be flagged ``needs_python_evaluator``: the C++
+    port (cpp/heuristic.cpp) hard-codes its constants, so with the extension loaded an unflagged override would
+    silently reach only the Python-side code (the C++ static value keeps the default)."""
+    from catanbot import accel, engine as E
+    if not accel.AVAILABLE:
+        pytest.skip("C++ extension not built / disabled")
+    rng = random.Random(5)
+    states = []
+    for g in range(3):
+        s = new_game(4, rng=random.Random(200 + g))
+        bots = [HeuristicBot(temperature=0.3) for _ in range(4)]
+        k = 0
+        while not E.is_terminal(s) and k < 500 and len(states) < 8 * (g + 1):
+            a = bots[E.acting_player(s)].decide(s, E.legal_actions(s), rng)
+            if s.turn > 15 and k % 23 == 0:
+                states.append(s.copy() if hasattr(s, "copy") else __import__("copy").deepcopy(s))
+            s = E.apply(s, a, rng)
+            k += 1
+    assert states
+    for s in states:     # the port is bit-identical at the defaults
+        for p in range(4):
+            assert abs(heuristic.static_value(s, p) - accel.static_value(s, p)) <= 1e-9
+    unflagged = []
+    for name, t in tuning.TUNABLES.items():
+        if t.kind == "search" or t.needs_python_evaluator:
+            continue
+        for v in t.candidates:
+            with tuning.overridden({name: v}):
+                if any(abs(heuristic.static_value(s, p) - accel.static_value(s, p)) > 1e-9
+                       for s in states for p in range(4)):
+                    unflagged.append(f"{name}={t.format(v)}")
+                    break
+    assert unflagged == [], f"static_value reads these but the C++ port ignores them: {unflagged}"
+
+
 def test_registry_resolves_to_real_attributes():
     assert tuning.verify_registry() == []
     required = {"danger.TURNS_HALF", "danger.BLOCK_FLOOR", "danger.BLOCK_NEED", "danger.danger_multiplier",
@@ -47,6 +83,8 @@ def test_registry_resolves_to_real_attributes():
     assert tuning.TUNABLES["heuristic.EXPOSURE_WEIGHT"].default == 0.25
     for name in ("PLACEMENT_BLOCK_WEIGHT", "PLACEMENT_ROBBER_Q"):
         assert (f"placement.{name}" in tuning.TUNABLES) == hasattr(placement, name)
+        if hasattr(placement, name):   # static_value reads it; cpp/heuristic.cpp has a constexpr copy
+            assert tuning.TUNABLES[f"placement.{name}"].needs_python_evaluator
     assert tuning.find("TURNS_HALF") is tuning.TUNABLES["danger.TURNS_HALF"]
     for name in ("search.opp_roll_samples", "search.opponent_actions", "search.opponent_expand", "search.opponent_proposals"):
         assert tuning.TUNABLES[name].requires_depth == 2      # Searcher._future_values only runs at depth >= 2

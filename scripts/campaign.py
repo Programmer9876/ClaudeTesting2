@@ -331,7 +331,39 @@ def pct(x: Optional[float]) -> str:
     return "n/a" if x is None or (isinstance(x, float) and math.isnan(x)) else f"{100 * x:.1f}"
 
 
+def two_sided_p(delta: float, se: float) -> float:
+    """Two-sided p-value of a paired delta under the normal approximation (1.0 when undefined)."""
+    if delta is None or se is None or math.isnan(delta) or math.isnan(se):
+        return 1.0
+    if se <= 0:
+        return 1.0 if delta == 0 else 0.0
+    return math.erfc(abs(delta / se) / math.sqrt(2.0))
+
+
+def holm(pvals: Dict[Any, float]) -> Dict[Any, float]:
+    """Holm-Bonferroni adjusted p-values (family = the keys of ``pvals``)."""
+    items = sorted(pvals.items(), key=lambda kv: kv[1])
+    m = len(items)
+    out: Dict[Any, float] = {}
+    running = 0.0
+    for i, (k, pv) in enumerate(items):
+        running = max(running, min(1.0, (m - i) * pv))
+        out[k] = running
+    return out
+
+
 def summary_markdown(exps: List[Dict[str, Any]], d: str, plan: str) -> str:
+    rows: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any]]] = []
+    for e in exps:
+        p = progress(e, d)
+        if not p["exists"] or not p["runs"]:
+            rows.append((e, None, None, p))
+            continue
+        for x in p["per_run"]:
+            rows.append((e, x, AB.run_stats(p["index"], x["run"]), p))
+    family = {i: two_sided_p(st["delta"], st["se"]) for i, (_, _, st, _) in enumerate(rows)
+              if st is not None and st["pairs"] >= AB.MIN_VERDICT_PAIRS}
+    adj = holm(family)
     lines = [f"# Campaign summary: paired ablations against Catanatron",
              "",
              f"Plan `{plan}`, results `{d}`, written {time.strftime('%Y-%m-%d %H:%M:%S')}.  One row per candidate: "
@@ -343,41 +375,45 @@ def summary_markdown(exps: List[Dict[str, Any]], d: str, plan: str) -> str:
              "the two times are not comparable), `opp ms` = the opponents' mean decision time.  `ident` = pairs whose two games were identical (the change never altered a decision).  A verdict "
              "needs >= 30 pairs; `stopped` = sequential stop (--stop-at-se), whose estimate is biased away from 0.",
              "",
+             f"Multiple comparisons: the verdict column is a per-row 95% test, so among the {len(family)} rows with "
+             f">= {AB.MIN_VERDICT_PAIRS} pairs about {0.05 * len(family):.1f} 'better'/'worse' verdicts are expected "
+             "by chance alone.  `Holm p` is the row's two-sided p-value (normal approximation) adjusted with "
+             "Holm's method over those rows: act on a verdict whose Holm p < 0.05, or confirm it on fresh seeds "
+             "(`seeds.base` / --seed-base) before adopting it.",
+             "",
              "| prio | experiment | candidate | default | opponent | engine | pairs / planned | cand win % | def win % "
-             "| delta (pp) +- s.e. | 95% CI (pp) | dVP +- s.e. | ms/dec c / d | opp ms c / d | ident | verdict | status |",
-             "|" + "---|" * 17]
-    for e in exps:
-        p = progress(e, d)
-        if not p["exists"] or not p["runs"]:
+             "| delta (pp) +- s.e. | 95% CI (pp) | Holm p | dVP +- s.e. | ms/dec c / d | opp ms c / d | ident | verdict "
+             "| status |",
+             "|" + "---|" * 18]
+    for i, (e, x, st, p) in enumerate(rows):
+        if x is None:
             state = "not started" if p["last_exit"] in (None, 0) else \
                 f"FAILED (exit {p['last_exit']}, see logs/{e['name']}.log)"
             lines.append(f"| {e['priority']} | {e['name']} | {e.get('tunable') or e.get('cand_spec')} | | {e['opponent']} "
-                         f"| {e['interpreter']} | 0 / {e['seeds']['count']} | | | | | | | | | | {state} |")
+                         f"| {e['interpreter']} | 0 / {e['seeds']['count']} | | | | | | | | | | | {state} |")
             continue
-        index = p["index"]
-        for x in p["per_run"]:
-            run = x["run"]
-            st = AB.run_stats(index, run)
-            lo, hi = st["ci95"]
-            ctx = run.get("ctx") or {}
-            status = "stopped early" if x["stopped"] else ("done" if x["done"] >= e["seeds"]["count"] else
-                                                          f"running ({x['done']}/{e['seeds']['count']})")
-            if st["errors"]:
-                status += f", {st['errors']} error pair(s)"
-            if p["last_exit"] not in (None, 0):
-                status += f", last attempt FAILED (exit {p['last_exit']})"
-            cand = run["cand"]["label"]
-            dflt = run["def"]["label"]
-            vpd = "n/a" if math.isnan(st["vp_delta"]) else f"{st['vp_delta']:+.2f}"
-            lines.append(
-                f"| {e['priority']} | {e['name']} | `{cand}` | `{dflt}` | {ctx.get('opponent', e['opponent'])} | "
-                f"{ctx.get('catanatron', '?')} | {st['pairs']} / {e['seeds']['count']} | {pct(st['win_rate_cand'])} | "
-                f"{pct(st['win_rate_def'])} | {AB.fmt_pp(st['delta']).replace('pp', '')} +- "
-                f"{pct(st['se'])} | [{pct(lo)}, {pct(hi)}] | "
-                f"{vpd} +- {AB.fmt(st['vp_se'])} | {AB.fmt(st['ms_cand'], 1)} / {AB.fmt(st['ms_def'], 1)}"
-                f"{'' if st.get('timing_coplayed', True) else ' (reused)'} | "
-                f"{AB.fmt(st['opp_ms_cand'], 1)} / {AB.fmt(st['opp_ms_def'], 1)} | {st['identical']}/{st['pairs']} | "
-                f"{st['verdict']} | {status} |")
+        run = x["run"]
+        lo, hi = st["ci95"]
+        ctx = run.get("ctx") or {}
+        status = "stopped early" if x["stopped"] else ("done" if x["done"] >= e["seeds"]["count"] else
+                                                      f"running ({x['done']}/{e['seeds']['count']})")
+        if st["errors"]:
+            status += f", {st['errors']} error pair(s)"
+        if p["last_exit"] not in (None, 0):
+            status += f", last attempt FAILED (exit {p['last_exit']})"
+        cand = run["cand"]["label"]
+        dflt = run["def"]["label"]
+        vpd = "n/a" if math.isnan(st["vp_delta"]) else f"{st['vp_delta']:+.2f}"
+        hp = f"{adj[i]:.3g}" if i in adj else "n/a"
+        lines.append(
+            f"| {e['priority']} | {e['name']} | `{cand}` | `{dflt}` | {ctx.get('opponent', e['opponent'])} | "
+            f"{ctx.get('catanatron', '?')} | {st['pairs']} / {e['seeds']['count']} | {pct(st['win_rate_cand'])} | "
+            f"{pct(st['win_rate_def'])} | {AB.fmt_pp(st['delta']).replace('pp', '')} +- "
+            f"{pct(st['se'])} | [{pct(lo)}, {pct(hi)}] | {hp} | "
+            f"{vpd} +- {AB.fmt(st['vp_se'])} | {AB.fmt(st['ms_cand'], 1)} / {AB.fmt(st['ms_def'], 1)}"
+            f"{'' if st.get('timing_coplayed', True) else ' (reused)'} | "
+            f"{AB.fmt(st['opp_ms_cand'], 1)} / {AB.fmt(st['opp_ms_def'], 1)} | {st['identical']}/{st['pairs']} | "
+            f"{st['verdict']} | {status} |")
     return "\n".join(lines) + "\n"
 
 

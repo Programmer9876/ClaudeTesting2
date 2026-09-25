@@ -1,0 +1,144 @@
+{
+  "defaults": {"workers": 3, "reuse": true, "game_timeout": 600},
+  "experiments": [
+    {"name": "t1_baseline_aa@value", "priority": 10, "interpreter": "py330", "opponent": "value",
+     "cand_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+     "def_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+     "seeds": {"count": 2000, "base": 0},
+     "notes": "TIER 1 #1 baseline: the default bot, 1 seat vs 3x catanatron 3.3 ValueFunctionPlayer. Its default arm is the reference every later value experiment reuses (same arm key). Played as an A/A (candidate = default), so every pair must be identical (ident = pairs, delta exactly 0); anything else means nondeterminism and invalidates the pairing. Baseline s.e. about 1.1 pp at 2000 games. 4000 games at 6110 g/h (3 workers): 0.65 h."},
+
+    {"name": "t1_search_vs_heur@value", "priority": 11, "interpreter": "py330", "opponent": "value",
+     "cand_spec": "heuristic:temp=0",
+     "def_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+     "seeds": {"count": 2000, "base": 0}, "stop_at_se": 0.015, "stop_min_pairs": 1000,
+     "notes": "TIER 1 #2: is the depth-1 search worth it vs catanatron? Candidate = the greedy heuristic bot (the search bot's own priors, no search). Default arm reused from t1_baseline_aa@value. Only 2000 heuristic games: estimated at 0.6x a search game (not measured), 0.19 h (0.33 h if as slow as the default)."},
+
+    {"name": "t1_trades0_vrule@value", "priority": 12, "interpreter": "py330", "opponent": "value",
+     "tunable": "search.trade_proposals", "values": [0], "trades": "value",
+     "seeds": {"count": 2000, "base": 0}, "stop_at_se": 0.015, "stop_min_pairs": 1000,
+     "notes": "TIER 1 #3: trade proposals 3 (default) vs 0, the self-play +17.5 pp result. Under --trades value, the only mode the verification judged honest: catanatron's own players never accept (value always rejects, alphabeta raises). Answers come from OUR value rule (accept iff the responder's own catanatron value function rises), so report this row as 'vs value-rule responders', never as 'vs Catanatron'. Own default arm (trading on); tier-2 trade rows reuse it. 2000 x (1.33 + 0.70) s = 1.13 h at 3550 g/h, less if the sequential stop fires."},
+
+    {"name": "t1_openings@value", "priority": 13, "interpreter": "py330", "opponent": "value",
+     "tunable": "openings.policy", "values": ["standin_book", "pips_diversity", "denial", "setup_pick"],
+     "seeds": {"count": 2000, "base": 0}, "stop_at_se": 0.015, "stop_min_pairs": 1000,
+     "notes": "TIER 1 #4: the three opening policies vs the current search opening (default arm reused). setup_pick is the control: the current heuristic ranking forced without search in setup. Every non-current policy also switches the search off in setup, so read each policy against setup_pick as well; that contrast is the difference of the two rows on the same seeds (paired per seed from this JSONL). The lever targets seats 2-3: read the 'by seat' line of `ablate_catanatron.py --report --out <dir>/t1_openings@value.jsonl`. 8000 candidate games at 0.59 s: 1.31 h."},
+
+    {"name": "t1_depth2@value", "priority": 14, "interpreter": "py330", "opponent": "value",
+     "tunable": "search.depth", "values": [2],
+     "seeds": {"count": 2000, "base": 0}, "stop_at_se": 0.015, "stop_min_pairs": 1000,
+     "notes": "TIER 1 #5: de-noised depth 2 vs depth 1 against value (so far measured only vs our stand-ins: -1.7 +- 2.1 pp vs vf over 840 games). Default arm reused; the candidate is about 2.4x as slow (pilot: 4.0 vs 1.6-2.0 s/game). 2000 x 1.41 s = 0.78 h. Its ms/decision is compared against reused default games, which ran at another time and load (marked '(reused)')."},
+
+    {"name": "t1_blockw0_pyeval@value", "priority": 15, "interpreter": "py330", "opponent": "value",
+     "tunable": "placement.PLACEMENT_BLOCK_WEIGHT", "values": [0.0],
+     "seeds": {"count": 2000, "base": 0}, "stop_at_se": 0.015, "stop_min_pairs": 1000,
+     "notes": "TIER 1 #6: blockability weight 0 vs 1 (the self-play -1.7 pp was measured half-applied on the C++ evaluator). Needs the Python evaluator (re-exec with CATANBOT_NO_ACCEL=1), so both arms run about 3x slower and the C++ default arm cannot be reused. This experiment plays the Python-evaluator default arm that t2_exposure0_pyeval@value reuses. 4000 games at 1960 g/h: 2.04 h."},
+
+    {"name": "t1_baseline_aa@vf", "priority": 20, "interpreter": "py321", "opponent": "vf",
+     "cand_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+     "def_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+     "seeds": {"count": 2000, "base": 0},
+     "notes": "TIER 1 replicate on catanatron 3.2.1 vs our in-engine ValueFunction stand-in (vf, stronger than catanatron's value: about 25% vs 64%). A/A baseline and the default arm for the vf rows. 4000 games at 9390 g/h: 0.43 h."},
+
+    {"name": "t1_search_vs_heur@vf", "priority": 21, "interpreter": "py321", "opponent": "vf",
+     "cand_spec": "heuristic:temp=0",
+     "def_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+     "seeds": {"count": 2000, "base": 0}, "stop_at_se": 0.015, "stop_min_pairs": 1000,
+     "notes": "TIER 1 #2 on vf. 2000 heuristic games, estimated 0.6x a search game: 0.13 h."},
+
+    {"name": "t1_openings@vf", "priority": 22, "interpreter": "py321", "opponent": "vf",
+     "tunable": "openings.policy", "values": ["standin_book", "pips_diversity", "denial", "setup_pick"],
+     "seeds": {"count": 2000, "base": 0}, "stop_at_se": 0.015, "stop_min_pairs": 1000,
+     "notes": "TIER 1 #4 on vf, where the seat weakness was measured (31% of wins from seats 0-1 vs 18% from seats 2-3). standin_book is exactly the stand-ins' own opening book (mirror openings). 8000 candidate games at 0.38 s: 0.85 h."},
+
+    {"name": "t1_blockw0_pyeval@vf", "priority": 23, "interpreter": "py321", "opponent": "vf",
+     "tunable": "placement.PLACEMENT_BLOCK_WEIGHT", "values": [0.0],
+     "seeds": {"count": 2000, "base": 0}, "stop_at_se": 0.015, "stop_min_pairs": 1000,
+     "notes": "TIER 1 #6 on vf (Python evaluator on both arms). 4000 games at 3250 g/h: 1.23 h."},
+
+    {"name": "t2_danger_mult_off@value", "priority": 30, "interpreter": "py330", "opponent": "value",
+     "tunable": "danger.danger_multiplier", "flag_off": true,
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2, self-play showed nothing (+2.5 +- 4.6 pp). Robber targeting by VP threat only. Changed 2/20 games vs vf in the pilot: the effect is capped by the share of games it changes (s.e. <= sqrt(f/n)). Default arm reused. 0.16 h."},
+
+    {"name": "t2_block_need0@value", "priority": 31, "interpreter": "py330", "opponent": "value",
+     "tunable": "danger.BLOCK_NEED", "values": [0.0],
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2, self-play showed nothing (+1.7 +- 4.6 pp). Default 2.0; 0 switches the need bonus off. Changed 1/20 games vs vf. 0.16 h."},
+
+    {"name": "t2_turns_half2@value", "priority": 32, "interpreter": "py330", "opponent": "value",
+     "tunable": "danger.TURNS_HALF", "values": [2.0],
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2, self-play showed nothing (+0.0 +- 4.6 pp). Default 3.0. 2.0 is the value known to act vs value (changed 3/40 games in the throughput runs; 4.5 changed 0/10). 0.16 h."},
+
+    {"name": "t2_max_slack0_vrule@value", "priority": 33, "interpreter": "py330", "opponent": "value",
+     "tunable": "politics.MAX_SLACK", "values": [0.0], "trades": "value",
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2, self-play showed nothing (-3.3 +- 4.6 pp). Favour slack 0. It only acts through trades (20/20 identical with trading off), here through search.py's trade_willingness on catanbot's own proposals. Hence --trades value: report as 'vs value-rule responders'. Default arm reused from t1_trades0_vrule@value. 1000 x 1.33 s = 0.37 h."},
+
+    {"name": "t2_coal_scale2_vrule@value", "priority": 34, "interpreter": "py330", "opponent": "value",
+     "tunable": "coalitions.SCALE", "values": [2.0], "trades": "value",
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2, self-play showed nothing (+0.8 / +1.7 pp for 0.25 / 1.0). Default 0.5; 2.0 makes coalition signals about 16x weaker (close to coalitions off). 20/20 identical with trading off, so run under --trades value ('vs value-rule responders'). 0.37 h."},
+
+    {"name": "t2_feed_leader_off_vrule@value", "priority": 35, "interpreter": "py330", "opponent": "value",
+     "tunable": "trading.feed_leader_guard", "flag_off": true, "trades": "value",
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2, self-play showed nothing (+0.8 +- 4.6 pp). The don't-feed-the-leader rule also drives opponent_model's prediction of who accepts catanbot's offers. 20/20 identical with trading off, so run under --trades value ('vs value-rule responders'). 0.37 h."},
+
+    {"name": "t2_knight03@value", "priority": 36, "interpreter": "py330", "opponent": "value",
+     "tunable": "devcards.KNIGHT_VALUE", "values": [0.3],
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2, self-play showed nothing (+0.8 +- 4.6 pp). Default 0.55. Changed 2/20 games vs vf. 0.16 h."},
+
+    {"name": "t2_exposure0_pyeval@value", "priority": 37, "interpreter": "py330", "opponent": "value",
+     "tunable": "heuristic.EXPOSURE_WEIGHT", "values": [0.0],
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2, not measured in self-play (changed 13/20 games vs vf). Needs the Python evaluator: 1960 instead of 6110 g/h (3.1x per game). It reuses the Python-evaluator default arm of t1_blockw0_pyeval@value, so only 1000 candidate games: 0.51 h (1.02 h alone, vs 0.16 h for a C++ term)."},
+
+    {"name": "t2_dump0@value", "priority": 38, "interpreter": "py330", "opponent": "value",
+     "tunable": "search.dump_candidates", "values": [0],
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2, self-play showed nothing (+0.0 +- 4.6 pp). Surplus dumps with more than 7 cards off. Changed 8/20 games vs vf. 0.16 h."},
+
+    {"name": "t2_late_drop0_vrule@value", "priority": 39, "interpreter": "py330", "opponent": "value",
+     "tunable": "opponent_model.stage_late_drop", "values": [0.0], "trades": "value",
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2, self-play weak signal only (+4.2 +- 4.6 pp, within noise). Trade willingness never drops late. Acts only through trades (20/20 identical with trading off), so run under --trades value ('vs value-rule responders'). 0.37 h."},
+
+    {"name": "t2x_beam2@value", "priority": 40, "interpreter": "py330", "opponent": "value",
+     "tunable": "search.beam", "values": [2],
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2 extra (not in the requested list; the harness pilot flagged it): beam 2 instead of 4, a cheaper search. Changes almost every game, so it is a place where the win rate can move. Set enabled:false to drop. 0.16 h or less."},
+
+    {"name": "t2x_expand4@value", "priority": 41, "interpreter": "py330", "opponent": "value",
+     "tunable": "search.expand", "values": [4],
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2 extra (not in the requested list; the harness pilot flagged it): expand 4 instead of 8, a cheaper search. Set enabled:false to drop. 0.16 h or less."},
+
+    {"name": "t3_search_vs_heur@alphabeta", "priority": 50, "interpreter": "py330", "opponent": "alphabeta",
+     "cand_spec": "heuristic:temp=0",
+     "def_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+     "seeds": {"count": 400, "base": 100000}, "game_timeout": 1800, "enabled": false,
+     "notes": "TIER 3 confirmation vs catanatron's AlphaBetaPlayer (depth 2), fresh seeds. Enable only if t1_search_vs_heur@value has Holm p < 0.05. At s.e. about 3.3 pp it confirms the direction and effects of 9 pp or more. Throughput rests on 4-6 measured games (470 g/h at 3 workers). The first enabled t3 row plays the alphabeta default arm (0.85 h); others reuse it. 1.70 h including that arm."},
+
+    {"name": "t3_trades0_vrule@alphabeta", "priority": 51, "interpreter": "py330", "opponent": "alphabeta",
+     "tunable": "search.trade_proposals", "values": [0], "trades": "value",
+     "seeds": {"count": 400, "base": 100000}, "game_timeout": 1800, "enabled": false,
+     "notes": "TIER 3. Enable only if t1_trades0_vrule@value has Holm p < 0.05. Answers from the value rule using alphabeta's own value function (native alphabeta raises on every offer), so this is still 'vs value-rule responders'. Own default arm (trading on). About 1.8 h."},
+
+    {"name": "t3_openings@alphabeta", "priority": 52, "interpreter": "py330", "opponent": "alphabeta",
+     "tunable": "openings.policy", "values": ["standin_book", "pips_diversity", "denial", "setup_pick"],
+     "seeds": {"count": 400, "base": 100000}, "game_timeout": 1800, "enabled": false,
+     "notes": "TIER 3. Enable only for the policies whose t1_openings@value row has Holm p < 0.05: trim 'values' to those, plus setup_pick as the control. 0.85 h per candidate (3.4 h for all four), plus 0.85 h for the default arm if no earlier t3 row played it."},
+
+    {"name": "t3_depth2@alphabeta", "priority": 53, "interpreter": "py330", "opponent": "alphabeta",
+     "tunable": "search.depth", "values": [2],
+     "seeds": {"count": 400, "base": 100000}, "game_timeout": 1800, "enabled": false,
+     "notes": "TIER 3. Enable only if t1_depth2@value has Holm p < 0.05. About 0.96 h, plus 0.85 h for the default arm if no earlier t3 row played it."},
+
+    {"name": "t3_blockw0_pyeval@alphabeta", "priority": 54, "interpreter": "py330", "opponent": "alphabeta",
+     "tunable": "placement.PLACEMENT_BLOCK_WEIGHT", "values": [0.0],
+     "seeds": {"count": 400, "base": 100000}, "game_timeout": 1800, "enabled": false,
+     "notes": "TIER 3. Enable only if t1_blockw0_pyeval@value has Holm p < 0.05. Python evaluator on both arms, so no default reuse. About 2.1 h."}
+  ]
+}

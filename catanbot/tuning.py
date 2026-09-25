@@ -22,9 +22,16 @@ How an override is installed
   set on the bot's own ``config`` object (:func:`apply_to_bot`), which is what the bot spec
   ``search:depth=...,beam=...`` would have done.  Search knobs only exist on the search bot.
 * ``needs_python_evaluator``: the constant is (also) read by ``heuristic.static_value``,
-  whose C++ port (``cpp/heuristic.cpp``) reads no Python constants.  Such a tunable only
-  takes effect with ``CATANBOT_NO_ACCEL=1`` set *before* ``catanbot`` is imported;
-  ``scripts/ablate.py`` re-executes itself with that variable when needed.
+  whose C++ port (``cpp/heuristic.cpp``) reads no Python constants (it has ``constexpr``
+  copies: ``EXPOSURE_WEIGHT``, ``RESOURCE_DEMAND``, ``PLACEMENT_BLOCK_WEIGHT``,
+  ``PLACEMENT_ROBBER_Q``).  Such a tunable only takes effect with ``CATANBOT_NO_ACCEL=1``
+  set *before* ``catanbot`` is imported; ``scripts/ablate.py`` and
+  ``scripts/ablate_catanatron.py`` re-execute themselves with that variable when needed.
+  ``cpp/policy.cpp`` likewise hard-codes ``danger.TURNS_HALF`` / ``BLOCK_FLOOR`` /
+  ``BLOCK_NEED`` and the danger multiplier for the native opponent simulation
+  (``SearchConfig.native_future``), which only runs at depth >= 2: a danger ablation with a
+  depth-2 base spec changes the simulated opponents only with the Python search
+  (``CATANBOT_NO_ACCEL=1`` or ``CATANBOT_NO_NATIVE_SEARCH=1``).
 
 Cross-talk between the two sides of a paired game is prevented by applying the
 overrides only inside the candidate bot's own hooks (see ``agents/param_bot.py``) and by
@@ -350,12 +357,17 @@ def _build_registry() -> Dict[str, Tunable]:
         needs_python_evaluator=True, make=_normalised, parse=_parse_vector,
         description="per-resource demand weights wood/brick/sheep/wheat/ore (mean 1; values a/b/c/d/e); "
                     "mutated in place, also read by static_value so it needs the Python evaluator")
+    # static_value scores settlement spots with placement.score_settlement_spot, whose blockability term reads
+    # these two constants; the C++ port (cpp/heuristic.cpp) has constexpr copies, so with the extension loaded an
+    # override only reached the Python-side priors (measured: =0 changed 14/20 games vs catanatron's vf with the
+    # Python evaluator, 5/20 with the C++ one) -> needs the Python evaluator, like RESOURCE_DEMAND.
     for attr, desc in (("PLACEMENT_BLOCK_WEIGHT", "weight of the robber-exposure penalty in settlement scoring"),
                        ("PLACEMENT_ROBBER_Q", "probability scale of the robber landing on a strong hex")):
         if hasattr(placement, attr):     # being added by another change; skip gracefully when absent
             d = live(placement, attr)
             add(name=f"placement.{attr}", module=placement.__name__, attr=attr, default=d,
-                candidates=_scaled(d, [0.0, 0.5, 2.0]), description=desc)
+                candidates=_scaled(d, [0.0, 0.5, 2.0]), needs_python_evaluator=True,
+                description=desc + " (also read by static_value, so it needs the Python evaluator)")
     # --- dev cards ---------------------------------------------------------------------------
     add(name="devcards.KNIGHT_VALUE", module=devcards.__name__, attr="KNIGHT_VALUE", default=live(devcards, "KNIGHT_VALUE"),
         candidates=[0.3, 0.8], description="VP-equivalent value of a drawn knight in should_buy_dev")
