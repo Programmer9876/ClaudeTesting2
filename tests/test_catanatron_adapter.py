@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("catanatron")
 
-from catanatron.game import TURNS_LIMIT  # noqa: E402
+from catanatron.game import TURNS_LIMIT, Game  # noqa: E402
 from catanatron.models.enums import CITY, ROAD, SETTLEMENT, ActionPrompt, ActionType  # noqa: E402
 from catanatron.models.map import CatanMap  # noqa: E402
 from catanatron.models.player import Color  # noqa: E402
@@ -398,6 +398,62 @@ def test_make_game_seats_players_in_order():
         assert AD.log_action(first).color == players[0].color
     with pytest.raises(ValueError):
         AD.make_game(players, seed=0)
+
+
+def _native_game_seated(players, seed):
+    """catanatron's own ``Game`` with its seat shuffle forced to ``players``' order.
+
+    The shuffle still runs (same random draws consumed: module-level ``random`` on
+    3.2.1, the game's ``Random`` on 3.3); only its result is replaced.
+    """
+    orig_method, orig_module = random.Random.sample, random.sample
+
+    def forced(result, population):
+        return list(players) if {id(p) for p in population} == {id(p) for p in players} else result
+
+    random.Random.sample = lambda self, pop, k, *a, **kw: forced(orig_method(self, pop, k, *a, **kw), pop)
+    random.sample = lambda pop, k, *a, **kw: forced(orig_module(pop, k, *a, **kw), pop)
+    try:
+        return Game(list(players), seed=seed)
+    finally:
+        random.Random.sample, random.sample = orig_method, orig_module
+
+
+def _initial_snapshot(g):
+    s = g.state
+    return (s.colors, [p.color for p in s.players], sorted(s.color_to_index.items(), key=str),
+            sorted(s.player_state.items()), list(s.development_listdeck), list(s.resource_freqdeck),
+            sorted((k, str(t.resource), t.number) for k, t in s.board.map.land_tiles.items()),
+            s.board.robber_coordinate, str(s.current_prompt), [str(a) for a in AD.playable_actions_of(g)])
+
+
+@pytest.mark.parametrize("seed", [910011, 910012, 910013])
+def test_reseating_equals_catanatron_native_seating(seed):
+    """make_game's re-seat is exactly catanatron's own game with that seating, and the
+    BenchOpponent wrapper changes no decision: same initial state, then the same
+    actions with the same dice / steal / draw outcomes to the end of the game.
+    (docs/RESULTS.md, 2026-09-25 22:30 entry; the same check with AlphaBeta seated
+    is in scripts/audit_reseat.py.)"""
+    native = [p.color for p in Game([WeightedRandomPlayer(c) for c in AD.COLORS], seed=seed).state.players]
+    order = list(reversed(native))            # a seating catanatron would not pick for this seed
+
+    def seated(wrap=False):
+        ps = [WeightedRandomPlayer(c) for c in order]
+        return [AD.BenchOpponent(p, trade_rule="off") for p in ps] if wrap else ps
+
+    runs = []
+    for build in (lambda: _native_game_seated(seated(), seed), lambda: AD.make_game(seated(), seed),
+                  lambda: AD.make_game(seated(wrap=True), seed)):
+        g = build()                           # built and played one at a time: 3.2.1 plays on the
+        snap = _initial_snapshot(g)           # module-level random stream seeded by Game()
+        winner = g.play()
+        runs.append((snap, winner, [str(a) for a in AD.action_log(g.state)]))
+    (s0, w0, a0), *others = runs
+    assert len(a0) > 50
+    for s, w, a in others:
+        assert s == s0
+        assert w == w0
+        assert a == a0
 
 
 # ---------------------------------------------------------------------------

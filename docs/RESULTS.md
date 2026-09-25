@@ -4,6 +4,42 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 22:30 UTC - harness audit closed: it does not weaken Catanatron's bots
+
+The last two controls:
+
+| control | games | result | reading |
+|---|---|---|---|
+| C2b: AlphaBeta vs 3x ValueFunction in a plain Catanatron game (none of our code, Catanatron's own seat shuffle) | 100 | 32 % +- 4.7 | |
+| C4: our bot fully blind (no hands, no dev cards, no counting) vs 3x AlphaBeta | 60 | 41.7 % +- 6.4 | fair share 25 %; the win does not come from seeing cards |
+
+C2b (32 %) against C2 in our harness (20 %) looked like the harness might
+weaken AlphaBeta, which would inflate our results against it.  It does not:
+
+* **Move-for-move check** (`scripts/audit_reseat.py`): 8 seeds, AlphaBeta + 3
+  ValueFunction seated in an order Catanatron's shuffle would not pick, played
+  three ways in one process - Catanatron's own `Game` with its shuffle forced to
+  that order, our `make_game` re-seat, and our re-seat with every player in the
+  `BenchOpponent` wrapper.  Initial states identical field by field (hands,
+  decks, board, RNG state, legal actions), and all 2,683 actions identical
+  including every dice roll, steal and dev draw; same 8 winners.  The harness
+  *is* Catanatron's game.  A fast version with random players runs in the test
+  suite on both Catanatron versions
+  (`test_reseating_equals_catanatron_native_seating`).
+* **The gap is noise**: 20/100 vs 32/100, Fisher exact p = 0.076.  Pooled,
+  AlphaBeta wins 52/200 = 26 % (95 % CI 20-33 %) against three ValueFunction
+  players: in a 4-player game it is about as strong as ValueFunction.
+* **No time truncation**: AlphaBeta stops searching at 20 s per decision;
+  its slowest decision in the proof logs is about 6 s, so CPU load does not cut
+  its search short.
+
+Side note: the same seed gives a different game in a different Python process
+unless `PYTHONHASHSEED` is fixed (Catanatron iterates over sets); every proof
+and benchmark run pins it (`--hash-seed`), and the three arms above share a
+process.
+
+Verdict: the results against AlphaBeta and SameTurnAlphaBeta stand.
+
 ## 2026-09-25 22:00 UTC - Colonist-information mode and champion league landed
 
 **Colonist-level information for our bot** (`--info counted`): opponents'
@@ -56,7 +92,7 @@ Controls through the same harness (non-proof seeds, 1 process):
 
 Pending: C4 (blind vs 3x AlphaBeta) and C2b (AlphaBeta vs ValueFunction in
 a plain Catanatron game without any of our code, to separate "AlphaBeta is
-just not stronger" from "our harness weakens it").
+just not stronger" from "our harness weakens it").  Both done: see the 22:30 entry.
 
 ## 2026-09-25 19:55 UTC - pre-registered strength proof launched
 
