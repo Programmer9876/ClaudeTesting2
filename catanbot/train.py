@@ -26,7 +26,12 @@ Each iteration:
    only orders, ``softplus(margin - (z_better - z_worse))``, and because the
    softplus never stops pushing it inflated every build-vs-hold gap until the
    search spent every card on roads (0.08 vs 0.42 with the net deciding the
-   main phase alone).
+   main phase alone).  The squared error alone, in turn, barely moves the
+   small gaps that decide whether to *hold* the cards (END_TURN better than a
+   road or a bank trade, 4-13 % of those pairs ordered right), so the delta
+   mode adds a bounded sign hinge ``--rank-sign-margin`` (``relu(margin -
+   difference)``, zero once the sign is right: 82-98 % of the hold pairs) and
+   the hold pairs, outnumbered five to one, get ``--rank-hold-weight``.
    The same is recorded for the decisions *outside* the main phase that the
    search bot also makes with its evaluator: every setup placement
    (``--rank-setup-rate``: the best spots, each with its setup road) and a
@@ -563,7 +568,7 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
     p.add_argument("--rank-other-rate", type=float, default=None,
                    help="share of incoming-offer / robber / discard decisions recorded as siblings "
                         "(default 5 x --rank-rate; 0 = none)")
-    p.add_argument("--rank-offer-weight", type=float, default=3.0,
+    p.add_argument("--rank-offer-weight", type=float, default=6.0,
                    help="weight of incoming-offer (accept / reject) pairs in the ranking term, relative to 1 for "
                         "main-phase / robber / discard pairs (weights are normalised to mean 1)")
     p.add_argument("--rank-setup-weight", type=float, default=0.5,
@@ -587,7 +592,7 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
                    help="delta mode: bounded sign hinge relu(margin - difference) on pairs with a positive target "
                         "(0 = off); the squared error alone barely moves the small hold-vs-road gaps")
     p.add_argument("--rank-sign-weight", type=float, default=1.0, help="weight of the sign hinge (delta mode)")
-    p.add_argument("--rank-offer-scale", type=float, default=5.0,
+    p.add_argument("--rank-offer-scale", type=float, default=10.0,
                    help="delta mode: incoming-offer pairs get scale x their target (their heuristic gap is a card "
                         "or two, ~0.02 logits; the search only needs its sign)")
     p.add_argument("--rank-margin", type=float, default=0.5, help="hinge mode: max logit margin of the ranking term")
@@ -598,7 +603,7 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
                    help="minimum heuristic win-probability gap between two siblings to form a pair "
                         "(default 0.01 in hinge mode, 0 in delta mode)")
     p.add_argument("--rank-pairs", type=int, default=8, help="pairs per decision node")
-    p.add_argument("--rank-batch", type=int, default=256, help="pairs per mini-batch step")
+    p.add_argument("--rank-batch", type=int, default=512, help="pairs per mini-batch step")
     p.add_argument("--rank-buffer", type=int, default=400000, help="max sibling rows kept in the replay buffer")
     p.add_argument("--rank-games", type=int, default=300,
                    help="--fit-only on a buffer without siblings: heuristic games to sample siblings from")

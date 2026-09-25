@@ -4,6 +4,40 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 09:55 UTC - value-net fix landed: regression gone, net at parity with heuristic search
+
+Training-side fix (default on in `catanbot.train`): every generated game
+also records sibling afterstates (main-phase builds, setup placements,
+incoming offers as a deterministic counterfactual, robber, discards) and
+the fit adds a ranking term that distils the heuristic's ordering of those
+siblings (delta targets = heuristic logit gap, hold pairs weighted, offer
+pairs weighted) plus a horizon-consistency term; old buffers still load
+with `--resume`.
+
+| net as search evaluator (depth 1, 2 seats vs 2 heuristic-search seats) | seat games | net | heuristic search |
+|---|---|---|---|
+| rejected candidate (outcome-only fit), blend 0.6 | 96 | 9.4 % | 40.6 % |
+| fixed net, blend 0.6 (fix agent, seeds 5-6) | 96 | 22.9 % | 27.1 % |
+| fixed net, blend 0.6 (independent, seed 11) | 48 | 25.0 % | 25.0 % |
+| fixed net, blend 0.3 | 96 | 25.0 % | 25.0 % |
+
+Honest reading: the catastrophic regression is gone (z = +2.8 vs the
+candidate), but a net that distils the heuristic's sibling ordering cannot
+beat heuristic search by construction: the self-play data has no
+counterfactual for holding cards, and outcome labels reward states, not
+actions.  The 40-game promotion tournament would promote such a net by coin
+flip and the loop could then drift, so training is NOT restarted with this
+recipe alone.
+
+Path to a net that is actually better than the heuristic (next
+implementation step, after the lookahead fix): search-distilled targets -
+label recorded decision afterstates with the value of a deeper native
+search (depth 2-3, now cheap) in addition to the outcome, so the net
+amortises lookahead and depth-1 search with the net plays like depth 3;
+plus a small hold-epsilon in the behaviour policy so the data contains
+"hold vs build" counterfactuals.  Restart training then, with
+`--eval-games 80 --promote-ratio 1.15` so parity nets are not promoted.
+
 ## 2026-09-25 08:50 UTC - lookahead regression found: depth 2 plays worse than depth 1
 
 Stand-in ladder (catanatron 3.2.1, 40 games each, seed 5) with the depth-2
