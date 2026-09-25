@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from . import board as B
-from .counting import expected_hidden_vp
+from .counting import dev_pool, expected_hidden_vp
 from .placement import RESOURCE_DEMAND, player_production, resource_scarcity
 from .state import GameState, PHASE_ROLL, PHASE_MAIN
 
@@ -163,6 +163,125 @@ def best_robber_move(state: GameState, player: int, evaluator=None,
     if own > 0:
         parts.append("(also blocks some of our own production)")
     return h, victim, "; ".join(parts) if parts else "nothing better available"
+
+
+def steal_exposure(state: GameState, player: int, politics=None) -> Tuple[float, float, str]:
+    """Out-of-turn robber risk: ``(P(robbed before our next roll), expected cards lost, detail)``.
+
+    Every opponent who rolls before us can rob us with a 7 (1/6) or a knight
+    (if they plausibly hold one); whether they *target* us comes from their
+    best robber move (politics-weighted when a ``PoliticalState`` is given).
+    The expected loss is that probability times one random card of ours,
+    valued by demand and scarcity.  The point: do not sit on a fat, valuable
+    hand while you are the obvious target - spend it or keep cheap cards.
+    """
+    from .counting import dev_draw_probabilities
+    from .discard import opponent_rolls_before_my_turn
+    p = state.players[player]
+    cards = p.total_resources if p.hand_known else p.hand_size
+    if cards <= 0:
+        return 0.0, 0.0, "no cards to steal"
+    n = state.num_players
+    k = opponent_rolls_before_my_turn(state, player)
+    if k <= 0:
+        return 0.0, 0.0, "no opponent rolls before your next turn"
+    probs = dev_draw_probabilities(state)
+    p_knight_draw = probs[B.DEV_KNIGHT] if probs else 0.5
+    order = [(state.current + i) % n for i in range(1, n)] if state.current == player else \
+            [(state.current + i) % n for i in range(0 if not state.dice else 1, n) if (state.current + i) % n != player]
+    order = [j for j in order if j != player][:k]
+    p_safe = 1.0
+    targeters = []
+    for j in order:
+        q = state.players[j]
+        if q.dev_known:
+            has_knight = 1.0 if q.dev_cards[B.DEV_KNIGHT] + q.dev_cards_new[B.DEV_KNIGHT] > 0 else 0.0
+        else:
+            has_knight = 1.0 - (1.0 - p_knight_draw) ** max(0, q.dev_count)
+        if state.dev_played_this_turn and j == state.current:
+            has_knight = 0.0
+        p_rob = 1.0 / 6.0 + (5.0 / 6.0) * has_knight * 0.5
+        tw = politics.robber_target_weights(state, j) if politics is not None else None
+        h, victim, _ = best_robber_move(state, j, target_weights=tw)
+        p_me = 0.7 if victim == player else 0.08
+        if victim == player:
+            targeters.append(state.players[j].name or state.players[j].color)
+        p_safe *= 1.0 - p_rob * p_me
+    p_robbed = 1.0 - p_safe
+    scarcity = resource_scarcity(state)
+    if p.hand_known and cards > 0:
+        avg_card = sum(p.resources[r] * RESOURCE_DEMAND[r] * (scarcity[r] ** 0.5) for r in range(5)) / cards
+    else:
+        avg_card = 1.0
+    loss = p_robbed * avg_card
+    detail = f"{p_robbed:.0%} chance of being robbed before your next roll"
+    if targeters:
+        detail += f" (you are the natural target for {', '.join(targeters)})"
+    detail += f"; expected loss {loss:.2f} card-value"
+    return p_robbed, loss, detail
+
+
+def steal_exposure_fast(state: GameState, player: int) -> float:
+    """Cheap expected card-value loss to out-of-turn robbery, for the static evaluator.
+
+    Same model as :func:`steal_exposure` (a 7 or a plausible knight from every
+    opponent who rolls before us), but each opponent's target is the player
+    with the highest ``(threat, hand size)`` key instead of their full best
+    robber move, so it costs O(n^2).  Mirrored operation for operation in
+    ``cpp/heuristic.cpp::steal_exposure_fast`` - keep the two in sync.
+    """
+    p = state.players[player]
+    cards = p.total_resources if p.hand_known else p.hand_size
+    n = state.num_players
+    if cards < 3 or n <= 1:
+        return 0.0
+    if state.current == player:
+        robbers = [(player + i) % n for i in range(1, n)]
+    else:
+        robbers = []
+        m = (state.current + 1) % n if state.dice else state.current
+        while m != player:
+            robbers.append(m)
+            m = (m + 1) % n
+    if not robbers:
+        return 0.0
+    deck_total = sum(state.dev_deck)
+    if deck_total > 0:
+        p_knight = state.dev_deck[B.DEV_KNIGHT] / deck_total
+    else:
+        pool = dev_pool(state)
+        pool_total = sum(pool)
+        p_knight = pool[B.DEV_KNIGHT] / pool_total if pool_total > 0 else 0.0
+    keys = []
+    for i in range(n):
+        q = state.players[i]
+        c = q.total_resources if q.hand_known else q.hand_size
+        keys.append((threat(state, i), min(c, 8), c))
+    p_safe = 1.0
+    for j in robbers:
+        q = state.players[j]
+        if q.dev_known:
+            has_knight = 1.0 if q.dev_cards[B.DEV_KNIGHT] + q.dev_cards_new[B.DEV_KNIGHT] > 0 else 0.0
+        else:
+            has_knight = 1.0 - (1.0 - p_knight) ** max(0, q.dev_count)
+        if state.dev_played_this_turn and j == state.current:
+            has_knight = 0.0
+        p_rob = 1.0 / 6.0 + (5.0 / 6.0) * has_knight * 0.5
+        target = -1
+        for i in range(n):
+            if i == j or keys[i][2] <= 0:
+                continue
+            if target < 0 or keys[i] > keys[target]:
+                target = i
+        p_me = 0.7 if target == player else 0.08
+        p_safe *= 1.0 - p_rob * p_me
+    p_robbed = 1.0 - p_safe
+    if p.hand_known:
+        scarcity = resource_scarcity(state)
+        avg_card = sum(p.resources[r] * RESOURCE_DEMAND[r] * (scarcity[r] ** 0.5) for r in range(5)) / cards
+    else:
+        avg_card = 1.0
+    return p_robbed * avg_card
 
 
 def largest_army_status(state: GameState, player: int) -> Tuple[int, int, int]:

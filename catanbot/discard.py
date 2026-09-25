@@ -167,10 +167,19 @@ def surplus_dump_actions(state: GameState, player: int, legal_actions: List[Acti
     return out
 
 
-def explain_seven_risk(state: GameState, player: int) -> str:
+def explain_seven_risk(state: GameState, player: int, politics=None) -> str:
+    from .robber import steal_exposure
     n = state.players[player].total_resources
     if n <= 7:
-        return f"Hand of {n} cards is safe from a 7."
-    risk = seven_risk(state, player)
-    return (f"Hand of {n} cards: {risk:.0%} chance an opponent rolls a 7 before your next roll "
-            f"(you would lose {n // 2}). Consider building/buying or trading surplus down to 7.")
+        text = f"Hand of {n} cards is safe from a 7."
+    else:
+        risk = seven_risk(state, player)
+        text = (f"Hand of {n} cards: {risk:.0%} chance an opponent rolls a 7 before your next roll "
+                f"(you would lose {n // 2}). Consider building/buying or trading surplus down to 7.")
+    if n >= 3:
+        p_robbed, loss, detail = steal_exposure(state, player, politics)
+        if p_robbed >= 0.2:
+            text += f" Robber exposure: {detail}." + (
+                " Spend before ending the turn or keep only cheap cards; the robber takes a random card."
+                if loss >= 0.4 else "")
+    return text

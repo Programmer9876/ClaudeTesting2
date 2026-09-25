@@ -24,7 +24,7 @@ from .discard import choose_discard, needed_vector
 from .placement import (RESOURCE_DEMAND, best_city_spots, best_settlement_spots, buildable_settlements,
                         player_production, reachable_spots, resource_scarcity, road_targets,
                         score_city, score_settlement_spot, setup_pick, setup_road_pick)
-from .robber import best_robber_move, estimated_vp, hex_damage, should_play_knight, threat
+from .robber import best_robber_move, estimated_vp, hex_damage, should_play_knight, steal_exposure_fast, threat
 from .state import GameState, PHASE_GAME_OVER
 from .trading import candidate_offers, offer_is_feeding_leader, plan_trades, should_accept
 
@@ -116,6 +116,9 @@ def static_value(state: GameState, player: int) -> float:
     # Hand: cards are worth something, too many are a liability.
     n = p.total_resources if p.hand_known else p.hand_size
     score += 0.12 * min(n, 7) - 0.25 * max(0, n - 7)
+    # Out-of-turn robber exposure: a valuable hand while being the obvious target is worth less.
+    if n >= 3:
+        score -= 0.25 * steal_exposure_fast(state, player)
     if p.hand_known:
         score += _progress_to_build(state, player)
     # Dev cards.

@@ -104,6 +104,106 @@ void make_context(const GameStateC& s, Context& c) {
     }
 }
 
+// robber.threat: how dangerous player i is (1.0 for a harmless player).
+static double threat(const GameStateC& s, int i) {
+    const double vp = (double)s.public_vp(i) + expected_hidden_vp(s, i);
+    double t = 1.0 + 0.3 * std::max(0.0, vp - 4.0);
+    if (vp >= 8) t *= 1.8;
+    else if (vp >= 7) t *= 1.3;
+    return t;
+}
+
+// counting.dev_draw_probabilities()[DEV_KNIGHT]: undrawn deck, else the public pool.
+static double knight_draw_probability(const GameStateC& s) {
+    int total = 0;
+    for (int t = 0; t < NUM_DEV; ++t) total += s.dev_deck[t];
+    if (total > 0) return (double)s.dev_deck[DEV_KNIGHT] / (double)total;
+    int pool[NUM_DEV];  // counting.dev_pool
+    for (int t = 0; t < NUM_DEV; ++t) pool[t] = DEV_DECK_COUNTS[t];
+    for (int i = 0; i < s.num_players; ++i) {
+        const PlayerC& q = s.players[i];
+        pool[DEV_KNIGHT] -= q.played_knights;
+        if (q.dev_known)
+            for (int t = 0; t < NUM_DEV; ++t) pool[t] -= q.dev_cards[t] + q.dev_cards_new[t];
+    }
+    int pool_total = 0;
+    for (int t = 0; t < NUM_DEV; ++t) {
+        pool[t] = std::max(0, pool[t]);
+        pool_total += pool[t];
+    }
+    if (pool_total <= 0) return 0.0;
+    return (double)pool[DEV_KNIGHT] / (double)pool_total;
+}
+
+// Exact port of robber.steal_exposure_fast: expected card-value lost to an out-of-turn
+// robbery (7 or plausible knight from every opponent who rolls before us).
+struct VictimKey {
+    double threat;
+    int c8;
+    int cards;
+    bool operator>(const VictimKey& o) const {
+        if (threat != o.threat) return threat > o.threat;
+        if (c8 != o.c8) return c8 > o.c8;
+        return cards > o.cards;
+    }
+};
+
+double steal_exposure_fast(const GameStateC& s, int player, const double* pow05_scarcity) {
+    const PlayerC& p = s.players[player];
+    const int cards = p.hand_known ? p.total_resources() : p.hand_size;
+    const int n = s.num_players;
+    if (cards < 3 || n <= 1) return 0.0;
+    int robbers[MAX_PLAYERS];
+    int n_robbers = 0;
+    if (s.current == player) {
+        for (int i = 1; i < n; ++i) robbers[n_robbers++] = (player + i) % n;
+    } else {
+        int m = s.dice ? (s.current + 1) % n : s.current;
+        while (m != player) {
+            robbers[n_robbers++] = m;
+            m = (m + 1) % n;
+        }
+    }
+    if (n_robbers == 0) return 0.0;
+    const double p_knight = knight_draw_probability(s);
+    VictimKey keys[MAX_PLAYERS];
+    for (int i = 0; i < n; ++i) {
+        const PlayerC& q = s.players[i];
+        const int c = q.hand_known ? q.total_resources() : q.hand_size;
+        keys[i] = VictimKey{threat(s, i), std::min(c, 8), c};
+    }
+    double p_safe = 1.0;
+    for (int k = 0; k < n_robbers; ++k) {
+        const int j = robbers[k];
+        const PlayerC& q = s.players[j];
+        double has_knight;
+        if (q.dev_known)
+            has_knight = (q.dev_cards[DEV_KNIGHT] + q.dev_cards_new[DEV_KNIGHT] > 0) ? 1.0 : 0.0;
+        else
+            has_knight = 1.0 - std::pow(1.0 - p_knight, (double)std::max(0, q.dev_count));
+        if (s.dev_played_this_turn && j == s.current) has_knight = 0.0;
+        const double p_rob = 1.0 / 6.0 + (5.0 / 6.0) * has_knight * 0.5;
+        int target = -1;
+        for (int i = 0; i < n; ++i) {
+            if (i == j || keys[i].cards <= 0) continue;
+            if (target < 0 || keys[i] > keys[target]) target = i;
+        }
+        const double p_me = (target == player) ? 0.7 : 0.08;
+        p_safe *= 1.0 - p_rob * p_me;
+    }
+    const double p_robbed = 1.0 - p_safe;
+    double avg_card;
+    if (p.hand_known) {
+        const double* demand = resource_demand();
+        double acc = 0.0;
+        for (int r = 0; r < NUM_RESOURCES; ++r) acc += (double)p.resources[r] * demand[r] * pow05_scarcity[r];
+        avg_card = acc / (double)cards;
+    } else {
+        avg_card = 1.0;
+    }
+    return p_robbed * avg_card;
+}
+
 double static_value_ctx(const GameStateC& s, int player, const Context& c) {
     if (s.phase == PHASE_GAME_OVER) {
         if (s.winner == player) return 1000.0;
@@ -144,6 +244,8 @@ double static_value_ctx(const GameStateC& s, int player, const Context& c) {
     // Hand: cards are worth something, too many are a liability.
     const int n = p.hand_known ? p.total_resources() : p.hand_size;
     score += 0.12 * std::min(n, 7) - 0.25 * std::max(0, n - 7);
+    // Out-of-turn robber exposure (robber.steal_exposure_fast).
+    if (n >= 3) score -= 0.25 * steal_exposure_fast(s, player, c.pow05_scarcity);
     if (p.hand_known) score += progress_to_build(s, player, c.occ);
     // Dev cards.
     if (p.dev_known) {

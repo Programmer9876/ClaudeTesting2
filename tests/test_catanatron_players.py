@@ -2,6 +2,12 @@
 
 They run on catanatron 3.2.1 (PyPI wheel) and on the 3.3 engine (GitHub checkout).
 """
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+
 import pytest
 
 catanatron = pytest.importorskip("catanatron")
@@ -28,6 +34,15 @@ from catanbot.bench.catanatron_players import (  # noqa: E402
 )
 
 COLORS = [Color.RED, Color.BLUE, Color.WHITE, Color.ORANGE]
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LADDER = os.path.join(ROOT, "scripts", "catanatron_ladder.py")
+
+
+def load_ladder():
+    spec = importlib.util.spec_from_file_location("catanatron_ladder", LADDER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def refresh(game):
@@ -323,3 +338,118 @@ def test_play_game_with_smart_discards_completes():
             assert isinstance(action.value, list)
         elif action.action_type.value == "DISCARD_RESOURCE":  # 3.3: one resource at a time
             assert action.value in RESOURCES
+
+
+class _Invariants:
+    """Accumulator for play_game: checks every decision of the catanbot players."""
+
+    def __init__(self, watched):
+        self.watched = watched  # colours of the catanbot players
+        self.decisions = 0
+        self.discards = 0
+        self.robber_moves = 0
+        self.dev_bought = 0
+
+    def before(self, game):
+        pass
+
+    def after(self, game):
+        pass
+
+    def step(self, game, action):
+        if action.color not in self.watched:
+            return
+        self.decisions += 1
+        state = game.state
+        actions = playable(game)
+        assert action in actions or action.action_type.value == "DISCARD", action
+        t = action.action_type
+        if t == ActionType.END_TURN:
+            # never end the turn while a settlement / city is affordable and placeable
+            assert not any(a.action_type in (ActionType.BUILD_SETTLEMENT, ActionType.BUILD_CITY)
+                           for a in actions), (action, actions)
+        elif t == ActionType.MOVE_ROBBER:
+            self.robber_moves += 1
+            tables = get_map_tables(state.board.map)
+            own = set(state.buildings_by_color[action.color][SETTLEMENT])
+            own |= set(state.buildings_by_color[action.color][CITY])
+            others = [a for a in actions if not (own & set(tables.tile_nodes[a.value[0]]))]
+            if others:  # an own tile only when nothing else is available
+                assert not (own & set(tables.tile_nodes[action.value[0]])), action
+        elif t == ActionType.BUY_DEVELOPMENT_CARD:
+            self.dev_bought += 1
+        elif t.value == "DISCARD":  # 3.2.1: play_game applies the planned cards
+            self.discards += 1
+            assert isinstance(action.value, list)
+            assert action.value == plan_discard(game, action.color)
+        elif t.value == "DISCARD_RESOURCE":  # 3.3: one card at a time
+            self.discards += 1
+            assert action.value == plan_discard(game, action.color, 1)[0]
+
+
+def test_full_game_invariants_of_both_players():
+    """Over whole games: legal actions, no END_TURN with a buildable settlement /
+    city, the robber never on an own tile, discards follow plan_discard."""
+    totals = _Invariants(set())
+    for seed in (31, 32):
+        players = [ValueFunctionPlayer(COLORS[0]), AlphaBetaPlayer(COLORS[1], budget=300),
+                   WeightedRandomPlayer(COLORS[2]), RandomPlayer(COLORS[3])]
+        game = Game(players, seed=seed)
+        acc = _Invariants({COLORS[0], COLORS[1]})
+        winner = play_game(game, smart_discard=True, accumulators=[acc])
+        assert winner is not None
+        totals.decisions += acc.decisions
+        totals.discards += acc.discards
+        totals.robber_moves += acc.robber_moves
+        totals.dev_bought += acc.dev_bought
+    assert totals.decisions > 100
+    assert totals.robber_moves > 0
+    assert totals.discards > 0, "no discard happened in the sampled games"
+    assert totals.dev_bought > 0
+
+
+def test_ladder_defaults_to_smart_discards_and_records_them():
+    ladder = load_ladder()
+    opts = {"ab_budget": 200}
+    found = False
+    for seed in range(40, 52):
+        game, winner = ladder.play_seeded(("F", "W", "R", "A"), seed, opts)
+        discards = [a for a in records(game) if a.action_type.value in ("DISCARD", "DISCARD_RESOURCE")
+                    and a.color in (COLORS[0], COLORS[3])]
+        if discards:
+            found = True
+            for a in discards:
+                if a.action_type.value == "DISCARD":
+                    assert isinstance(a.value, list), a  # chosen, not the engine's random None
+                else:
+                    assert a.value in RESOURCES
+            break
+    assert found, "no discard by a catanbot player in the sampled seeds"
+    result = ladder.play_one((("F", "W", "R", "V"), 3, opts))
+    assert result["smart_discard"] is True
+    assert result["winner"] == 0
+    control = ladder.play_one((("F", "W", "R", "V"), 3, dict(opts, smart_discard=False)))
+    assert control["smart_discard"] is False
+
+
+@pytest.mark.skipif(os.name != "posix", reason="re-exec with a pinned hash seed is tested on posix")
+def test_ladder_replays_identical_games_across_processes(tmp_path):
+    """The ladder pins PYTHONHASHSEED (re-exec), so a seed replays the same game."""
+    outs = []
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONHASHSEED"}
+    env["PYTHONPATH"] = ROOT + os.pathsep + env.get("PYTHONPATH", "")
+    for i in range(2):
+        out = tmp_path / f"r{i}.jsonl"
+        proc = subprocess.run(
+            [sys.executable, LADDER, "--games", "2", "--types", "F,R,W,V", "--workers", "2",
+             "--seed", "77", "--json", str(out)],
+            env=env, capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "hashseed=0" in proc.stdout.splitlines()[0]
+        rows = [json.loads(line) for line in out.read_text().splitlines()]
+        for row in rows:
+            row.pop("time")
+        outs.append(rows)
+    assert len(outs[0]) == 2
+    assert outs[0] == outs[1]
