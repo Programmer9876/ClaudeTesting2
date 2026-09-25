@@ -257,6 +257,17 @@ def _spot_score(state: GameState, me: int, v: int) -> float:
                                            scarcity=placement.resource_scarcity(state))
 
 
+def _static_values(state: GameState) -> List[float]:
+    """``accel.static_values`` (the C++ port of static_value for every seat), called directly when verified."""
+    if _accel.AVAILABLE and _accel._verified:
+        try:
+            return _accel._core.static_values(state)
+        except ValueError as exc:
+            if not _accel._unsupported(exc):
+                raise
+    return _accel.static_values(state)
+
+
 def _osig(state: GameState) -> tuple:
     return tuple(tuple(sorted(p.settlements + p.cities)) for p in state.players)
 
@@ -300,11 +311,12 @@ class PathsContext:
                                       "supply_misses": 0, "reach_misses": 0, "spot_misses": 0, "seconds": 0.0}
         self._cap = int(P["CACHE_CAP"])
         self._supply: Dict[tuple, Supply] = {}
-        self._lr: Dict[tuple, Tuple[int, int]] = {}
+        self._lr: Dict[tuple, Dict[tuple, Tuple[int, int]]] = {}
         self._room: Dict[tuple, int] = {}
         self._race: Dict[tuple, RaceSolution] = {}
         self._reach: Dict[tuple, dict] = {}
         self._spot: Dict[tuple, float] = {}
+        self._contest_memo: Dict[tuple, tuple] = {}
         # frozen scalars used on every leaf
         self._hand_w = float(P["HAND_W"])
         self._eta = float(P["ETA"])
@@ -313,6 +325,7 @@ class PathsContext:
         self._min_lr = P["MIN_LR"]
         self._min_la = P["MIN_LA"]
         self._placebo = int(P["PLACEBO"])
+        self._la_share = float(P["LA_HELD_SHARE"])
         self.vmax = max(_vp_estimate(root, i) for i in range(n))
         self.H = H = horizon(root, P)
         pool = counting.dev_pool(root)
@@ -370,7 +383,10 @@ class PathsContext:
     def supply(self, state: GameState, i: int) -> Supply:
         """Cards per round of seat ``i`` (memo: its buildings and the robber)."""
         p = state.players[i]
-        key = (i, tuple(p.settlements), tuple(p.cities), state.robber)
+        return self._supply_entry(state, i, (i, tuple(p.settlements), tuple(p.cities), state.robber))[0]
+
+    def _supply_entry(self, state: GameState, i: int, key: tuple) -> tuple:
+        """Memo entry ``(Supply, LR growth cap ETA H road_rate, LA growth min(1, p_k dev_rate) H)``."""
         hit = self._supply.get(key)
         if hit is not None:
             return hit
@@ -384,16 +400,26 @@ class PathsContext:
         tot = sum(inc)
         road_rate = min(s[_WOOD], s[_BRICK], tot / 2.0)
         dev_rate = min(s[_SHEEP], s[_WHEAT], s[_ORE], tot / 3.0)
-        return self._put(self._supply, key, Supply(tuple(inc), tuple(s), road_rate, dev_rate))
+        sup = Supply(tuple(inc), tuple(s), road_rate, dev_rate)
+        entry = (sup, self._eta * self.H * road_rate, min(1.0, self.p_k * dev_rate) * self.H)
+        return self._put(self._supply, key, entry)
 
     def lr_lengths(self, state: GameState, i: int, osig: tuple) -> Tuple[int, int]:
         """(official trail length that awards the card, static's heuristic length) of seat ``i``."""
-        key = (i, tuple(state.players[i].roads), osig)
-        hit = self._lr.get(key)
+        sub = self._lr.get(osig)
+        key = (i, tuple(state.players[i].roads))
+        hit = sub.get(key) if sub is not None else None
         if hit is not None:
             return hit
+        return self._lr_miss(state, i, key, osig)
+
+    def _lr_miss(self, state: GameState, i: int, key: tuple, osig: tuple) -> Tuple[int, int]:
+        """Memo ``osig -> {(i, roads_i): (L, l)}`` (two levels: the buildings are hashed once per leaf)."""
         self.stats["lr_misses"] += 1
-        return self._put(self._lr, key, (int(_accel.longest_road_length(state, i)), int(_heur_lr(state, i))))
+        sub = self._lr.get(osig)
+        if sub is None:
+            sub = self._put(self._lr, osig, {})
+        return self._put(sub, key, (int(_accel.longest_road_length(state, i)), int(_heur_lr(state, i))))
 
     @staticmethod
     def _compute_room(state: GameState, i: int) -> int:
@@ -449,31 +475,42 @@ class PathsContext:
 
     # --- race inputs ------------------------------------------------------------------------
     def _inputs(self, state: GameState) -> _Leaf:
+        """Race inputs of ``state`` (the hot path: memo lookups plus a few float operations per seat).
+
+        The race tuples hold exact floats: every entry is a deterministic function of the state (the memos are
+        pure functions of their keys), so the solve memo needs no rounding for cold and warm caches to agree.
+        """
         players = state.players
         n = self.n
         me = self.me
         H = self.H
         p_k = self.p_k
-        p_rb = self.p_rb
         hw = self._hand_w
-        eta_h = self._eta * H
+        tie_lr = self._tie_lr
+        tie_la = self._tie_la
         lr_holder = state.longest_road_owner
         la_holder = state.largest_army_owner
-        osig = tuple(tuple(sorted(p.settlements + p.cities)) for p in players)
-        hands = []
-        kns = []
-        rbs = []
-        Ls = []
-        ls = []
-        rooms = []
-        sups = []
-        played = []
-        lr_b = []
-        lr_a = []
-        lr_G = []
-        la_b = []
-        la_a = []
-        la_G = []
+        robber = state.robber
+        sup_memo = self._supply
+        osig = tuple([tuple(sorted(p.settlements + p.cities)) for p in players])
+        lr_memo = self._lr.get(osig)
+        if lr_memo is None:
+            lr_memo = self._put(self._lr, osig, {})
+        room_root = self._room_root
+        hands = [None] * n
+        kns = [0] * n
+        rbs = [0] * n
+        Ls = [0] * n
+        ls = [0] * n
+        rooms = [0] * n
+        sups = [None] * n
+        played = [0] * n
+        lr_b = [0.0] * n
+        lr_a = [0.0] * n
+        lr_G = [0.0] * n
+        la_b = [0.0] * n
+        la_a = [0.0] * n
+        la_G = [0.0] * n
         for i in range(n):
             p = players[i]
             hand = p.resources if p.hand_known else self._hand(i, p)
@@ -484,29 +521,50 @@ class PathsContext:
                 r = dc[_RBC] + dn[_RBC]
             else:
                 k = p.dev_count * p_k
-                r = p.dev_count * p_rb
-            sup = self.supply(state, i)
-            L, l = self.lr_lengths(state, i, osig)
-            room = self.room(state, i, osig)
-            a_raw = min(room, min(hand[_WOOD], hand[_BRICK]) + 2 * r)
-            G = min(max(0, room - a_raw), eta_h * sup.road_rate)
+                r = p.dev_count * self.p_rb
+            key = (i, tuple(p.settlements), tuple(p.cities), robber)
+            ent = sup_memo.get(key)
+            if ent is None:
+                ent = self._supply_entry(state, i, key)
+            key = (i, tuple(p.roads))
+            Ll = lr_memo.get(key)
+            if Ll is None:
+                Ll = self._lr_miss(state, i, key, osig)
+            room = room_root[i] if i != me else self.room(state, i, osig)
+            w = hand[_WOOD]
+            bk = hand[_BRICK]
+            a_raw = (w if w < bk else bk) + 2 * r
+            if a_raw > room:
+                a_raw = room
+            g = room - a_raw
+            if g < 0:
+                g = 0
+            cap = ent[1]
             a = hw * a_raw
-            lr_a.append(round(float(a), 4))
-            lr_G.append(round(float(G), 4))
-            lr_b.append(round(float(L + a + (self._tie_lr if i == lr_holder else 0.0)), 4))
+            L = Ll[0]
+            lr_a[i] = a
+            lr_G[i] = g if g < cap else cap
+            lr_b[i] = L + a + tie_lr if i == lr_holder else L + a
+            s_ = hand[_SHEEP]
+            wh = hand[_WHEAT]
+            o_ = hand[_ORE]
+            m = s_ if s_ < wh else wh
+            if o_ < m:
+                m = o_
+            a2 = hw * p_k * m
             pk = p.played_knights
-            a2 = hw * p_k * min(hand[_SHEEP], hand[_WHEAT], hand[_ORE])
-            la_a.append(a2)
-            la_G.append(min(1.0, p_k * sup.dev_rate) * H)
-            la_b.append(round(float(pk + min(k, H) + a2 + (self._tie_la if i == la_holder else 0.0)), 4))
-            hands.append(hand)
-            kns.append(k)
-            rbs.append(r)
-            Ls.append(L)
-            ls.append(l)
-            rooms.append(room)
-            sups.append(sup)
-            played.append(pk)
+            x = pk + (k if k < H else H) + a2
+            la_a[i] = a2
+            la_G[i] = ent[2]
+            la_b[i] = x + tie_la if i == la_holder else x
+            hands[i] = hand
+            kns[i] = k
+            rbs[i] = r
+            Ls[i] = L
+            ls[i] = Ll[1]
+            rooms[i] = room
+            sups[i] = ent[0]
+            played[i] = pk
         tot = sum(la_G)
         scale = 1.0
         if tot > 0.0 and self.K_left < tot:
@@ -526,7 +584,7 @@ class PathsContext:
         leaf.la_holder = la_holder
         leaf.la_scale = scale
         leaf.lr = (tuple(lr_b), tuple(lr_a), tuple(lr_G))
-        leaf.la = (tuple(la_b), tuple(round(float(x), 4) for x in la_a), tuple(round(float(x), 4) for x in la_G))
+        leaf.la = (tuple(la_b), tuple(la_a), tuple(la_G))
         return leaf
 
     def race_inputs(self, state: GameState) -> dict:
@@ -569,21 +627,28 @@ class PathsContext:
         return s_lr, s_la
 
     def _raw_C(self, state: GameState, leaf: _Leaf) -> List[float]:
+        """``live_LR (credit_LR - S_LR) + live_LA (credit_LA - S_LA)`` per seat (the ledger of ``_ledger``, inlined)."""
         n = self.n
         C = [0.0] * n
-        if not (self.live_lr or self.live_la):
-            return C
-        s_lr, s_la = self._ledger(state, leaf)
         if self.live_lr:
-            sol = self._solve(LR, leaf.lr[0], leaf.lr[1], leaf.lr[2], leaf.lr_holder)
-            cr = sol.credit
+            cr = self._solve(LR, leaf.lr[0], leaf.lr[1], leaf.lr[2], leaf.lr_holder).credit
+            h = leaf.lr_holder
+            hl = state.longest_road_len if h >= 0 else 4
+            ls = leaf.l
             for i in range(n):
-                C[i] += cr[i] - s_lr[i]
+                if i == h:
+                    C[i] = cr[i] - _AWARD
+                else:
+                    l = ls[i]
+                    C[i] = cr[i] - (_S_LR_AHEAD if l >= hl else _S_LR_BEHIND) * l
         if self.live_la:
-            sol = self._solve(LA, leaf.la[0], leaf.la[1], leaf.la[2], leaf.la_holder)
-            cr = sol.credit
+            cr = self._solve(LA, leaf.la[0], leaf.la[1], leaf.la[2], leaf.la_holder).credit
+            h = leaf.la_holder
+            share = self._la_share
+            kn = leaf.kn
+            pk = leaf.played
             for i in range(n):
-                C[i] += cr[i] - s_la[i]
+                C[i] += cr[i] - ((_AWARD if i == h else _S_LA_PLAYED * pk[i]) + share * kn[i])
         return C
 
     def races(self, state: GameState) -> Races:
@@ -606,12 +671,16 @@ class PathsContext:
         self.stats["reach_misses"] += 1
         return self._put(self._reach, key, placement.reachable_spots(state, j, max_roads=2))
 
-    def _spot_value(self, state: GameState, v: int, osig: tuple) -> float:
-        p = state.players[self.me]
+    def _spot_prefix(self, state: GameState, osig: tuple) -> tuple:
         # our roads and the award owners are in the key as well (the spot's expansion term reads every road,
         # its blockability term the opponents' VP): the memo stays a pure function of its key
-        key = (v, tuple(p.settlements), tuple(p.cities), tuple(p.roads), osig, state.longest_road_owner,
-               state.largest_army_owner)
+        p = state.players[self.me]
+        return (tuple(p.settlements), tuple(p.cities), tuple(p.roads), osig, state.longest_road_owner,
+                state.largest_army_owner)
+
+    def _spot_value(self, state: GameState, v: int, osig: tuple, prefix: Optional[tuple] = None) -> float:
+        """static's score of spot ``v`` for us (memo: ``v`` and our position, see ``_spot_prefix``)."""
+        key = (v, prefix if prefix is not None else self._spot_prefix(state, osig))
         hit = self._spot.get(key)
         if hit is not None:
             return hit
@@ -621,7 +690,7 @@ class PathsContext:
     def _turns_to_afford(self, hand: Sequence[float], s: Sequence[float], d: int) -> float:
         cost = (1 + d, 1 + d, 1, 1, 0)
         t = 0.0
-        for r in range(5):
+        for r in range(4):          # the settlement + roads cost no ore
             miss = cost[r] - hand[r]
             if miss > 0.0:
                 x = miss / max(s[r], 1e-6)
@@ -629,30 +698,52 @@ class PathsContext:
                     t = x
         return min(self.params["SPOT_MAX_T"], t)
 
+    def _contest(self, state: GameState, osig: tuple) -> tuple:
+        """``((v, d, ((rival, d_j, o_j), ...)), ...)`` for our spots within 2 roads, and whether any is contested.
+
+        A pure function of every player's roads and the buildings (memo); the rivals' reach is the
+        ``placement.reachable_spots(max_roads=2)`` of each seat.
+        """
+        players = state.players
+        key = (tuple([tuple(p.roads) for p in players]), osig)
+        hit = self._contest_memo.get(key)
+        if hit is not None:
+            return hit
+        me = self.me
+        n = self.n
+        reach_me = self._reach_of(state, me, osig)
+        rivals = [(j, self._reach_of(state, j, osig)) for j in range(n) if j != me] if reach_me else []
+        struct = []
+        contested = False
+        for v, (d, _e) in reach_me.items():
+            riv = tuple((j, rj[v][0], ((j - me) % n) / n) for j, rj in rivals if v in rj)
+            contested = contested or bool(riv)
+            struct.append((v, d, riv))
+        return self._put(self._contest_memo, key, (tuple(struct), contested))
+
     def _spot_table(self, state: GameState, leaf: _Leaf) -> List[tuple]:
         """``[(v, d, P_me, [(rival, d_j, T_j + o_j), ...]), ...]`` for every spot within 2 roads of us."""
         me = self.me
-        n = self.n
-        osig = leaf.osig
-        reach_me = self._reach_of(state, me, osig)
-        if not reach_me:
-            return []
-        rivals = [(j, self._reach_of(state, j, osig)) for j in range(n) if j != me]
-        t_me: Dict[int, float] = {}
+        struct, contested = self._contest(state, leaf.osig)
+        if not contested:
+            return [(v, d, 1.0, []) for v, d, _riv in struct]
+        turns: Dict[tuple, float] = {}
         out = []
-        for v, (d, _e) in reach_me.items():
-            riv = [(j, rj[v][0]) for j, rj in rivals if v in rj]
+        for v, d, riv in struct:
             if not riv:
                 out.append((v, d, 1.0, []))
                 continue
-            if d not in t_me:
-                t_me[d] = self._turns_to_afford(leaf.hands[me], leaf.sup[me].s, d)
-            r_me = 1.0 / (t_me[d] + 1.0)
+            t = turns.get((me, d))
+            if t is None:
+                t = turns[(me, d)] = self._turns_to_afford(leaf.hands[me], leaf.sup[me].s, d)
+            r_me = 1.0 / (t + 1.0)
             tot = r_me
             info = []
-            for j, dj in riv:
-                o = ((j - me) % n) / n
-                tj = self._turns_to_afford(leaf.hands[j], leaf.sup[j].s, dj) + o
+            for j, dj, o in riv:
+                t = turns.get((j, dj))
+                if t is None:
+                    t = turns[(j, dj)] = self._turns_to_afford(leaf.hands[j], leaf.sup[j].s, dj)
+                tj = t + o
                 tot += 1.0 / tj
                 info.append((j, dj, tj))
             out.append((v, d, r_me / tot, info))
@@ -663,16 +754,18 @@ class PathsContext:
         p = state.players[self.me]
         if len(p.settlements) >= B.MAX_SETTLEMENTS:
             return 0.0
+        osig = leaf.osig if leaf is not None else _osig(state)
+        if not self._contest(state, osig)[1]:
+            return 0.0              # uncontested: P_me = 1 everywhere, the rescaled terms equal static's
         leaf = leaf if leaf is not None else self._inputs(state)
         table = self._spot_table(state, leaf)
-        if not table or all(not info for _v, _d, _pm, info in table):
-            return 0.0
+        prefix = self._spot_prefix(state, leaf.osig)
         best_now = 0.0
         best_base = 0.0
         sum_p0 = 0.0
         cnt0 = 0
         for v, d, pm, _info in table:
-            sv = self._spot_value(state, v, leaf.osig) / (1.0 + 0.9 * d)
+            sv = self._spot_value(state, v, leaf.osig, prefix) / (1.0 + 0.9 * d)
             if sv > best_base:
                 best_base = sv
             if sv * pm > best_now:
@@ -687,16 +780,20 @@ class PathsContext:
         """``g C_i + [i = me] g SPOT_W C_spot`` per seat (points; PLACEBO rotates C)."""
         self.stats["evals"] += 1
         n = self.n
-        if not (self.live_lr or self.live_la or self.spots):
-            return [0.0] * n            # nothing live: static applies unchanged (the gates are fixed per context)
-        leaf = self._inputs(state)
-        C = self._raw_C(state, leaf)
-        if self._placebo:
-            C = [C[(i + 1) % n] for i in range(n)]
         g = self.weight
-        out = [g * c for c in C]
+        leaf = None
+        if self.live_lr or self.live_la:
+            leaf = self._inputs(state)
+            C = self._raw_C(state, leaf)
+            if self._placebo:
+                C = [C[(i + 1) % n] for i in range(n)]
+            out = [g * c for c in C]
+        else:
+            out = [0.0] * n             # no live race: static applies unchanged (the gates are fixed per context)
         if self.spots:
-            out[self.me] += g * self.params["SPOT_W"] * self.spot_correction(state, leaf)
+            cs = self.spot_correction(state, leaf)
+            if cs:
+                out[self.me] += g * self.params["SPOT_W"] * cs
         return out
 
     # --- marginal credit of one more unit -----------------------------------------------------
@@ -709,17 +806,15 @@ class PathsContext:
             room = max(0.0, leaf.room[me] - units)
             a_raw = min(room, min(hand[_WOOD], hand[_BRICK]) + 2 * leaf.rb[me])
             aa = self._hand_w * a_raw
-            G[me] = round(float(min(max(0.0, room - a_raw), self._eta * self.H * leaf.sup[me].road_rate)), 4)
-            a[me] = round(float(aa), 4)
-            b[me] = round(float(leaf.L[me] + units + aa + (self._tie_lr if me == leaf.lr_holder else 0.0)), 4)
+            G[me] = min(max(0.0, room - a_raw), self._eta * self.H * leaf.sup[me].road_rate)
+            a[me] = aa
+            b[me] = leaf.L[me] + units + aa + (self._tie_lr if me == leaf.lr_holder else 0.0)
             new = self._solve(LR, tuple(b), tuple(a), tuple(G), leaf.lr_holder).credit[me]
             return new - base
         b, a, G = (list(x) for x in leaf.la)
         base = self._solve(LA, leaf.la[0], leaf.la[1], leaf.la[2], leaf.la_holder).credit[me]
-        hand = leaf.hands[me]
-        a2 = self._hand_w * self.p_k * min(hand[_SHEEP], hand[_WHEAT], hand[_ORE])
-        b[me] = round(float(leaf.played[me] + min(leaf.kn[me] + units, self.H) + a2
-                            + (self._tie_la if me == leaf.la_holder else 0.0)), 4)
+        b[me] = (leaf.played[me] + min(leaf.kn[me] + units, self.H) + a[me]
+                 + (self._tie_la if me == leaf.la_holder else 0.0))
         new = self._solve(LA, tuple(b), tuple(a), tuple(G), leaf.la_holder).credit[me]
         return new - base
 
@@ -825,7 +920,7 @@ class PathsEvaluator:
         return cls(base, ctx)
 
     def _probs(self, s: GameState, corrected: bool = True) -> List[float]:
-        V = _accel.static_values(s)
+        V = _static_values(s)
         if corrected:
             corr = self.ctx.corrections(s)
             z = [V[i] + corr[i] for i in range(len(V))]

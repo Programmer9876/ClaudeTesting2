@@ -148,6 +148,8 @@ __all__ = [
     "DOMESTIC_TRADING",
     "DOMESTIC_TRADE_TYPES",
     "TRADE_MODES",
+    "INFO_MODES",
+    "DEFAULT_INFO_SAMPLES",
     "action_log",
     "log_action",
     "log_result",
@@ -257,6 +259,13 @@ _TRADE_ANSWERS: Tuple[ActionType, ...] = tuple(t for t in (AT_REJECT, AT_CANCEL)
 #: a proposer within 2 VP of winning.  ``value`` / ``fair`` are OUR model of a sensible
 #: opponent (:class:`BenchOpponent`), not catanatron's behaviour.
 TRADE_MODES: Tuple[str, ...] = ("off", "native", "value", "fair")
+#: What catanbot may know (``CatanbotPlayer(info=...)``, ``scripts/bench_catanatron.py --info``):
+#: ``full`` - catanatron's true state, every hand and development card (the default, unchanged);
+#: ``counted`` - what a Colonist.io player knows: public events counted from the action log,
+#: opponents' hidden cards sampled from that posterior (:mod:`catanbot.bench.public_info`).
+INFO_MODES: Tuple[str, ...] = ("full", "counted")
+#: Determinizations searched per decision in the counted mode (``--info-samples``).
+DEFAULT_INFO_SAMPLES = 4
 
 
 def action_log(st: State) -> Sequence:
@@ -902,8 +911,10 @@ def _trade_to_catanbot(action: CAction, state: GameState) -> Optional[A.Action]:
     seat = _seat_of(state, action.color)
     if state.phase != PHASE_TRADE_RESPONSE or offer is None or seat < 0 or seat == offer.proposer:
         return None   # catanatron also asks the offerer about its own offer: no catanbot equivalent
-    if t == AT_REJECT and any(state.players[seat].resources[r] < offer.get[r] for r in range(5)):
+    if (t == AT_REJECT and state.players[seat].hand_known
+            and any(state.players[seat].resources[r] < offer.get[r] for r in range(5))):
         return None   # a seat that cannot pay is auto-rejected by catanbot's engine, never asked
+        #               (a hidden hand - the counted information mode - cannot tell: every answer counts)
     return (A.ACCEPT_TRADE,) if t == AT_ACCEPT else (A.REJECT_TRADE,)
 
 
@@ -1036,11 +1047,38 @@ class CatanbotPlayer(Player):
     ``decide`` call / of those with more than one playable action, including
     the adapter's conversion and observation work (the compute-fairness
     counterpart of :class:`BenchOpponent`'s timing).
+
+    Information mode (:data:`INFO_MODES`, ``docs/BENCHMARKS.md`` "Information
+    modes"): ``info="full"`` (the default) hands the bot catanatron's true state
+    with every hand and development card known, exactly as before.
+    ``info="counted"`` gives it what a Colonist.io player knows: a
+    :class:`catanbot.bench.public_info.PublicInfoTracker` (``tracker``) follows
+    the action log with public information only (``discards_public`` makes the
+    cards of a discard public), every observation is delivered with the public
+    view (opponents ``hand_known=False`` / ``dev_known=False`` with exact sizes
+    and counts, cards zeroed; opponents' discards whose cards are hidden are not
+    observed), our legal actions come from the tracker's canonical view (they
+    depend on public information only) and every searched decision averages the
+    bot's ranking over ``info_samples`` determinizations sampled from the
+    tracker (mean value over the samples that ranked an action, actions ranked
+    by at least half of them first).  ``stats`` then also counts
+    ``info_samples`` (determinizations searched), ``info_uncertain`` (searched
+    decisions with an opponent's hand not known exactly), ``info_errors`` and
+    the tracker's hidden events.
     """
 
     def __init__(self, color: Color, spec: str = DEFAULT_SPEC, bot: Optional[Bot] = None, seed: int = 0,
-                 strict: bool = False, suppress_trades: bool = True, observe: bool = True):
+                 strict: bool = False, suppress_trades: bool = True, observe: bool = True,
+                 info: str = "full", info_samples: int = DEFAULT_INFO_SAMPLES, discards_public: bool = False):
         super().__init__(color)
+        if info not in INFO_MODES:
+            raise ValueError(f"info must be one of {INFO_MODES}, got {info!r}")
+        if int(info_samples) < 1:
+            raise ValueError(f"info_samples must be >= 1, got {info_samples!r}")
+        self.info = info
+        self.info_samples = int(info_samples)
+        self.discards_public = bool(discards_public)
+        self.tracker = None                 # PublicInfoTracker in the counted mode (created per game)
         self.spec = spec
         self.bot: Bot = bot if bot is not None else make_bot(spec)
         self.suppress_trades = bool(suppress_trades) or not DOMESTIC_TRADING
@@ -1076,6 +1114,10 @@ class CatanbotPlayer(Player):
                       "observed": 0, "search_time": 0.0,
                       "offers": 0, "offers_accepted": 0, "trades_confirmed": 0, "trades_cancelled": 0,
                       "offers_received": 0, "offers_accepted_by_us": 0, "self_offer_prompts": 0}
+        if self.info == "counted":
+            self.stats.update({"info_samples": 0, "info_uncertain": 0, "info_errors": 0, "info_resets": 0,
+                               "info_max_hypotheses": 0, "hidden_steals": 0, "hidden_discards": 0,
+                               "hidden_dev_draws": 0})
         self.times = []
         self.choice_times = []
 
@@ -1092,6 +1134,7 @@ class CatanbotPlayer(Player):
         self._knight_state = None
         self._discard_run = None
         self.last_explanation = None
+        self.tracker = None
 
     def _begin(self, game: Game) -> None:
         self.bot.reset()
@@ -1103,6 +1146,35 @@ class CatanbotPlayer(Player):
         self._pending_discard = []
         self._knight_state = None
         self._discard_run = None
+        self.tracker = None
+        if self.info == "counted":
+            from .public_info import PublicInfoTracker
+            self._tracker_totals = {"hidden_steals": 0, "hidden_discards": 0, "hidden_dev_draws": 0,
+                                    "info_resets": 0}
+            self.tracker = PublicInfoTracker(self.color, discards_public=self.discards_public,
+                                             vps_to_win=int(getattr(game, "vps_to_win", 10)))
+            self.tracker.start(game.state)   # replays the log so far from the initial position
+
+    def _follow_tracker(self, st: State) -> None:
+        """Counted mode: bring the public-information tracker up to the live log (a divergence is
+        an ``info_errors`` and a resync; ``strict`` re-raises)."""
+        tr = self.tracker
+        try:
+            tr.follow(st)
+        except Exception:
+            if self.strict:
+                raise
+            self.stats["info_errors"] += 1
+            tr.resync(st)
+        # per-game tracker counts, accumulated into the player's stats across games
+        tot = self._tracker_totals
+        cur = {"hidden_steals": tr.stats["hidden_steals"], "hidden_discards": tr.stats["hidden_discards"],
+               "hidden_dev_draws": tr.stats["hidden_dev_draws"], "info_resets": int(tr.counter.stats["resets"])}
+        for k, v in cur.items():
+            self.stats[k] += v - tot[k]
+            tot[k] = v
+        self.stats["info_max_hypotheses"] = max(self.stats["info_max_hypotheses"],
+                                                int(tr.counter.stats["max_hypotheses"]))
 
     # -- observation ------------------------------------------------------
     def _catch_up(self, st: State) -> None:
@@ -1120,6 +1192,10 @@ class CatanbotPlayer(Player):
         where the merged counts are a legal discard (half the hand).  A run
         the log ends in the middle of (our own, while we are being prompted
         card by card) is completed on the next catch-up.
+
+        Counted information mode: every observation is delivered with the
+        *public* view of its state (:func:`catanbot.bench.public_info.redact_state`)
+        and an opponent's discard whose cards are hidden is not observed.
         """
         log = action_log(st)
         n = len(log)
@@ -1127,6 +1203,9 @@ class CatanbotPlayer(Player):
             self._shadow = st.copy()
             self._observed = n
             return
+        redact = None
+        if self.tracker is not None:
+            from .public_info import redact_state as redact
         i = self._observed
         while i < n:
             entry = log[i]
@@ -1134,11 +1213,20 @@ class CatanbotPlayer(Player):
             prev = log_action(log[i - 1]) if i > 0 else None
             try:
                 cb = state_to_catanbot(self._shadow, mapping=self._mapping, suppress_trades=self.suppress_trades)
+                hidden_discard = False
+                if redact is not None:
+                    cb = redact(cb, self._shadow.color_to_index[self.color])
+                    hidden_discard = (a.action_type in DISCARD_TYPES and a.color != self.color
+                                      and not self.discards_public)
                 if DISCARD_RESOURCE is not None and a.action_type == DISCARD_RESOURCE:
-                    self._observe_discard_card(cb, a)
+                    if hidden_discard:
+                        self._flush_discard_run()
+                    else:
+                        self._observe_discard_card(cb, a)
                 else:
                     self._flush_discard_run()
-                    cb_action = catanatron_action_to_catanbot(a, cb, self._mapping, prev)
+                    cb_action = (None if hidden_discard
+                                 else catanatron_action_to_catanbot(a, cb, self._mapping, prev))
                     if a.action_type == ActionType.PLAY_KNIGHT_CARD:
                         self._knight_state = cb
                     elif cb_action is not None:
@@ -1175,7 +1263,8 @@ class CatanbotPlayer(Player):
         run = self._discard_run
         if run is None or run[1] != seat:
             self._flush_discard_run()
-            owed = cb.players[seat].total_resources // 2     # the engine's count, fixed at the roll
+            p = cb.players[seat]
+            owed = (p.total_resources if p.hand_known else p.hand_size) // 2   # the engine's count, fixed at the roll
             run = self._discard_run = (cb, seat, [0] * 5, owed)
         run[2][RESOURCE_TO_CB[a.value]] += 1
         if sum(run[2]) >= run[3]:
@@ -1198,6 +1287,8 @@ class CatanbotPlayer(Player):
         try:
             if game.id != self._game_id or self._mapping is None:
                 self._begin(game)
+            if self.tracker is not None:
+                self._follow_tracker(game.state)
             if self.observe_actions:
                 self._catch_up(game.state)
             return self._choose(game, playable)
@@ -1293,12 +1384,12 @@ class CatanbotPlayer(Player):
             if a is not None:
                 self.stats["pending_robber"] += 1
                 return a
-        cb = to_catanbot_state(game, self.color, m, self.suppress_trades)
-        legal = E.legal_actions(cb)
+        cb, view = self._views(game)
+        legal = E.legal_actions(view)
         lookup: Dict[A.Action, CAction] = {}
         cb_legal: List[A.Action] = []
         for a in legal:
-            key = catanbot_action_to_key(a, cb, m, st.colors)
+            key = catanbot_action_to_key(a, view, m, st.colors)
             if key is None:
                 continue
             ca = index.get(key)
@@ -1316,10 +1407,9 @@ class CatanbotPlayer(Player):
             self.stats["trivial"] += 1
         else:
             t0 = time.perf_counter()
-            decision = self.bot.decide(cb, cb_legal, self.rng)
+            decision, ranked = self._bot_decide(cb, cb_legal)
             self.stats["search_time"] += time.perf_counter() - t0
             self.stats["searched"] += 1
-            ranked = [r.action for r in (getattr(self.bot, "last_results", None) or [])]
             if may_offer:
                 # The search may rank proposals outside the engine's bounded candidate list
                 # (intermediary / political deals): playable if well formed and affordable.
@@ -1340,7 +1430,7 @@ class CatanbotPlayer(Player):
                 chosen = decision
             if chosen is None:
                 self.stats["fallback"] += 1
-                priors = action_priors(cb, cb_legal, E.acting_player(cb))
+                priors = action_priors(view, cb_legal, E.acting_player(view))
                 chosen = cb_legal[max(range(len(cb_legal)), key=lambda i: priors[i])]
             try:
                 self.last_explanation = self.bot.explain(cb)
@@ -1350,6 +1440,61 @@ class CatanbotPlayer(Player):
             self._pending_robber = (int(chosen[1]), int(chosen[2]))
         self._count_choice(chosen)
         return lookup[chosen]
+
+    # -- information modes --------------------------------------------------
+    def _views(self, game: Game) -> Tuple[GameState, GameState]:
+        """``(state for the bot, state our legal actions are generated on)``.
+
+        ``full``: catanatron's true state, twice (exactly the pre-information-mode behaviour).
+        ``counted``: the tracker's public view (hidden cards zeroed) and its canonical view (the
+        most likely hand hypothesis filled in: our legal actions only depend on public facts).
+        """
+        cb = to_catanbot_state(game, self.color, self._mapping, self.suppress_trades)
+        if self.tracker is None:
+            return cb, cb
+        pub = self.tracker.public_view(cb)
+        return pub, self.tracker.canonical_view(pub)
+
+    def _bot_decide(self, state: GameState, legal: List[A.Action]) -> Tuple[A.Action, List[A.Action]]:
+        """``(decision, ranked actions)`` of the bot on ``state`` (see :meth:`_decide_counted`)."""
+        if self.tracker is None:
+            decision = self.bot.decide(state, legal, self.rng)
+            return decision, [r.action for r in (getattr(self.bot, "last_results", None) or [])]
+        return self._decide_counted(state, legal)
+
+    def _decide_counted(self, pub: GameState, legal: List[A.Action]) -> Tuple[A.Action, List[A.Action]]:
+        """Counted mode: the bot decides on ``info_samples`` determinizations of the public view
+        ``pub`` sampled from the tracker; each action's value is its mean over the samples that
+        ranked it, and actions ranked by at least half the samples come first (then the mean,
+        then the number of samples that chose it).  A bot without ``last_results`` is a vote."""
+        from ..search import ScoredAction
+        k_samples = self.info_samples
+        values: Dict[A.Action, List[float]] = {}
+        expl: Dict[A.Action, str] = {}
+        votes: Dict[A.Action, int] = {}
+        owner = self.bot
+        while "last_results" not in vars(owner) and getattr(owner, "inner", None) is not None:
+            owner = owner.inner        # ParamBot forwards last_results to the wrapped bot
+        counter, me = self.tracker.counter, self.tracker.me
+        if not all(counter.is_exact(j) for j in range(len(pub.players)) if j != me):
+            self.stats["info_uncertain"] += 1
+        for _ in range(k_samples):
+            det = self.tracker.determinize(pub, self.rng)
+            d = self.bot.decide(det, list(legal), self.rng)
+            votes[d] = votes.get(d, 0) + 1
+            for r in (getattr(self.bot, "last_results", None) or []):
+                values.setdefault(r.action, []).append(float(r.value))
+                expl.setdefault(r.action, r.explanation)
+            self.stats["info_samples"] += 1
+        if not values:
+            ranked = sorted(votes, key=lambda a: -votes[a])
+            return ranked[0], ranked
+        need = (k_samples + 1) // 2
+        ranked = sorted(values, key=lambda a: (len(values[a]) >= need, sum(values[a]) / len(values[a]),
+                                               votes.get(a, 0)), reverse=True)
+        if "last_results" in vars(owner):
+            owner.last_results = [ScoredAction(a, sum(values[a]) / len(values[a]), expl.get(a, "")) for a in ranked]
+        return ranked[0], ranked
 
     def _answer_trade(self, playable: List[CAction]) -> CAction:
         """3.3 domestic-trade prompts: decline (``REJECT_TRADE`` as a responder, ``CANCEL_TRADE`` as offerer)."""
@@ -1377,8 +1522,8 @@ class CatanbotPlayer(Player):
             return playable[0]
         seat = st.color_to_index[self.color]
         owed = int(st.discard_counts[seat])
-        cb = to_catanbot_state(game, self.color, m, self.suppress_trades)
-        legal = [a for a in E.legal_actions(cb) if a[0] == A.DISCARD and sum(a[1]) == owed]
+        cb, view = self._views(game)
+        legal = [a for a in E.legal_actions(view) if a[0] == A.DISCARD and sum(a[1]) == owed]
         if not legal:
             # Only reachable mid-run (the engine's remaining count is no longer half the hand).
             self.stats["fallback"] += 1
@@ -1388,7 +1533,7 @@ class CatanbotPlayer(Player):
             self.stats["trivial"] += 1
         else:
             t0 = time.perf_counter()
-            decision = self.bot.decide(cb, legal, self.rng)
+            decision, _ = self._bot_decide(cb, legal)
             self.stats["search_time"] += time.perf_counter() - t0
             self.stats["searched"] += 1
             if decision not in legal:

@@ -527,10 +527,11 @@ class CardCounter(HandBelief):
         self._marg = None
         return True
 
-    def _reset(self, reason: str, hands_hint: Optional[Dict[int, Sequence[int]]] = None) -> None:
-        """Contradiction fallback: one integer hypothesis closest to the current marginals, with
-        the current sizes (and the last bank's column totals when known)."""
-        marg = [list(x) for x in self.expected]
+    def _reset(self, reason: str, hands_hint: Optional[Dict[int, Sequence[int]]] = None,
+               marg: Optional[List[List[float]]] = None) -> None:
+        """Contradiction fallback: one integer hypothesis closest to the current marginals (or
+        ``marg``), with the current sizes (and the last bank's column totals when known)."""
+        marg = [list(x) for x in (marg if marg is not None else self.expected)]
         cols = ([self.total - b for b in self.last_bank] if self.last_bank is not None else None)
         fixed = dict(hands_hint or {})
         hands: List[List[int]] = [[0] * 5 for _ in range(self.n)]
@@ -558,6 +559,8 @@ class CardCounter(HandBelief):
                     if cols is None or h[r] < cols[r]:
                         h[r] += 1
                 guard += 1
+            while sum(h) < want:          # the column totals cannot fit it (stale bank): ignore them
+                h[max(range(5), key=lambda x: m[x] - h[x])] += 1
             while sum(h) > want:
                 r = max(range(5), key=lambda x: h[x])
                 h[r] -= 1
@@ -681,8 +684,8 @@ class CardCounter(HandBelief):
                          taken_by: Optional[Dict[int, int]] = None) -> None:
         """Player ``i`` monopolised ``res``: ``taken_by[j]`` cards from each victim ``j`` (public:
         the victims' hand sizes drop by it) - every victim held exactly that many.  With only the
-        total ``taken`` the victims' amounts must be the same in every surviving hypothesis
-        (else pass ``taken_by``: the hand sizes must stay exact)."""
+        total ``taken`` the per-victim amounts must come out the same in every surviving
+        hypothesis (else pass ``taken_by``, which keeps the hand sizes exact)."""
         victims = [j for j in range(self.n) if j != i]
         if taken_by is not None:
             want = {j: int(taken_by.get(j, 0)) for j in victims}
@@ -690,6 +693,8 @@ class CardCounter(HandBelief):
             def ok(joint):
                 return all(joint[j][res] == want[j] for j in victims)
         elif taken is not None:
+            want = None
+
             def ok(joint):
                 return sum(joint[j][res] for j in victims) == int(taken)
         else:
@@ -710,34 +715,26 @@ class CardCounter(HandBelief):
             out[i] = tuple(h)
             return ((tuple(out), w),)
 
-        if not self._update(f, "monopoly"):
-            self._reset(f"monopoly of {res} inconsistent with every hypothesis")
-            if taken_by is not None:   # apply it to the restarted hypothesis (clamped)
-                joint = next(iter(self.hyps))
-                out = [list(h) for h in joint]
-                for j in victims:
-                    out[j][res] = max(0, out[j][res] - want[j]) if out[j][res] < want[j] else 0
-                out[i][res] += sum(want.values())
-                self.hyps = {tuple(tuple(h) for h in out): 1.0}   # type: ignore[dict-item]
-                self._marg = None
-        amounts = {j: next(iter(self.hyps))[j][res] for j in victims}   # 0 after the event
-        sizes_before = list(self.size)
-        if taken_by is not None:
-            for j in victims:
-                self.size[j] = sizes_before[j] - want[j]
-            self.size[i] = sizes_before[i] + sum(want.values())
-        else:
-            # the per-victim amounts must agree across hypotheses to keep sizes exact
-            per = {j: set() for j in victims}
-            del amounts
-            self.size[i] = sizes_before[i] + int(taken)   # type: ignore[arg-type]
+        if self._update(f, "monopoly"):
+            sizes = [set() for _ in range(self.n)]
             for joint in self.hyps:
-                for j in victims:
-                    per[j].add(sum(joint[j]))
-            for j in victims:
-                if len(per[j]) != 1:
-                    raise ValueError("monopoly amounts per victim differ across hypotheses: pass taken_by")
-                self.size[j] = per[j].pop()
+                for j in range(self.n):
+                    sizes[j].add(sum(joint[j]))
+            if any(len(x) != 1 for x in sizes):
+                raise ValueError("monopoly amounts per victim differ across hypotheses: pass taken_by")
+            self.size = [x.pop() for x in sizes]
+            return
+        if want is None:
+            raise ValueError("monopoly total inconsistent with every hypothesis: pass taken_by")
+        # contradiction: restart from the marginals with the public amounts applied
+        marg = [list(x) for x in self.expected]
+        got = sum(want.values())
+        for j in victims:
+            marg[j][res] = 0.0
+            self.size[j] -= want[j]
+        marg[i][res] += got
+        self.size[i] += got
+        self._reset(f"monopoly of {res} taking {want} inconsistent with every hypothesis", marg=marg)
 
     def observe_hand_size(self, i: int, size: int) -> None:
         """Consistency check against the public hand size (restart if it disagrees)."""
@@ -745,6 +742,9 @@ class CardCounter(HandBelief):
             self.stats["contradictions"] += 1
             self.size[i] = int(size)
             self._reset(f"hand size of player {i} is {size}")
+
+    def set_exact(self, i: int, resources: Sequence[int]) -> None:
+        self.observe_hand(i, resources)
 
     def observe_hand(self, i: int, resources: Sequence[int]) -> None:
         """Player ``i``'s hand is known exactly (e.g. our own): keep the hypotheses that agree."""
