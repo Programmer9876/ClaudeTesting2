@@ -4,6 +4,39 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 22:40 UTC - win-path portfolio built (off by default, not yet benchmarked)
+
+The strategy the user asked for: weigh every route to 10 VP (Longest Road,
+Largest Army, cities, settlements, VP cards) by how *crowded* it is - who else
+is racing for it, from their production, ports, hand and progress - and only
+spend on a race we can win.  Design chosen by a 3-design judge panel, then
+implemented and independently reviewed (`catanbot/winpaths.py`,
+docs/STRATEGY.md, docs/ABLATIONS_WINPATHS.md).
+
+* **Model**: Longest Road and Largest Army are races; each seat's projected
+  level (current length / knights + cards in hand + income-driven growth over
+  the expected remaining game) gives a win probability per race.  A path's
+  value is prize x P(win) minus the cards still needed to beat the strongest
+  rival, with the option to quit (never below the passive value), replacing
+  the heuristic's fixed award credit.  Optional (off): races for the same
+  settlement spot, timed by each seat's income and turn order.
+* **Calibration on 80 self-play games** (log-loss on who holds the award at
+  the end): Longest Road 1.08 vs 1.41 for "the holder keeps it"; Largest
+  Army 0.90 vs 1.29.  The current heuristic assumes an award holder always
+  keeps it; in these games a Longest Road holder with a 1-road lead kept it
+  only 61 % of the time.
+* **Cost**: 1.25x per decision (1.64x with the spot races).
+* **Safety**: off by default (`paths=1` in a bot spec switches it on); the
+  review rebuilt a pristine package and showed the default bot plays
+  identical games and searches with the module present.  The review also
+  found and fixed three defects (two stale cache keys, a double-counted port
+  conversion), each with a test that fails on the old code.  32 tests pass on
+  both Python environments.
+* **Next** (pre-registered in docs/ABLATIONS_WINPATHS.md, after the proof):
+  calibration, paired games vs Catanatron's ValueFunction (2,000 seeds per
+  arm), crowding / weight sweeps, knock-outs, a held-out confirmation, then
+  the champion league gate before it can become the default.
+
 ## 2026-09-25 22:30 UTC - harness audit closed: it does not weaken Catanatron's bots
 
 The last two controls:
