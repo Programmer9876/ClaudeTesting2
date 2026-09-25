@@ -232,7 +232,8 @@ class ValueNet:
             weight_decay: float = 1e-4, X_val: Optional[np.ndarray] = None, y_val: Optional[np.ndarray] = None,
             log: Optional[Callable[[str], None]] = None, patience: int = 5, clip_norm: float = 5.0,
             shuffle: bool = True, seed: Optional[int] = None, refit_norm: bool = False,
-            beta1: float = 0.9, beta2: float = 0.999, adam_eps: float = 1e-8) -> Dict[str, object]:
+            beta1: float = 0.9, beta2: float = 0.999, adam_eps: float = 1e-8,
+            input_noise: float = 0.0) -> Dict[str, object]:
         """Train with mini-batch Adam.
 
         ``X`` ``(N, n_in)`` raw features (any float dtype), ``y`` ``(N,)``
@@ -278,6 +279,11 @@ class ValueNet:
             for s in range(0, n, batch_size):
                 bi = idx[s:s + batch_size]
                 Hb = Xn[bi]
+                if input_noise > 0:
+                    # Gaussian input noise (in standardised units) as a regulariser: positions
+                    # from the same game are near-duplicates, and without noise the net memorises
+                    # game identity instead of learning position value.
+                    Hb = Hb + rng.normal(0.0, input_noise, Hb.shape).astype(self.dtype)
                 yb = y[bi]
                 z, acts = self._forward(Hb, keep=True)
                 total += _bce_from_logits(z, yb) * len(bi)

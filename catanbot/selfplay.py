@@ -7,6 +7,7 @@ processes::
     "heuristic" / "heuristic:temp=0.5,eps=0.05"
     "search:depth=1,beam=4,expand=8,eps=0.05,temp=0.3,model=models/value_net.npz"
     "search:depth=1,evaluator=heuristic"
+    "search:depth=1,model=models/value_net.npz,blend=0.5"   # 50/50 net + heuristic
 
 ``make_bot(spec)`` builds the bot.  ``play_game`` runs one game and can
 record training samples (feature vectors from every player's perspective at
@@ -51,8 +52,32 @@ def parse_spec(spec: str) -> Tuple[str, Dict[str, str]]:
 _MODEL_CACHE: Dict[str, object] = {}
 
 
-def load_evaluator(path: Optional[str]):
-    """Value net from ``path`` (cached per process) or the heuristic evaluator."""
+class BlendedEvaluator:
+    """``alpha * net + (1 - alpha) * heuristic`` - robust when the net is under-trained."""
+
+    name = "blend"
+
+    def __init__(self, net, alpha: float = 0.5, heuristic: Optional[HeuristicEvaluator] = None):
+        self.net = net
+        self.alpha = float(alpha)
+        self.heuristic = heuristic or HeuristicEvaluator()
+
+    def evaluate(self, states, players) -> np.ndarray:
+        a = self.alpha
+        vn = np.asarray(self.net.evaluate(states, players), dtype=np.float64)
+        if a >= 1.0:
+            return vn
+        vh = np.asarray(self.heuristic.evaluate(states, players), dtype=np.float64)
+        return a * vn + (1.0 - a) * vh
+
+    __call__ = evaluate
+
+
+def load_evaluator(path: Optional[str], blend: Optional[float] = None):
+    """Value net from ``path`` (cached per process) or the heuristic evaluator.
+
+    ``blend`` in (0, 1) mixes the net with the heuristic evaluator.
+    """
     if not path or path in ("heuristic", "none"):
         return HeuristicEvaluator()
     ev = _MODEL_CACHE.get(path)
@@ -60,6 +85,8 @@ def load_evaluator(path: Optional[str]):
         from .model import ValueNet
         ev = ValueNet.load(path)
         _MODEL_CACHE[path] = ev
+    if blend is not None and 0.0 < blend < 1.0:
+        return BlendedEvaluator(ev, blend)
     return ev
 
 
@@ -81,7 +108,8 @@ def make_bot(spec: str) -> Bot:
             trade_proposals=int(kw.get("trades", 3)),
             max_nodes=int(kw.get("nodes", 20000)),
         )
-        ev = load_evaluator(kw.get("model") or kw.get("evaluator"))
+        ev = load_evaluator(kw.get("model") or kw.get("evaluator"),
+                            float(kw["blend"]) if "blend" in kw else None)
         bot = SearchBot(ev, cfg, epsilon=float(kw.get("eps", 0.0)), temperature=float(kw.get("temp", 0.0)))
         bot.name = spec
         return bot
