@@ -130,3 +130,86 @@ def test_should_accept_gets_stricter_late():
     late, why = T.should_accept(s, 0, offer)
     assert early is True
     assert late is False and ("leader" in why or "late" in why)
+
+
+# ---------------------------------------------------------------------------
+# Profile statistics that now feed decisions, and the politics / bias parameters
+# ---------------------------------------------------------------------------
+def test_confidence_grows_with_surprise_and_build_preference():
+    prof = OpponentProfile("bob")
+    assert prof.confidence() == 0.0 and prof.build_preference() == [1.0] * 5
+    for _ in range(3):
+        prof.note_accept([1, 0, 0, 0, 0], [0, 1, 0, 0, 0], True)
+    c0 = prof.confidence()
+    assert 0 < c0 < 1
+    for _ in range(6):
+        prof.surprise.add(1.0)
+    assert prof.surprise_rate() > 0.5 and prof.confidence() > c0      # deviant players: trust their stats sooner
+    prof.builds["city"] = 5.0
+    pref = prof.build_preference()
+    assert pref[B.ORE] > 1.0 > pref[B.WOOD] and abs(sum(pref) / 5 - 1.0) < 1e-9
+    back = OpponentProfile.from_dict(prof.to_dict())
+    assert back.build_preference() == pref
+
+
+def test_city_builder_accepts_ore_more_readily():
+    s = mid_game_state()
+    fresh, builder = OpponentModel(s), OpponentModel(s)
+    builder.profile_of(s, 2).builds["city"] = 6.0
+    receives, pays = [0, 0, 0, 0, 1], [0, 0, 1, 0, 0]         # orange gets ore, pays sheep
+    assert builder.predict_accept(s, 2, receives, pays, proposer=0) > fresh.predict_accept(s, 2, receives, pays, proposer=0)
+
+
+def test_robber_habit_factors_follow_observed_victims():
+    s = mid_game_state()
+    m = OpponentModel(s)
+    assert m.robber_habit_factors(s, 1) == [1.0, 0.0, 1.0, 1.0]
+    for _ in range(4):
+        m.observe(s, (A.MOVE_ROBBER, 11, 3), 1)                 # blue keeps robbing green
+    f = m.robber_habit_factors(s, 1)
+    assert f[1] == 0.0 and f[3] > 1.0 > f[2]
+    w = m.robber_habit_weights(s, 1)
+    assert w[1] == 0.0 and w[3] > w[2] > 0
+
+
+def test_politics_is_threaded_through_offer_ranking_and_advice():
+    from catanbot.politics import PoliticalState
+    s = mid_game_state()
+    m = OpponentModel(s)
+    pol = PoliticalState(4)
+    pol.capital[0][1] = 1.0                                     # blue is very fond of us
+    give, get = (1, 0, 0, 0, 0), (0, 1, 0, 0, 0)
+    assert m.predict_accept(s, 1, give, get, proposer=0, politics=pol) > m.predict_accept(s, 1, give, get, proposer=0)
+    offers = T.candidate_offers(s, 0, B.COST_SETTLEMENT, model=m, politics=pol)
+    assert offers
+    plain = {d["action"]: d["p_accept"] for d in m.rank_offers(s, 0, offers, B.COST_SETTLEMENT)}
+    withp = {d["action"]: d["p_accept"] for d in m.rank_offers(s, 0, offers, B.COST_SETTLEMENT, politics=pol)}
+    assert any(abs(plain[a] - withp[a]) > 1e-6 for a in offers)
+    assert isinstance(m.arbitrage_opportunities(s, 0, politics=pol), list)
+    steps = T.plan_trades(s, 0, B.COST_SETTLEMENT, model=m, politics=pol)
+    assert all(st["kind"] in ("bank", "player") for st in steps)
+    advice = T.trade_advice(s, 0, model=m, politics=pol)
+    assert any("Game stage" in l for l in advice)
+
+
+def test_acceptance_bias_makes_borderline_offers_flip():
+    from catanbot.heuristic import HeuristicEvaluator
+    s = mid_game_state()
+    ev = HeuristicEvaluator()
+    flips = {False: 0, True: 0}
+    for proposer in (1, 2, 3):
+        for give in range(5):
+            for get in range(5):
+                if give == get or not s.players[proposer].resources[give] or not s.players[0].resources[get]:
+                    continue
+                offer = TradeOffer(proposer, [int(r == give) for r in range(5)], [int(r == get) for r in range(5)])
+                for evl in (None, ev):
+                    generous = T.should_accept(s, 0, offer, evl, accept_bias=0.3)[0]
+                    stingy = T.should_accept(s, 0, offer, evl, accept_bias=-0.3)[0]
+                    assert generous or not stingy                # monotone in the bias
+                    flips[evl is not None] += generous != stingy
+    assert flips[False] > 0 and flips[True] > 0
+    # the leader-feeding rule is never overridden by generosity
+    s.players[1].cities = [B.HEX_VERTICES[16][3], B.HEX_VERTICES[18][2], B.HEX_VERTICES[0][5], B.HEX_VERTICES[7][4]]
+    offer = TradeOffer(1, [0, 0, 0, 0, 1], [1, 0, 0, 0, 0])
+    assert not T.should_accept(s, 0, offer, accept_bias=0.3)[0]

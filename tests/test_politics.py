@@ -105,3 +105,88 @@ def test_stage_weight_and_slack_bounds():
     s2.longest_road_owner = 0
     pol2.observe(s2, (A.END_TURN,), 0)
     assert pol2.get(0, 1) < pol2.baseline
+
+
+# ---------------------------------------------------------------------------
+# Advice wording, monopolies against hidden hands, robber habits from the opponent model
+# ---------------------------------------------------------------------------
+def four_settlements():
+    from catanbot import placement as P
+    s = new_game(4, hexes=B.STANDARD_HEXES)
+    occ = {}
+
+    def place(pi, v):
+        assert P.is_free_vertex(occ, v), v
+        s.players[pi].settlements.append(v)
+        occ[v] = pi
+
+    place(0, B.HEX_VERTICES[4][0])
+    place(1, B.HEX_VERTICES[2][1])
+    place(2, B.HEX_VERTICES[12][4])
+    place(3, B.HEX_VERTICES[11][2])
+    for pi in range(4):
+        s.players[pi].roads.append(B.VERTEX_EDGES[s.players[pi].settlements[0]][0])
+    s.phase = PHASE_MAIN
+    s.dice = 6
+    s.current = 0
+    return s
+
+
+def test_award_line_when_the_challenger_already_holds_a_card():
+    s = four_settlements()
+    s.largest_army_owner = 2
+    s.players[2].played_knights = 3
+    s.players[2].cities = [B.HEX_VERTICES[16][3], B.HEX_VERTICES[18][2]]
+    s.players[1].played_knights = 3
+    s.players[1].dev_known = False
+    s.players[1].dev_count = 1
+    s.players[3].played_knights = 3
+    opts = {o["player"]: o for o in award_threat_opportunities(s, 0)}
+    assert opts[1]["needs"] == [0, 0, 0, 0, 0] and sum(opts[3]["needs"]) == 3
+    lines = runway_advice(s, 0)
+    assert not any("(needs )" in l for l in lines)
+    assert any(l.startswith("blue is 1 step") and "already holds a dev card" in l for l in lines)
+    assert any(l.startswith("green is 1 step") and "needs 1 sheep, 1 wheat, 1 ore" in l for l in lines)
+
+
+def test_monopoly_against_hidden_hands_costs_capital():
+    from catanbot.counting import expected_opponent_hands
+    s = four_settlements()
+    for j in (1, 2):
+        s.players[j].hand_known = False
+        s.players[j].hand_size = 6
+        s.players[j].resources = [0] * 5
+    s.players[3].resources = [0] * 5
+    exp = expected_opponent_hands(s, me=0)
+    res = max(range(5), key=lambda r: exp[1][r])
+    pol = PoliticalState(4)
+    before = [pol.get(0, j) for j in range(4)]
+    pol.observe(s, (A.PLAY_MONOPOLY, res), 0)
+    assert pol.get(0, 1) < before[1]                       # expected take from the hidden hand
+    assert pol.get(0, 3) == before[3]                      # known empty hand: nothing taken
+    # with the state after the play the public take is split among the hidden hands
+    pol2 = PoliticalState(4)
+    after = s.copy()
+    after.players[0].resources[res] += 4
+    pol2.observe(s, (A.PLAY_MONOPOLY, res), 0, state_after=after)
+    assert pol2.get(0, 1) < before[1] and pol2.get(0, 3) == before[3]
+    assert any("monopolised" in e for e in pol2.events)
+
+
+def test_robber_target_weights_take_the_actors_habits_from_the_model():
+    from catanbot.opponent_model import OpponentModel
+    s = four_settlements()
+    for p in s.players:
+        p.resources = [1, 1, 1, 1, 1]
+    m = OpponentModel(s)
+    pol = PoliticalState(4)
+    base = pol.robber_target_weights(s, 1)
+    assert pol.robber_target_weights(s, 1, model=m) == base   # nothing observed yet
+    for _ in range(4):
+        m.observe(s, (A.MOVE_ROBBER, 11, 3), 1)               # blue always robs green
+    w = pol.robber_target_weights(s, 1, model=m)
+    assert w[1] == 0.0 and w[3] > base[3] and w[2] < base[2]
+    # the simulated opponent robs its habitual victim
+    from catanbot.robber import best_robber_move
+    _, victim, _ = best_robber_move(s, 1, target_weights=w)
+    assert victim == 3

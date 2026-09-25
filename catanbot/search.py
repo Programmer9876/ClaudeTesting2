@@ -275,8 +275,9 @@ class Searcher:
         return max(0, min(E.MAX_TRADE_PROPOSALS_PER_TURN, int(round(cap))))
 
     def _arbitrage(self, state: GameState, me: int) -> list:
-        """Exploitable deals for this hand (cached per search; profiles do not change mid-search)."""
-        key = (me, tuple(tuple(q.resources) for q in state.players), state.trades_this_turn)
+        """Exploitable deals (cached per search and proposals made: profiles do not change mid-search
+        and the deals only order candidates, which are filtered for legality at every node)."""
+        key = (me, state.trades_this_turn)
         arbs = self._arb_cache.get(key)
         if arbs is None:
             try:

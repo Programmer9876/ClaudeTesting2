@@ -40,6 +40,23 @@ using namespace catanbot;
 
 namespace {
 
+// A GameState converted once and kept in C++ (see the engine section): the search can apply
+// actions and evaluate positions on it without converting a Python GameState each time.
+// `origin` is the GameState it came from (hexes, ports and the players' colour / name are taken
+// from it when the handle is materialised with to_state()).
+struct CState {
+    GameStateC s;
+    py::object origin;
+    long rolls_history_len = 0;
+};
+
+// The GameStateC behind a Python argument: a CState's own struct, or `buf` filled from a GameState.
+const GameStateC* resolve(PyObject* obj, GameStateC& buf) {
+    if (py::isinstance<CState>(py::handle(obj))) return &py::cast<const CState&>(py::handle(obj)).s;
+    state_from_python(obj, buf);
+    return &buf;
+}
+
 long index_of(PyObject* o) {
     long v = PyLong_AsLong(o);
     if (v == -1 && PyErr_Occurred()) {
@@ -77,16 +94,17 @@ py::array_t<float> extract_batch(py::handle states, py::handle players) {
     std::unique_ptr<GameStateC> st(new GameStateC());
     std::unique_ptr<Analysis> an(new Analysis());
     PyObject* last = nullptr;
+    const GameStateC* cur = st.get();
     for (Py_ssize_t i = 0; i < n; ++i) {
         PyObject* s = sitems[i];
         if (s != last) {  // consecutive identical state objects share one analysis
-            state_from_python(s, *st);
-            analyse(*st, *an);
+            cur = resolve(s, *st);
+            analyse(*cur, *an);
             last = s;
         }
         const long player = index_of(pitems[i]);
-        check_player(*st, player);
-        assemble(*st, *an, (int)player, out + i * NUM_FEATURES);
+        check_player(*cur, player);
+        assemble(*cur, *an, (int)player, out + i * NUM_FEATURES);
     }
     return X;
 }
@@ -94,11 +112,11 @@ py::array_t<float> extract_batch(py::handle states, py::handle players) {
 py::array_t<float> extract(py::handle state, long player) {
     std::unique_ptr<GameStateC> st(new GameStateC());
     std::unique_ptr<Analysis> an(new Analysis());
-    state_from_python(state.ptr(), *st);
-    check_player(*st, player);
-    analyse(*st, *an);
+    const GameStateC* cur = resolve(state.ptr(), *st);
+    check_player(*cur, player);
+    analyse(*cur, *an);
     py::array_t<float> x({(py::ssize_t)NUM_FEATURES});
-    assemble(*st, *an, (int)player, x.mutable_data());
+    assemble(*cur, *an, (int)player, x.mutable_data());
     return x;
 }
 
@@ -113,8 +131,8 @@ int longest_road(py::handle state, long player) {
 // heuristic (catanbot.heuristic.static_value / HeuristicEvaluator.evaluate)
 // ---------------------------------------------------------------------------
 py::list static_values_py(py::handle state) {
-    GameStateC st;
-    state_from_python(state.ptr(), st);
+    GameStateC buf;
+    const GameStateC& st = *resolve(state.ptr(), buf);
     double vals[MAX_PLAYERS];
     static_values(st, vals);
     py::list out;
@@ -123,8 +141,8 @@ py::list static_values_py(py::handle state) {
 }
 
 double static_value_py(py::handle state, long player) {
-    GameStateC st;
-    state_from_python(state.ptr(), st);
+    GameStateC buf;
+    const GameStateC& st = *resolve(state.ptr(), buf);
     check_player(st, player);
     return static_value(st, (int)player);
 }
@@ -161,12 +179,12 @@ py::array_t<double> heuristic_evaluate_py(py::handle states, py::handle players,
         size_t idx;
         auto it = cache.find(s);
         if (it == cache.end()) {
-            state_from_python(s, st);
+            const GameStateC& cur = *resolve(s, st);
             Entry e;
-            static_values(st, e.vals);
-            e.num_players = st.num_players;
-            e.decided = st.phase == PHASE_GAME_OVER && st.winner >= 0;
-            e.winner = st.winner;
+            static_values(cur, e.vals);
+            e.num_players = cur.num_players;
+            e.decided = cur.phase == PHASE_GAME_OVER && cur.winner >= 0;
+            e.winner = cur.winner;
             idx = entries.size();
             entries.push_back(e);
             cache.emplace(s, idx);
@@ -295,6 +313,8 @@ PyObject* check(PyObject* o) {
     return o;
 }
 
+inline PyObject* incref(PyObject* o);
+
 // --- the IllegalActionError class ------------------------------------------------------
 // catanbot.engine.IllegalActionError itself (looked up lazily, after the package is imported),
 // so callers catching the Python engine's exception catch ours as well; the module's own
@@ -387,11 +407,6 @@ const ActionTuples& tuples() {
         return T;
     }();
     return *t;
-}
-
-inline PyObject* incref(PyObject* o) {
-    Py_INCREF(o);
-    return o;
 }
 
 // The single non-zero entry of a 5-vector (index) when it equals `amount`, else -1.
@@ -579,16 +594,33 @@ PyObject* new_instance(PyObject* cls) {
     return check(PyBaseObject_Type.tp_new((PyTypeObject*)cls, enames().empty_tuple, nullptr));
 }
 
-// setattr(obj, name, value) consuming the new reference `value`.
-void set_steal(PyObject* obj, PyObject* name, PyObject* value) {
-    check(value);
-    const int r = PyObject_SetAttr(obj, name, value);
-    Py_DECREF(value);
-    if (r < 0) throw py::error_already_set();
+inline PyObject* incref(PyObject* o) {
+    Py_INCREF(o);
+    return o;
 }
 
-void set_int(PyObject* obj, PyObject* name, long v) { set_steal(obj, name, PyLong_FromLong(v)); }
-void set_bool(PyObject* obj, PyObject* name, bool v) { set_steal(obj, name, incref(v ? Py_True : Py_False)); }
+// Attribute stores / loads on one object.  Plain PyObject_SetAttr on purpose: storing straight
+// into a materialised instance __dict__ is no faster and leaves objects that CPython 3.11 can no
+// longer keep in its compact inline-attribute layout (their later copy() / reads get slower).
+struct Writer {
+    PyObject* obj;
+    explicit Writer(PyObject* o) : obj(o) {}
+    // setattr(obj, name, value), consuming the new reference `value`.
+    void set(PyObject* name, PyObject* value) {
+        check(value);
+        const int r = PyObject_SetAttr(obj, name, value);
+        Py_DECREF(value);
+        if (r < 0) throw py::error_already_set();
+    }
+    void set_int(PyObject* name, long v) { set(name, PyLong_FromLong(v)); }
+    void set_bool(PyObject* name, bool v) { set(name, incref(v ? Py_True : Py_False)); }
+    // getattr(obj, name) as a new reference, nullptr (no exception pending) when absent.
+    PyObject* get(PyObject* name) const {
+        PyObject* v = PyObject_GetAttr(obj, name);
+        if (!v) PyErr_Clear();
+        return v;
+    }
+};
 
 PyObject* int_list(const int32_t* v, int n) {
     PyObject* l = check(PyList_New(n));
@@ -617,12 +649,14 @@ PyObject* responses_dict(const TradeC& t) {
 
 PyObject* make_trade(const TradeC& t) {
     const Names& N = names();
-    PyObject* o = new_instance(classes().trade_offer);
+    const StateClasses& C = classes();
+    PyObject* o = new_instance(C.trade_offer);
     Ref keep(o);
-    set_int(o, N.proposer, t.proposer);
-    set_steal(o, N.give, int_list(t.give, NUM_RESOURCES));
-    set_steal(o, N.get, int_list(t.get, NUM_RESOURCES));
-    set_steal(o, N.responses, responses_dict(t));
+    Writer w(o);
+    w.set_int(N.proposer, t.proposer);
+    w.set(N.give, int_list(t.give, NUM_RESOURCES));
+    w.set(N.get, int_list(t.get, NUM_RESOURCES));
+    w.set(N.responses, responses_dict(t));
     return incref(o);
 }
 
@@ -630,26 +664,28 @@ PyObject* make_trade(const TradeC& t) {
 PyObject* make_player(const PlayerC& p, PyObject* src) {
     const Names& N = names();
     const EngineNames& E = enames();
-    PyObject* o = new_instance(classes().player);
+    const StateClasses& C = classes();
+    PyObject* o = new_instance(C.player);
     Ref keep(o);
+    Writer w(o);
     if (src) {
-        set_steal(o, E.color, getattr(src, E.color));
-        set_steal(o, E.name, getattr(src, E.name));
+        w.set(E.color, getattr(src, E.color));
+        w.set(E.name, getattr(src, E.name));
     } else {
-        set_steal(o, E.color, PyUnicode_FromString("red"));
-        set_steal(o, E.name, PyUnicode_FromString(""));
+        w.set(E.color, PyUnicode_FromString("red"));
+        w.set(E.name, PyUnicode_FromString(""));
     }
-    set_steal(o, N.resources, int_list(p.resources, NUM_RESOURCES));
-    set_steal(o, N.dev_cards, int_list(p.dev_cards, NUM_DEV));
-    set_steal(o, N.dev_cards_new, int_list(p.dev_cards_new, NUM_DEV));
-    set_int(o, N.played_knights, p.played_knights);
-    set_steal(o, N.settlements, id_list(p.settlements, p.n_settlements));
-    set_steal(o, N.cities, id_list(p.cities, p.n_cities));
-    set_steal(o, N.roads, id_list(p.roads, p.n_roads));
-    set_bool(o, N.hand_known, p.hand_known);
-    set_int(o, N.hand_size, p.hand_size);
-    set_bool(o, N.dev_known, p.dev_known);
-    set_int(o, N.dev_count, p.dev_count);
+    w.set(N.resources, int_list(p.resources, NUM_RESOURCES));
+    w.set(N.dev_cards, int_list(p.dev_cards, NUM_DEV));
+    w.set(N.dev_cards_new, int_list(p.dev_cards_new, NUM_DEV));
+    w.set_int(N.played_knights, p.played_knights);
+    w.set(N.settlements, id_list(p.settlements, p.n_settlements));
+    w.set(N.cities, id_list(p.cities, p.n_cities));
+    w.set(N.roads, id_list(p.roads, p.n_roads));
+    w.set_bool(N.hand_known, p.hand_known);
+    w.set_int(N.hand_size, p.hand_size);
+    w.set_bool(N.dev_known, p.dev_known);
+    w.set_int(N.dev_count, p.dev_count);
     return incref(o);
 }
 
@@ -675,24 +711,24 @@ struct SrcPlayers {
     PyObject* at(int i) const { return i < n ? items[i] : nullptr; }
 };
 
-void store_scalars(PyObject* o, const GameStateC& s) {
+void store_scalars(Writer& w, const GameStateC& s) {
     const Names& N = names();
-    set_int(o, N.robber, s.robber);
-    set_int(o, N.current, s.current);
-    if (s.phase >= 0 && s.phase < NUM_PHASES) set_steal(o, N.phase, incref(N.phase_str[s.phase]));
-    set_int(o, N.turn, s.turn);
-    set_int(o, N.setup_round, s.setup_round);
-    set_int(o, N.setup_last_settlement, s.setup_last_settlement);
-    set_int(o, N.dice, s.dice);
-    set_bool(o, N.dev_played_this_turn, s.dev_played_this_turn);
-    set_int(o, N.free_roads, s.free_roads);
-    set_int(o, N.trade_responder, s.trade_responder);
-    set_int(o, N.trades_this_turn, s.trades_this_turn);
-    set_int(o, N.longest_road_owner, s.longest_road_owner);
-    set_int(o, N.longest_road_len, s.longest_road_len);
-    set_int(o, N.largest_army_owner, s.largest_army_owner);
-    set_int(o, N.winner, s.winner);
-    set_int(o, N.max_turns, s.max_turns);
+    w.set_int(N.robber, s.robber);
+    w.set_int(N.current, s.current);
+    if (s.phase >= 0 && s.phase < NUM_PHASES) w.set(N.phase, incref(N.phase_str[s.phase]));
+    w.set_int(N.turn, s.turn);
+    w.set_int(N.setup_round, s.setup_round);
+    w.set_int(N.setup_last_settlement, s.setup_last_settlement);
+    w.set_int(N.dice, s.dice);
+    w.set_bool(N.dev_played_this_turn, s.dev_played_this_turn);
+    w.set_int(N.free_roads, s.free_roads);
+    w.set_int(N.trade_responder, s.trade_responder);
+    w.set_int(N.trades_this_turn, s.trades_this_turn);
+    w.set_int(N.longest_road_owner, s.longest_road_owner);
+    w.set_int(N.longest_road_len, s.longest_road_len);
+    w.set_int(N.largest_army_owner, s.largest_army_owner);
+    w.set_int(N.winner, s.winner);
+    w.set_int(N.max_turns, s.max_turns);
 }
 
 // New GameState from `s`; hexes / ports (immutable during a game) and the players' colour /
@@ -700,98 +736,109 @@ void store_scalars(PyObject* o, const GameStateC& s) {
 PyObject* state_to_python_new(const GameStateC& s, PyObject* src, long rolls_history_len) {
     const Names& N = names();
     const EngineNames& E = enames();
-    PyObject* o = new_instance(classes().game_state);
+    const StateClasses& C = classes();
+    PyObject* o = new_instance(C.game_state);
     Ref keep(o);
-    set_steal(o, N.hexes, getattr(src, N.hexes));
-    set_steal(o, N.ports, getattr(src, N.ports));
-    if (s.phase < 0 || s.phase >= NUM_PHASES) set_steal(o, N.phase, getattr(src, N.phase));
-    store_scalars(o, s);
+    Writer w(o);
+    w.set(N.hexes, getattr(src, N.hexes));
+    w.set(N.ports, getattr(src, N.ports));
+    if (s.phase < 0 || s.phase >= NUM_PHASES) w.set(N.phase, getattr(src, N.phase));
+    store_scalars(w, s);
     {
         SrcPlayers sp(src);
         PyObject* pl = check(PyList_New(s.num_players));
         Ref keep_pl(pl);
         for (int i = 0; i < s.num_players; ++i) PyList_SET_ITEM(pl, i, make_player(s.players[i], sp.at(i)));
-        set_steal(o, N.players, incref(pl));
+        w.set(N.players, incref(pl));
     }
-    set_steal(o, N.bank, int_list(s.bank, NUM_RESOURCES));
-    set_steal(o, N.dev_deck, int_list(s.dev_deck, NUM_DEV));
-    set_steal(o, N.discard_queue, int_list(s.discard_queue, s.n_discard));
-    set_steal(o, N.pending_trade, s.has_pending_trade ? make_trade(s.pending_trade) : incref(Py_None));
-    set_int(o, E.rolls_history_len, rolls_history_len);
+    w.set(N.bank, int_list(s.bank, NUM_RESOURCES));
+    w.set(N.dev_deck, int_list(s.dev_deck, NUM_DEV));
+    w.set(N.discard_queue, int_list(s.discard_queue, s.n_discard));
+    w.set(N.pending_trade, s.has_pending_trade ? make_trade(s.pending_trade) : incref(Py_None));
+    w.set_int(E.rolls_history_len, rolls_history_len);
     return incref(o);
 }
 
 // --- in-place write-back (apply_inplace) ------------------------------------------------------
 // Existing list objects are updated in place (item stores / slice assignment) so references held
 // by the caller stay valid, exactly as with the Python engine's in-place mutation.
-void store_ints_inplace(PyObject* obj, PyObject* name, const int32_t* v, int n) {
-    PyObject* cur = PyObject_GetAttr(obj, name);
-    if (!cur) PyErr_Clear();
-    Ref keep(cur);
-    if (cur && PyList_CheckExact(cur) && PyList_GET_SIZE(cur) == n) {
+void store_ints_inplace(Writer& w, PyObject* name, const int32_t* v, int n) {
+    Ref cur(w.get(name));
+    if (cur.p && PyList_CheckExact(cur.p) && PyList_GET_SIZE(cur.p) == n) {
         for (int i = 0; i < n; ++i)
-            if (PyList_SetItem(cur, i, check(PyLong_FromLong(v[i]))) < 0) throw py::error_already_set();
+            if (PyList_SetItem(cur.p, i, check(PyLong_FromLong(v[i]))) < 0) throw py::error_already_set();
         return;
     }
-    set_steal(obj, name, int_list(v, n));
+    w.set(name, int_list(v, n));
 }
 
-void store_ids_inplace(PyObject* obj, PyObject* name, const uint8_t* ids, int n) {
-    PyObject* cur = PyObject_GetAttr(obj, name);
-    if (!cur) PyErr_Clear();
-    Ref keep(cur);
+void store_ids_inplace(Writer& w, PyObject* name, const uint8_t* ids, int n) {
+    Ref cur(w.get(name));
     Ref nl(id_list(ids, n));
-    if (cur && PyList_CheckExact(cur)) {
-        if (PyList_SetSlice(cur, 0, PyList_GET_SIZE(cur), nl.p) < 0) throw py::error_already_set();
+    if (cur.p && PyList_CheckExact(cur.p)) {
+        if (PyList_SetSlice(cur.p, 0, PyList_GET_SIZE(cur.p), nl.p) < 0) throw py::error_already_set();
         return;
     }
-    set_steal(obj, name, incref(nl.p));
+    w.set(name, incref(nl.p));
 }
 
 void store_player_inplace(PyObject* o, const PlayerC& p) {
     const Names& N = names();
-    store_ints_inplace(o, N.resources, p.resources, NUM_RESOURCES);
-    store_ints_inplace(o, N.dev_cards, p.dev_cards, NUM_DEV);
-    store_ints_inplace(o, N.dev_cards_new, p.dev_cards_new, NUM_DEV);
-    set_int(o, N.played_knights, p.played_knights);
-    store_ids_inplace(o, N.settlements, p.settlements, p.n_settlements);
-    store_ids_inplace(o, N.cities, p.cities, p.n_cities);
-    store_ids_inplace(o, N.roads, p.roads, p.n_roads);
-    set_int(o, N.hand_size, p.hand_size);
-    set_int(o, N.dev_count, p.dev_count);
+    Writer w(o);
+    store_ints_inplace(w, N.resources, p.resources, NUM_RESOURCES);
+    store_ints_inplace(w, N.dev_cards, p.dev_cards, NUM_DEV);
+    store_ints_inplace(w, N.dev_cards_new, p.dev_cards_new, NUM_DEV);
+    w.set_int(N.played_knights, p.played_knights);
+    store_ids_inplace(w, N.settlements, p.settlements, p.n_settlements);
+    store_ids_inplace(w, N.cities, p.cities, p.n_cities);
+    store_ids_inplace(w, N.roads, p.roads, p.n_roads);
+    w.set_int(N.hand_size, p.hand_size);
+    w.set_int(N.dev_count, p.dev_count);
 }
 
-void store_trade_inplace(PyObject* o, const GameStateC& s) {
+void store_trade_inplace(Writer& w, const GameStateC& s) {
     const Names& N = names();
     if (!s.has_pending_trade) {
-        set_steal(o, N.pending_trade, incref(Py_None));
+        w.set(N.pending_trade, incref(Py_None));
         return;
     }
     const TradeC& t = s.pending_trade;
-    Ref cur(PyObject_GetAttr(o, N.pending_trade));
-    if (!cur.p) PyErr_Clear();
+    Ref cur(w.get(N.pending_trade));
     if (!cur.p || cur.p == Py_None || t.proposer != get_int32(cur.p, N.proposer)) {
         // a new offer (PROPOSE_TRADE creates a new TradeOffer in Python as well)
-        set_steal(o, N.pending_trade, make_trade(t));
+        w.set(N.pending_trade, make_trade(t));
         return;
     }
-    store_ints_inplace(cur.p, N.give, t.give, NUM_RESOURCES);
-    store_ints_inplace(cur.p, N.get, t.get, NUM_RESOURCES);
-    Ref resp(PyObject_GetAttr(cur.p, N.responses));
+    Writer tw(cur.p);
+    store_ints_inplace(tw, N.give, t.give, NUM_RESOURCES);
+    store_ints_inplace(tw, N.get, t.get, NUM_RESOURCES);
+    Ref resp(tw.get(N.responses));
     if (resp.p && PyDict_CheckExact(resp.p)) {
         Ref fresh(responses_dict(t));
         PyDict_Clear(resp.p);
         if (PyDict_Update(resp.p, fresh.p) < 0) throw py::error_already_set();
     } else {
-        PyErr_Clear();
-        set_steal(cur.p, N.responses, responses_dict(t));
+        tw.set(N.responses, responses_dict(t));
     }
+}
+
+long long_of(PyObject* v_new_ref, long dflt) {  // consumes the reference
+    if (!v_new_ref) return dflt;
+    Ref keep(v_new_ref);
+    const long v = PyLong_AsLong(v_new_ref);
+    if (v == -1 && PyErr_Occurred()) {
+        PyErr_Clear();
+        return dflt;
+    }
+    return v;
 }
 
 void state_to_python_inplace(const GameStateC& s, PyObject* o, bool rolled) {
     const Names& N = names();
     const EngineNames& E = enames();
-    store_scalars(o, s);
+    const StateClasses& C = classes();
+    Writer w(o);
+    store_scalars(w, s);
     {
         SrcPlayers sp(o);
         if (sp.n == s.num_players) {
@@ -800,40 +847,20 @@ void state_to_python_inplace(const GameStateC& s, PyObject* o, bool rolled) {
             PyObject* pl = check(PyList_New(s.num_players));
             Ref keep_pl(pl);
             for (int i = 0; i < s.num_players; ++i) PyList_SET_ITEM(pl, i, make_player(s.players[i], sp.at(i)));
-            set_steal(o, N.players, incref(pl));
+            w.set(N.players, incref(pl));
         }
     }
-    store_ints_inplace(o, N.bank, s.bank, NUM_RESOURCES);
-    store_ints_inplace(o, N.dev_deck, s.dev_deck, NUM_DEV);
-    store_ints_inplace(o, N.discard_queue, s.discard_queue, s.n_discard);
-    store_trade_inplace(o, s);
-    if (rolled) {
-        PyObject* r = PyObject_GetAttr(o, E.rolls_history_len);
-        long v = 0;
-        if (r) {
-            v = PyLong_AsLong(r);
-            Py_DECREF(r);
-            if (v == -1 && PyErr_Occurred()) PyErr_Clear();
-        } else {
-            PyErr_Clear();
-        }
-        set_int(o, E.rolls_history_len, v + 1);
-    }
+    store_ints_inplace(w, N.bank, s.bank, NUM_RESOURCES);
+    store_ints_inplace(w, N.dev_deck, s.dev_deck, NUM_DEV);
+    store_ints_inplace(w, N.discard_queue, s.discard_queue, s.n_discard);
+    store_trade_inplace(w, s);
+    if (rolled) w.set_int(E.rolls_history_len, long_of(w.get(E.rolls_history_len), 0) + 1);
 }
 
 long rolls_history_len_of(PyObject* src) {
     PyObject* r = PyObject_GetAttr(src, enames().rolls_history_len);
-    if (!r) {
-        PyErr_Clear();
-        return 0;
-    }
-    long v = PyLong_AsLong(r);
-    Py_DECREF(r);
-    if (v == -1 && PyErr_Occurred()) {
-        PyErr_Clear();
-        return 0;
-    }
-    return v;
+    if (!r) PyErr_Clear();
+    return long_of(r, 0);
 }
 
 // --- random sources -----------------------------------------------------------------------------
@@ -894,11 +921,31 @@ struct DrawHolder {
 };
 
 // --- entry points --------------------------------------------------------------------------------
+py::list legal_list(const GameStateC& st);
+
 py::list legal_actions_py(py::handle state) {
     std::unique_ptr<GameStateC> st(new GameStateC());
-    state_from_python(state.ptr(), *st);
+    return legal_list(*resolve(state.ptr(), *st));
+}
+
+// engine.apply_inplace on a C++ state: the Python-level checks ("game is over" before "unknown
+// action <repr>", like engine.apply_inplace) plus the handler; *rolled is set for a roll.
+void apply_checked(GameStateC& st, py::handle action, DrawSource& draw, bool* rolled) {
+    ActionC a;
+    parse_action(action.ptr(), a);
+    if (st.phase == PHASE_GAME_OVER) throw_illegal("game is over");
+    if (a.kind == ACT_UNKNOWN) {
+        Ref r(check(PyObject_Repr(action.ptr())));
+        const char* s = PyUnicode_AsUTF8(r.p);
+        if (!s) throw py::error_already_set();
+        throw_illegal(std::string("unknown action ") + s);
+    }
+    apply_inplace(st, a, draw, rolled);
+}
+
+py::list legal_list(const GameStateC& st) {
     static thread_local ActionList acts;
-    legal_actions(*st, acts);
+    legal_actions(st, acts);
     PyObject* out = check(PyList_New(acts.n));
     for (int i = 0; i < acts.n; ++i) {
         PyObject* t;
@@ -913,20 +960,76 @@ py::list legal_actions_py(py::handle state) {
     return py::reinterpret_steal<py::list>(out);
 }
 
+// --- CState: a converted state kept in C++ -------------------------------------------------------
+std::unique_ptr<CState> cstate_new(py::handle state) {
+    std::unique_ptr<CState> c(new CState());
+    if (py::isinstance<CState>(state)) {
+        const CState& o = py::cast<const CState&>(state);
+        c->s = o.s;
+        c->origin = o.origin;
+        c->rolls_history_len = o.rolls_history_len;
+    } else {
+        state_from_python(state.ptr(), c->s);
+        c->origin = py::reinterpret_borrow<py::object>(state);
+        c->rolls_history_len = rolls_history_len_of(state.ptr());
+    }
+    return c;
+}
+
+void cstate_apply(CState& c, py::handle action, DrawSource& draw) {
+    bool rolled = false;
+    apply_checked(c.s, action, draw, &rolled);
+    if (rolled) ++c.rolls_history_len;
+}
+
+std::unique_ptr<CState> cstate_apply_new(const CState& c, py::handle action, py::handle rng) {
+    std::unique_ptr<CState> out(new CState(c));
+    DrawHolder d(rng);
+    cstate_apply(*out, action, *d.src);
+    return out;
+}
+
+py::object cstate_apply_inplace(py::object self, py::handle action, py::handle rng) {
+    CState& c = py::cast<CState&>(self);
+    DrawHolder d(rng);
+    cstate_apply(c, action, *d.src);
+    return self;
+}
+
+std::unique_ptr<CState> cstate_apply_forced(const CState& c, py::handle action, int drawn_index) {
+    std::unique_ptr<CState> out(new CState(c));
+    ForcedDraw d(drawn_index);
+    cstate_apply(*out, action, d);
+    return out;
+}
+
+py::object cstate_to_state(const CState& c) {
+    return py::reinterpret_steal<py::object>(state_to_python_new(c.s, c.origin.ptr(), c.rolls_history_len));
+}
+
+std::unique_ptr<CState> cstate_random_playout(const CState& c, py::handle seed, py::handle max_turns, long max_actions) {
+    std::unique_ptr<CState> out(new CState(c));
+    if (!max_turns.is_none()) out->s.max_turns = to_int32(max_turns.ptr(), "max_turns");
+    Xoshiro rng(seed_of(seed));
+    out->rolls_history_len += random_playout(out->s, rng, max_actions, nullptr);
+    return out;
+}
+
+py::object cstate_phase(const CState& c) {
+    if (c.s.phase >= 0 && c.s.phase < NUM_PHASES) return py::reinterpret_borrow<py::object>(names().phase_str[c.s.phase]);
+    return c.origin.attr("phase");  // an unknown phase string is kept as it was
+}
+
+int cstate_count_vp(const CState& c, long player, bool include_hidden) {
+    check_player(c.s, player);
+    return count_vp(c.s, (int)player, include_hidden);
+}
+
 py::object apply_impl(py::handle state, py::handle action, DrawSource& draw, bool inplace) {
     std::unique_ptr<GameStateC> st(new GameStateC());
     state_from_python(state.ptr(), *st);
-    ActionC a;
-    parse_action(action.ptr(), a);
-    if (st->phase == PHASE_GAME_OVER) throw_illegal("game is over");
-    if (a.kind == ACT_UNKNOWN) {
-        Ref r(check(PyObject_Repr(action.ptr())));
-        const char* s = PyUnicode_AsUTF8(r.p);
-        if (!s) throw py::error_already_set();
-        throw_illegal(std::string("unknown action ") + s);
-    }
     bool rolled = false;
-    apply_inplace(*st, a, draw, &rolled);
+    apply_checked(*st, action, draw, &rolled);
     if (inplace) {
         state_to_python_inplace(*st, state.ptr(), rolled);
         return py::reinterpret_borrow<py::object>(state);
@@ -1071,7 +1174,42 @@ PYBIND11_MODULE(catanbot_core, m) {
         }
     });
     m.def("legal_actions", &engine_py::legal_actions_py, py::arg("state"),
-          "engine.legal_actions: the same action tuples in the same order as the Python engine.");
+          "engine.legal_actions: the same action tuples in the same order as the Python engine "
+          "(`state` may also be a CState).");
+    py::class_<CState>(m, "CState",
+                       "A GameState converted once and kept in C++.  legal_actions() / apply() / apply_inplace() / "
+                       "apply_forced() / random_playout() work on it without converting a Python GameState, "
+                       "extract_batch / heuristic_evaluate / static_values accept it directly, and to_state() "
+                       "materialises an ordinary GameState (hexes, ports and the players' colour / name come from "
+                       "the GameState the handle was created from).")
+        .def(py::init(&engine_py::cstate_new), py::arg("state"), "From a GameState (converted) or another CState (copied).")
+        .def("legal_actions", [](const CState& c) { return engine_py::legal_list(c.s); }, "engine.legal_actions.")
+        .def("apply", &engine_py::cstate_apply_new, py::arg("action"), py::arg("rng") = py::none(),
+             "engine.apply -> a new CState (rng: None / int seed / random.Random, like core.apply).")
+        .def("apply_inplace", &engine_py::cstate_apply_inplace, py::arg("action"), py::arg("rng") = py::none(),
+             "engine.apply_inplace on this handle; returns it.")
+        .def("apply_forced", &engine_py::cstate_apply_forced, py::arg("action"), py::arg("drawn_index"),
+             "core.apply_forced -> a new CState.")
+        .def("to_state", &engine_py::cstate_to_state, "A new catanbot.state.GameState with this position.")
+        .def("copy", [](const CState& c) { return std::unique_ptr<CState>(new CState(c)); })
+        .def("random_playout", &engine_py::cstate_random_playout, py::arg("seed") = py::none(),
+             py::arg("max_turns") = py::none(), py::arg("max_actions") = 2000000L,
+             "engine.random_playout from this position -> the final CState (this handle is unchanged).")
+        .def("count_vp", &engine_py::cstate_count_vp, py::arg("player"), py::arg("include_hidden") = true)
+        .def_property_readonly("phase", &engine_py::cstate_phase)
+        .def_property_readonly("current", [](const CState& c) { return c.s.current; })
+        .def_property_readonly("turn", [](const CState& c) { return c.s.turn; })
+        .def_property_readonly("dice", [](const CState& c) { return c.s.dice; })
+        .def_property_readonly("winner", [](const CState& c) { return c.s.winner; })
+        .def_property_readonly("num_players", [](const CState& c) { return c.s.num_players; })
+        .def_property_readonly("acting_player", [](const CState& c) { return acting_player(c.s); })
+        .def_property_readonly("is_terminal", [](const CState& c) { return is_terminal(c.s); })
+        .def_property_readonly("rolls_history_len", [](const CState& c) { return c.rolls_history_len; })
+        .def_property_readonly("origin", [](const CState& c) { return c.origin; },
+                               "The GameState this handle (or the handle it was derived from) was created from.")
+        .def_property(
+            "max_turns", [](const CState& c) { return c.s.max_turns; },
+            [](CState& c, int v) { c.s.max_turns = v; });
     m.def("apply", &engine_py::apply_py, py::arg("state"), py::arg("action"), py::arg("rng") = py::none(),
           "engine.apply: a NEW GameState with the action applied (the input is not modified).  `rng` is None "
           "(fresh C++ rng), an int seed (C++ rng) or a random.Random, which is consulted exactly like the Python "

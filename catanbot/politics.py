@@ -385,6 +385,25 @@ class PoliticalState:
             out.append(w)
         return out
 
+    def _position(self, state: GameState, i: int) -> float:
+        """``relative_position`` memoised on what it depends on (pieces, awards, dev cards).
+
+        The search asks for the favour slack thousands of times per turn on
+        states that differ only in hands; the position only changes with
+        buildings / awards / dev cards, so those states share one entry.
+        """
+        key = (i, state.longest_road_owner, state.largest_army_owner, tuple(state.dev_deck),
+               tuple((tuple(p.settlements), tuple(p.cities), p.dev_known, p.dev_count, p.vp_cards)
+                     for p in state.players))
+        cache = self.__dict__.setdefault("_pos_cache", {})
+        pos = cache.get(key)
+        if pos is None:
+            if len(cache) >= 256:
+                cache.clear()
+            pos = relative_position(state, i)
+            cache[key] = pos
+        return pos
+
     def favor_slack(self, state: GameState, responder: int, proposer: int) -> float:
         """Bounded slack (card-value units) a responder grants the proposer.
 
@@ -395,7 +414,7 @@ class PoliticalState:
         """
         self.ensure(state.num_players)
         cap = self.get(proposer, responder)          # how responder views proposer
-        pos = relative_position(state, proposer)
+        pos = self._position(state, proposer)
         slack = 0.6 * (cap - self.baseline) - 0.35 * pos
         # Allies float each other; a responder inside a bloc that excludes the proposer
         # demands a premium instead.

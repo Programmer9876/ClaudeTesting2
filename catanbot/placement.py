@@ -258,21 +258,6 @@ def blocking_value(state: GameState, player: int, v: int, occ: Optional[Dict[int
     return best
 
 
-def _best_reach_score(state: GameState, i: int, occ: Dict[int, int], eocc: Dict[int, int],
-                      max_roads: int = 2) -> Tuple[float, Dict[int, Tuple[int, int]]]:
-    """Best distance-discounted spot score player ``i`` can reach within ``max_roads`` roads."""
-    reach = reachable_spots(state, i, max_roads=max_roads, occ=occ, eocc=eocc)
-    best = 0.0
-    if reach:
-        own_prod = player_production(state, i, ignore_robber=True)
-        scarcity = resource_scarcity(state)
-        for v, (d, _) in reach.items():
-            s = score_settlement_spot(state, i, v, occ=occ, own_prod=own_prod, scarcity=scarcity) / (1.0 + 0.9 * d)
-            if s > best:
-                best = s
-    return best, reach
-
-
 def road_block_values(state: GameState, player: int, edges: Iterable[int],
                       occ: Optional[Dict[int, int]] = None) -> Dict[int, float]:
     """How much building a road on each of ``edges`` cuts the opponents off.
@@ -289,10 +274,19 @@ def road_block_values(state: GameState, player: int, edges: Iterable[int],
     out: Dict[int, float] = {e: 0.0 for e in edges}
     if not edges:
         return out
+    scarcity = None
     for i in range(state.num_players):
         if i == player:
             continue
-        base, reach = _best_reach_score(state, i, occ, eocc)
+        reach = reachable_spots(state, i, max_roads=2, occ=occ, eocc=eocc)
+        if not reach:
+            continue
+        # Spot scores are computed once; taking an edge can only remove spots / lengthen paths.
+        scarcity = resource_scarcity(state) if scarcity is None else scarcity
+        own_prod = player_production(state, i, ignore_robber=True)
+        scores = {v: score_settlement_spot(state, i, v, occ=occ, own_prod=own_prod, scarcity=scarcity)
+                  for v in reach}
+        base = max(scores[v] / (1.0 + 0.9 * d) for v, (d, _) in reach.items())
         if base <= 0.0:
             continue
         # Only edges on the opponent's frontier (touching a vertex they can reach with at most
@@ -313,7 +307,8 @@ def road_block_values(state: GameState, player: int, edges: Iterable[int],
                 continue
             eocc2 = dict(eocc)
             eocc2[e] = player
-            after, _ = _best_reach_score(state, i, occ, eocc2)
+            reach2 = reachable_spots(state, i, max_roads=2, occ=occ, eocc=eocc2)
+            after = max((scores.get(v, 0.0) / (1.0 + 0.9 * d) for v, (d, _) in reach2.items()), default=0.0)
             drop = base - after
             if drop > out[e]:
                 out[e] = drop

@@ -511,13 +511,19 @@ class OpponentModel:
         the favour slack / leader premium, like the search does.
         """
         our_vals = our_resource_values(state, me, needed)
+        safe: Dict[tuple, bool] = {}
         out = []
         for a in offers:
             give, get = a[1], a[2]
             gain_us = sum(our_vals[r] * (get[r] - give[r]) for r in range(5))
             best_p, best_j = 0.0, -1
             for j in range(state.num_players):
-                if j == me or not self._safe_partner(state, me, j, give):
+                if j == me:
+                    continue
+                key = (j, tuple(give))
+                if key not in safe:
+                    safe[key] = self._safe_partner(state, me, j, give)
+                if not safe[key]:
                     continue
                 pj = self.predict_accept(state, j, give, get, proposer=me, belief=belief, politics=politics)
                 if pj > best_p:
@@ -544,6 +550,15 @@ class OpponentModel:
         stage = trade_stage_factor(state)
         out = []
         n = state.num_players
+        safe: Dict[tuple, bool] = {}
+
+        def safe_partner(k: int, res: int) -> bool:
+            """Cached: may we hand one ``res`` to player ``k``?"""
+            key = (k, res)
+            if key not in safe:
+                safe[key] = self._safe_partner(state, me, k, [1 if r == res else 0 for r in range(5)])
+            return safe[key]
+
         for j in range(n):
             if j == me:
                 continue
@@ -552,8 +567,7 @@ class OpponentModel:
                 for y in range(5):      # what we pay
                     if x == y or p.resources[y] <= 0:
                         continue
-                    give_vec = [1 if r == y else 0 for r in range(5)]
-                    if not self._safe_partner(state, me, j, give_vec):
+                    if not safe_partner(j, y):
                         continue
                     their_edge = pj.value[y] - pj.value[x]      # >0: they prefer y (they give x cheaply)
                     our_edge = our_vals[x] - our_vals[y]        # >0: we prefer x
@@ -571,7 +585,7 @@ class OpponentModel:
                                               f"we need {B.RESOURCE_NAMES[x]} more (edge {our_edge:+.2f}, P(accept) {prob:.0%})"})
                     # intermediary: sell x to k for z
                     for k in range(n):
-                        if k in (me, j) or not self._safe_partner(state, me, k, [1 if r == x else 0 for r in range(5)]):
+                        if k in (me, j) or not safe_partner(k, x):
                             continue
                         pk = self.profile_of(state, k)
                         for z in range(5):
@@ -583,11 +597,15 @@ class OpponentModel:
                                 continue
                             give2 = tuple(1 if r == x else 0 for r in range(5))
                             get2 = tuple(1 if r == z else 0 for r in range(5))
-                            s2 = state.copy()
-                            s2.players[me].resources[y] -= 1
-                            s2.players[me].resources[x] += 1
-                            prob2 = self.predict_accept(s2, k, give2, get2, proposer=me, belief=belief,
-                                                        politics=politics)
+                            # Our hand after the first leg (mutated in place and restored: no state copy).
+                            p.resources[y] -= 1
+                            p.resources[x] += 1
+                            try:
+                                prob2 = self.predict_accept(state, k, give2, get2, proposer=me, belief=belief,
+                                                            politics=politics)
+                            finally:
+                                p.resources[y] += 1
+                                p.resources[x] -= 1
                             if prob2 < min_prob:
                                 continue
                             gain = prob * prob2 * net_edge * stage

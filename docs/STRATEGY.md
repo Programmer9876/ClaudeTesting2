@@ -29,20 +29,45 @@ the value net disagrees with a rule, the net wins.
    the stage of the game, and the political slack (below).
 6. **Arbitrage**: if opponent A's implied valuation says they give X for Y
    cheaply and we value X more than Y, buy.  If B pays Z for X, run the
-   chain Y -> X -> Z as an intermediary.
+   chain Y -> X -> Z as an intermediary.  The search sees these deals: the
+   first step of the three best exploitable deals is promoted above the
+   ordinary proposals in the candidate list (its explanation names the
+   counterpart's revealed valuation), and once the first leg of a chain has
+   executed the second leg is tried first at the next level.
 7. **Game stage**: early trades grow both economies; as the leader nears
    10 VP every trade mostly helps whoever is closer, so the required gain
-   rises and late trades with anyone ahead of us are refused.
+   rises and late trades with anyone ahead of us are refused.  Inside the
+   search the priors of `PROPOSE_TRADE` candidates are multiplied by the
+   trade stage factor and proposals are capped per turn (4 early, 2 late;
+   `SearchConfig.trade_cap_early / trade_cap_late`).
 8. Incoming offers are judged with the same value function (accept if our
    win probability rises and theirs does not rise more), otherwise by
    "does it complete a build for us and not for them".
+9. The simulated opponents trade too: in the lookahead each opponent may
+   make one profile-ranked proposal per turn (`plan_trades` with the
+   opponent model, `SearchConfig.opponent_proposals`), answered with the
+   same acceptance rules (politics included), so the value net is trained
+   on positions where deals are offered to us.
+10. **Self-play trading styles** (`train.py`, bot specs): besides epsilon
+    and the temperature over search values, every training bot may carry a
+    per-game acceptance bias (`accept_bias=0.3` draws b ~ U(-0.3, 0.3)
+    once per game and shifts the acceptance threshold: generous or stingy
+    games), a temperature over the offer ranking (`offer_temp`) and a
+    probability of a random response / proposal (`trade_eps`).  The bias of
+    the bot that produced each sample is stored with the replay buffer
+    (`bias`) for later analysis.
 
 ## 7-protection (`discard.py`)
 
 * Risk = 1 - (5/6)^k where k is the number of opponent rolls before our
   next roll; with a hand above 7 the expected loss is shown in the advice.
 * Before ending a turn with more than 7 cards the search sees the cheap
-  dumps (build, dev card, bank-trade surplus into a needed card).
+  dumps (build, dev card, bank-trade surplus into a needed card): the top
+  `surplus_dump_actions` are ranked at least like the trade plan in the
+  candidate list, so road / offer spam never crowds them out of the beam.
+  (The static hand penalty itself is mirrored in the C++ evaluator port and
+  is left evaluator-side; the value net learns the 7-risk from the
+  `discard_exposure` / phase features.)
 * When a 7 hits, the discard keeps the cards for the top target build (and
   half of the second), then throws away what we produce most easily and
   value least.
@@ -77,9 +102,12 @@ the value net disagrees with a rule, the net wins.
   (>= 3 pips-equivalent), a player at 8+ VP can be slowed, an opponent is
   about to steal Largest Army from us, or late in the game we hold enough
   knights to build the army.  Otherwise hold it.
-* Opponents in the simulation pick victims by danger × grudge, so the search
-  "knows" who gets robbed - the loaded player, not necessarily the visible
-  leader.
+* Opponents in the simulation pick victims by danger × grudge × their
+  observed habits (whom they keep robbing, whether they go for the leader,
+  from the opponent model), so the search "knows" who gets robbed - the
+  loaded player, not necessarily the visible leader - and who is spared.
+  Our own robber ordering in the search uses the same grudge-weighted
+  targets as the advice text, so the two never name different victims.
 
 ## Development cards (`devcards.py`, `counting.py`)
 
@@ -111,7 +139,11 @@ with diminishing returns on what we already produce, diversity, new
 resource types, port synergy, expansion room and a blocking bonus when an
 opponent wanted the spot.  Cities go on the best producers (ore/wheat
 weighted).  Roads head for the best reachable spot, discounted by distance
-and contest, and count towards Longest Road.
+and contest, and count towards Longest Road; a road that cuts an opponent
+off from their best reachable spot (`road_block_values`: the drop of their
+best two-road spot score when the edge is taken) gets the same bonus as a
+contested spot, and a little more when it also extends our own Longest Road
+candidate.
 
 ## Opponent modelling (`opponent_model.py`)
 
@@ -120,7 +152,14 @@ Nash play is intractable with 3-4 players, so the bot plays
 tracked with exponential decay - offer acceptance (overall, per resource
 received, per resource paid), implied resource valuations, who they rob,
 whether they hit the leader, build preferences, risk of holding more than 7
-cards, and how often they deviate from our heuristic's prediction.
+cards, and how often they deviate from our heuristic's prediction.  The
+statistics are used, not just displayed: acceptance and valuations drive
+P(accept) and the arbitrage deals, build preferences shade which resources
+an opponent is assumed to want (a city builder wants ore / wheat), the
+robber habits drive the simulated opponents' robber moves, and a high
+surprise rate makes the profile's statistics count sooner than the
+heuristic prior (`confidence`).  Hand sizes are public, so the
+"holds > 7 cards" statistic only feeds the style summary.
 Profiles persist across games / screenshots (`--profiles`) and can be fed
 manually with `--event "blue accepted give ore get wood"`.
 
