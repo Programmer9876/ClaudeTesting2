@@ -98,6 +98,21 @@ Other knobs:
   `--time ... ran out` tells you how many were searched).  The deadline is
   checked between search levels, so a very deep search can still overrun it
   slightly - lower `--depth` / `--beam` for hard limits.
+* Which `--depth` / `--time` (measured on 4 shared cores with the C++
+  extension built, `scripts/build_cpp.sh`; see docs/CPP.md "Native lookahead"):
+  the opponents' turns and the deeper lookahead now run natively, so with the
+  heuristic evaluator a depth-2 search costs ~0.03 s per determinization
+  sample and depth 3 ~0.1 s (before: 1.2 s and 6 s), i.e. `--depth 3
+  --samples 4 --time 5` is comfortable.  With a trained value net
+  (`models/value_net.npz`, 256/128 hidden) the net's own evaluation dominates:
+  ~0.1 s per sample at depth 2 and ~1 s at depth 3, so keep `--depth 2` there
+  or give `--time`.  Depth 3 is *affordable* but not yet *stronger*: in
+  same-table tournaments the depth-3 search bot does not beat depth 2
+  (see docs/CPP.md "Strength"), because the reduced sub-search that scores
+  the deeper leaves is noisier than the depth-2 mean shift; until that is
+  tuned, `--depth 2` remains the recommendation and `--depth 3` is for
+  analysis.  Without the extension (`CATANBOT_NO_ACCEL=1` or not built) the
+  old costs apply: depth 2 ~1 s per sample, depth 3 ~6 s.
 * `--seed N` - seed for the sampled opponent hands; `--json` - machine
   readable output (`actions`, `advice`, `state` as given, `decision` = the
   situation that was actually searched, `search` = time / sample budget).
@@ -209,6 +224,13 @@ games (default 600) - lower it for a quick smoke run, e.g.
 `train --iters 1 --games 2 --heur-games 2 --eval-games 2 --workers 1 --epochs 1`.
 `train --help` lists the remaining knobs (`--depth`, `--beam`, `--expand`,
 `--epochs`, `--hidden`, `--blend`, `--buffer`, `--max-turns`, ...).
+`--depth` for self-play: with the extension built a depth-2 search bot costs
+~0.02-0.03 s per decision with the heuristic evaluator and ~0.1 s with the
+net (Python: 0.07 s / 0.3 s), so `--depth 2` is now the sensible default for
+self-play data; `--depth 3` costs 0.03-0.05 s (heuristic) / ~1 s (net) per
+decision and does not play better yet (docs/CPP.md "Strength"), so it is not
+worth its games.  Bots seated with `CATANBOT_NO_NATIVE_SEARCH=1` or
+`CATANBOT_NO_ACCEL=1` take the Python path (same strength, slower).
 
 ## 4. Render a state
 

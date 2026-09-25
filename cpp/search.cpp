@@ -33,8 +33,11 @@ inline double now_seconds() {
     return duration<double>(system_clock::now().time_since_epoch()).count();
 }
 
+// Per-(level, state, sample) stream: unsigned arithmetic throughout (the level offset of the
+// reduced searches, L + 64, overflowed a signed int in the first version).
 inline uint64_t mix_seed(uint64_t seed, int level, int si, int ri) {
-    return seed + 0x9E3779B97F4A7C15ULL * (uint64_t)(((level + 1) * 65536 + si) * 4096 + ri + 1);
+    const uint64_t key = ((uint64_t)(level + 1) * 65536ULL + (uint64_t)si) * 4096ULL + (uint64_t)ri + 1ULL;
+    return seed + 0x9E3779B97F4A7C15ULL * key;
 }
 
 inline bool same_action(const ActionC& a, const ActionC& b) {

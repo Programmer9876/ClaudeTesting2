@@ -20,12 +20,20 @@ every decision, labelled with the eventual winner); ``GameResult.bias``
 keeps the acceptance bias of each sample's bot as metadata.
 
 With ``sibling_rate > 0`` ``play_game`` also records **sibling afterstates**
-at a random share of the current player's main-phase decisions: one concrete
-afterstate per legal action (one sampled chance outcome, as the search sees
-it) with its heuristic value and action kind.  The value net is trained to
-*order* these siblings like the heuristic (``ValueNet.fit(pairs=...)``):
-the Monte-Carlo labels alone never say that holding an affordable build is
-worse than making it, because the behaviour policy never holds.
+at a random share of the current player's main-phase decisions: for every
+legal action the state reached by playing it (one sampled chance outcome, as
+the search sees it) *and then ending the turn*, so that all siblings sit at
+the horizon the depth-1 search compares (the next player's roll; END_TURN
+itself is "end the turn now" and a winning action is its game-over state),
+with the heuristic evaluator's value and the action kind.  The value net is
+trained to *order* these siblings like the heuristic (``ValueNet.fit(pairs=
+...)``): the Monte-Carlo labels alone never say that holding an affordable
+build is worse than making it, because the behaviour policy never holds.
+Each sibling is also kept at its *mid-turn* horizon (the immediate
+afterstate, or the decision state itself for END_TURN): the search values
+lines pruned by its beam by such mid-turn statics next to fully expanded
+lines valued at the END_TURN horizon, so the net is trained to give both
+the same value (``ValueNet.fit(consistency=...)``).
 """
 from __future__ import annotations
 
@@ -177,7 +185,7 @@ def sibling_kind_id(action) -> int:
 
 
 class _SiblingRecorder:
-    """Collects one concrete afterstate per legal action at sampled main-phase decisions."""
+    """Collects one concrete end-of-turn afterstate per legal action at sampled main-phase decisions."""
 
     def __init__(self, rate: float, seed: int, max_proposals: int = 6):
         from .search import Searcher
@@ -187,7 +195,8 @@ class _SiblingRecorder:
         self.heuristic = HeuristicEvaluator()
         self.searcher = Searcher(self.heuristic, SearchConfig(depth=1, beam=4, expand=8))
         self.searcher._rng = random.Random(seed * 11 + 777)
-        self.states: List[GameState] = []
+        self.states: List[GameState] = []      # END_TURN horizon (next player's roll / game over)
+        self.mid_states: List[GameState] = []  # mid-turn horizon (immediate afterstate; the decision state for END_TURN)
         self.players: List[int] = []
         self.node: List[int] = []
         self.kind: List[int] = []
@@ -203,6 +212,7 @@ class _SiblingRecorder:
             rate = min(1.0, 6.0 * rate)
         if self.rng.random() >= rate:
             return
+        root = state.copy()   # the game mutates ``state`` in place afterwards
         n_prop = 0
         rows = []
         for a in legal:
@@ -226,24 +236,38 @@ class _SiblingRecorder:
                 if r < acc:
                     chosen = s2
                     break
-            rows.append((chosen, sibling_kind_id(a)))
+            mid = chosen
+            if a[0] == A.END_TURN:
+                mid = root
+            elif chosen.phase != PHASE_GAME_OVER:
+                # then end the turn: every sibling is compared at the same horizon as END_TURN itself
+                # (otherwise "still my turn" alone would separate the pairs)
+                if chosen.phase != PHASE_MAIN or chosen.current != me or (A.END_TURN,) not in E.legal_actions(chosen):
+                    continue
+                try:
+                    chosen = E.apply(chosen, (A.END_TURN,), self.searcher._rng)
+                except E.IllegalActionError:
+                    continue
+            rows.append((chosen, mid, sibling_kind_id(a)))
         if len(rows) < 2:
             return
-        for s2, k in rows:
+        for s2, mid, k in rows:
             self.states.append(s2)
+            self.mid_states.append(mid)
             self.players.append(me)
             self.node.append(self.n_nodes)
             self.kind.append(k)
         self.n_nodes += 1
 
     def arrays(self):
-        """``(Xs float16, node int32, h float32, kind int8)`` or ``None`` when nothing was recorded."""
+        """``(Xs float16, node int32, h float32, kind int8, Xm float16)`` or ``None`` when nothing was recorded."""
         if not self.states:
             return None
         from .features import extract_batch
         X = extract_batch(self.states, self.players).astype(np.float16)
+        Xm = extract_batch(self.mid_states, self.players).astype(np.float16)
         h = np.asarray(self.heuristic.evaluate(self.states, self.players), dtype=np.float32)
-        return X, np.asarray(self.node, np.int32), h, np.asarray(self.kind, np.int8)
+        return X, np.asarray(self.node, np.int32), h, np.asarray(self.kind, np.int8), Xm
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +293,7 @@ class GameResult:
     s_node: Optional[np.ndarray] = None  # (M,) node id within this game
     s_h: Optional[np.ndarray] = None     # (M,) heuristic evaluator's win probability of the afterstate
     s_kind: Optional[np.ndarray] = None  # (M,) int8 action kind (``SIBLING_KINDS`` index)
+    Xm: Optional[np.ndarray] = None      # (M, NUM_FEATURES) float16, the same siblings at the mid-turn horizon
 
 
 def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optional[random.Random] = None,
@@ -345,7 +370,7 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
     if siblings is not None:
         arrs = siblings.arrays()
         if arrs is not None:
-            res.Xs, res.s_node, res.s_h, res.s_kind = arrs
+            res.Xs, res.s_node, res.s_h, res.s_kind, res.Xm = arrs
     return res
 
 
@@ -444,10 +469,10 @@ def generate_dataset(spec_pool: Sequence[str], games: int, workers: int = 1, see
 
 
 def sibling_arrays(results: Sequence[GameResult], base_id: int = 0
-                   ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Stack the sibling afterstates of ``results``: ``(Xs, node, h, kind)`` with node ids made unique
+                   ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Stack the sibling afterstates of ``results``: ``(Xs, node, h, kind, Xm)`` with node ids made unique
     across games (``base_id + 1000 * game_index + local id``)."""
-    Xs, nodes, hs, kinds = [], [], [], []
+    Xs, nodes, hs, kinds, Xm = [], [], [], [], []
     for k, r in enumerate(results):
         if r.Xs is None or len(r.Xs) == 0:
             continue
@@ -455,8 +480,9 @@ def sibling_arrays(results: Sequence[GameResult], base_id: int = 0
         nodes.append(r.s_node.astype(np.int64) + base_id + 1000 * k)
         hs.append(r.s_h)
         kinds.append(r.s_kind)
+        Xm.append(r.Xm if r.Xm is not None else r.Xs)
     if not Xs:
         from .features import NUM_FEATURES
         return (np.zeros((0, NUM_FEATURES), np.float16), np.zeros(0, np.int64), np.zeros(0, np.float32),
-                np.zeros(0, np.int8))
-    return np.concatenate(Xs), np.concatenate(nodes), np.concatenate(hs), np.concatenate(kinds)
+                np.zeros(0, np.int8), np.zeros((0, NUM_FEATURES), np.float16))
+    return np.concatenate(Xs), np.concatenate(nodes), np.concatenate(hs), np.concatenate(kinds), np.concatenate(Xm)

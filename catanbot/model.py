@@ -21,6 +21,12 @@ probability in ``[0, 1]``.  It is a plain multilayer perceptron:
   can-afford flags) removes that confound; the heuristic side of the blend
   (``selfplay.BlendedEvaluator``) still sees affordability and the 7-risk.
 
+* an optional **horizon-consistency term** (``fit(consistency=(X_a, X_b))``):
+  ``(z_a - z_b)^2`` on the logits of the same sibling at its mid-turn horizon
+  and after END_TURN.  The search compares lines its beam pruned (valued by a
+  mid-turn static) with fully expanded lines (valued after END_TURN), which
+  only works when the net gives both horizons the same value, as the
+  heuristic does by construction.
 * an optional **pairwise ranking term** (``fit(pairs=(X_pos, X_neg))``):
   ``softplus(margin - (z_pos - z_neg))`` on the logits of two sibling
   afterstates of the same decision, added to the BCE.  The search ranks
@@ -103,10 +109,10 @@ def _softplus(x: np.ndarray) -> np.ndarray:
     return np.maximum(x, 0.0) + np.log1p(np.exp(-np.abs(x)))
 
 
-def pair_rank_loss(z_pos: np.ndarray, z_neg: np.ndarray, margin: float) -> Tuple[float, np.ndarray]:
+def pair_rank_loss(z_pos: np.ndarray, z_neg: np.ndarray, margin) -> Tuple[float, np.ndarray]:
     """Mean logistic ranking loss ``softplus(margin - (z_pos - z_neg))`` and ``d loss / d z_pos``
-    (``d loss / d z_neg`` is its negative)."""
-    d = margin - (np.asarray(z_pos, np.float64) - np.asarray(z_neg, np.float64))
+    (``d loss / d z_neg`` is its negative).  ``margin`` is a scalar or one value per pair."""
+    d = np.asarray(margin, np.float64) - (np.asarray(z_pos, np.float64) - np.asarray(z_neg, np.float64))
     loss = float(_softplus(d).mean())
     g = -_sigmoid(d) / max(1, len(d))
     return loss, g
@@ -266,9 +272,10 @@ class ValueNet:
 
     def loss_and_grads(self, X: np.ndarray, y: np.ndarray, weight_decay: float = 0.0,
                        pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None, pair_weight: float = 1.0,
-                       pair_margin: float = 0.5) -> Tuple[float, List[np.ndarray], List[np.ndarray]]:
-        """Mean BCE (+ L2 penalty, + the pairwise ranking term of :meth:`fit` with ``pairs``) and its
-        gradients w.r.t. ``W`` and ``b``.
+                       pair_margin: float = 0.5, consistency: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+                       consistency_weight: float = 1.0) -> Tuple[float, List[np.ndarray], List[np.ndarray]]:
+        """Mean BCE (+ L2 penalty, + the pairwise ranking / horizon-consistency terms of :meth:`fit` with
+        ``pairs`` / ``consistency``) and its gradients w.r.t. ``W`` and ``b``.
 
         Exposed for gradient checking.  ``X`` is raw features (standardised
         internally with the stored mean/std).
@@ -287,11 +294,19 @@ class ValueNet:
         if pairs is not None and len(pairs[0]) > 0 and pair_weight > 0:
             zp, acts_p = self._forward(self._prep(np.asarray(pairs[0])), keep=True)
             zn, acts_n = self._forward(self._prep(np.asarray(pairs[1])), keep=True)
-            pl, gp = pair_rank_loss(zp, zn, pair_margin)
+            pl, gp = pair_rank_loss(zp, zn, pairs[2] if len(pairs) > 2 and pairs[2] is not None else pair_margin)
             loss += pair_weight * pl
             gp = (gp * pair_weight).astype(self.dtype)[:, None]
             self._backprop(acts_p, gp, gW, gb)
             self._backprop(acts_n, -gp, gW, gb)
+        if consistency is not None and len(consistency[0]) > 0 and consistency_weight > 0:
+            za, acts_a = self._forward(self._prep(np.asarray(consistency[0])), keep=True)
+            zb, acts_b = self._forward(self._prep(np.asarray(consistency[1])), keep=True)
+            diff = za.astype(np.float64) - zb.astype(np.float64)
+            loss += consistency_weight * float((diff * diff).mean())
+            gc = (2.0 * diff / len(diff) * consistency_weight).astype(self.dtype)[:, None]
+            self._backprop(acts_a, gc, gW, gb)
+            self._backprop(acts_b, -gc, gW, gb)
         if weight_decay:
             for i in range(len(self.W)):
                 gW[i] = gW[i] + weight_decay * self.W[i]
@@ -376,7 +391,9 @@ class ValueNet:
             beta1: float = 0.9, beta2: float = 0.999, adam_eps: float = 1e-8,
             input_noise: float = 0.0, pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None,
             pair_weight: float = 1.0, pair_margin: float = 0.5, pair_batch: int = 256,
-            val_pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> Dict[str, object]:
+            val_pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+            consistency: Optional[Tuple[np.ndarray, np.ndarray]] = None, consistency_weight: float = 1.0,
+            val_consistency: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> Dict[str, object]:
         """Train with mini-batch Adam.
 
         ``X`` ``(N, n_in)`` raw features (any float dtype), ``y`` ``(N,)``
@@ -390,7 +407,12 @@ class ValueNet:
         ``pairs = (X_pos, X_neg)`` (raw features, same length) adds the
         ranking term ``pair_weight * mean softplus(pair_margin - (z_pos -
         z_neg))``: every mini-batch step also takes the next ``pair_batch``
-        pairs (cycling through a shuffled order).  ``val_pairs`` are scored
+        pairs (cycling through a shuffled order).  A third element
+        ``(X_pos, X_neg, margins)`` gives every pair its own margin instead
+        of ``pair_margin``.  ``consistency = (X_a, X_b)`` adds
+        ``consistency_weight * mean (z_a - z_b)^2`` on ``pair_batch`` rows
+        per step the same way (``cons_loss`` / ``val_cons_loss`` in the
+        history).  ``val_pairs`` are scored
         each epoch (``val_pair_loss``, ``val_pair_acc`` = share ordered
         correctly) and, when given, early stopping uses ``val_loss +
         pair_weight * val_pair_loss``.
@@ -425,6 +447,10 @@ class ValueNet:
             if len(Pp) != len(Pn):
                 raise ValueError("pairs must have the same number of positive and negative rows")
             n_pairs = len(Pp)
+            Pm = (np.asarray(pairs[2], np.float64).ravel() if len(pairs) > 2 and pairs[2] is not None
+                  else np.full(n_pairs, float(pair_margin)))
+            if len(Pm) != n_pairs:
+                raise ValueError("one margin per pair expected")
             pair_batch = max(1, min(int(pair_batch), n_pairs))
             pidx = np.arange(n_pairs)
             p_pos = 0
@@ -432,6 +458,22 @@ class ValueNet:
         if has_val_pairs:
             Vp = self._prep(np.asarray(val_pairs[0]))
             Vn = self._prep(np.asarray(val_pairs[1]))
+            Vm = (np.asarray(val_pairs[2], np.float64).ravel() if len(val_pairs) > 2 and val_pairs[2] is not None
+                  else float(pair_margin))
+        has_cons = consistency is not None and len(consistency[0]) > 0 and consistency_weight > 0
+        if has_cons:
+            Ca = self._prep(np.asarray(consistency[0]))
+            Cb = self._prep(np.asarray(consistency[1]))
+            if len(Ca) != len(Cb):
+                raise ValueError("consistency pairs must have the same number of rows on both sides")
+            n_cons = len(Ca)
+            cons_batch = max(1, min(int(pair_batch), n_cons))
+            cidx = np.arange(n_cons)
+            c_pos = 0
+        has_val_cons = val_consistency is not None and len(val_consistency[0]) > 0
+        if has_val_cons:
+            VCa = self._prep(np.asarray(val_consistency[0]))
+            VCb = self._prep(np.asarray(val_consistency[1]))
         history: Dict[str, object] = {"train_loss": [], "val_loss": [], "val_auc": [], "val_acc": [],
                                       "epochs": 0, "best_epoch": -1, "stopped_early": False}
         if has_pairs:
@@ -439,6 +481,10 @@ class ValueNet:
         if has_val_pairs:
             history["val_pair_loss"] = []
             history["val_pair_acc"] = []
+        if has_cons:
+            history["cons_loss"] = []
+        if has_val_cons:
+            history["val_cons_loss"] = []
         best_val = float("inf")
         best_params: Optional[np.ndarray] = None
         bad = 0
@@ -459,9 +505,13 @@ class ValueNet:
                 rng.shuffle(idx)
                 if has_pairs:
                     rng.shuffle(pidx)
+                if has_cons:
+                    rng.shuffle(cidx)
             total = 0.0
             total_pair = 0.0
             n_pair_steps = 0
+            total_cons = 0.0
+            n_cons_steps = 0
             for s in range(0, n, batch_size):
                 bi = idx[s:s + batch_size]
                 Hb = noisy(Xn[bi])
@@ -481,12 +531,26 @@ class ValueNet:
                     p_pos += pair_batch
                     zp, acts_p = self._forward(noisy(Pp[pb]), keep=True)
                     zn, acts_n = self._forward(noisy(Pn[pb]), keep=True)
-                    pl, gp = pair_rank_loss(zp, zn, pair_margin)
+                    pl, gp = pair_rank_loss(zp, zn, Pm[pb])
                     total_pair += pl
                     n_pair_steps += 1
                     gp = (gp * pair_weight).astype(self.dtype)[:, None]
                     self._backprop(acts_p, gp, grads_W, grads_b)
                     self._backprop(acts_n, -gp, grads_W, grads_b)
+                if has_cons:
+                    if c_pos + cons_batch > n_cons:
+                        rng.shuffle(cidx)
+                        c_pos = 0
+                    cb = cidx[c_pos:c_pos + cons_batch]
+                    c_pos += cons_batch
+                    za, acts_a = self._forward(noisy(Ca[cb]), keep=True)
+                    zb, acts_b = self._forward(noisy(Cb[cb]), keep=True)
+                    diff = za.astype(np.float64) - zb.astype(np.float64)
+                    total_cons += float((diff * diff).mean())
+                    n_cons_steps += 1
+                    gc = (2.0 * diff / len(cb) * consistency_weight).astype(self.dtype)[:, None]
+                    self._backprop(acts_a, gc, grads_W, grads_b)
+                    self._backprop(acts_b, -gc, grads_W, grads_b)
                 if weight_decay:
                     for i in range(len(self.W)):
                         grads_W[i] += weight_decay * self.W[i]
@@ -505,10 +569,19 @@ class ValueNet:
                 pair_loss = total_pair / max(1, n_pair_steps)
                 history["pair_loss"].append(pair_loss)  # type: ignore[union-attr]
                 msg += f" pair_loss={pair_loss:.4f}"
+            if has_cons:
+                cons_loss = total_cons / max(1, n_cons_steps)
+                history["cons_loss"].append(cons_loss)  # type: ignore[union-attr]
+                msg += f" cons_loss={cons_loss:.4f}"
+            if has_val_cons:
+                dcv = self._forward(VCa).astype(np.float64) - self._forward(VCb).astype(np.float64)
+                vcl = float((dcv * dcv).mean())
+                history["val_cons_loss"].append(vcl)  # type: ignore[union-attr]
+                msg += f" val_cons_loss={vcl:.4f}"
             vpl = 0.0
             if has_val_pairs:
                 dv = self._forward(Vp) - self._forward(Vn)
-                vpl = float(_softplus(pair_margin - dv).mean())
+                vpl = float(_softplus(Vm - dv).mean())
                 vpa = float((dv > 0).mean())
                 history["val_pair_loss"].append(vpl)  # type: ignore[union-attr]
                 history["val_pair_acc"].append(vpa)  # type: ignore[union-attr]

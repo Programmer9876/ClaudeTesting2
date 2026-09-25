@@ -50,7 +50,7 @@ from .selfplay import generate_dataset, sibling_arrays, tournament
 
 BASE_SEARCH = "search:depth={depth},beam={beam},expand={expand}"
 DEFAULT_MASK = ""   # --mask-features default: none (catanbot.model.HAND_BLIND_FEATURES hides the own hand)
-SIBLING_KEYS = ("Xs", "sn", "sh", "sk")   # replay-buffer keys of the sibling afterstates (optional, additive)
+SIBLING_KEYS = ("Xs", "sn", "sh", "sk", "Xm")   # replay-buffer keys of the sibling afterstates (optional, additive)
 
 
 def _log(msg: str, fh=None) -> None:
@@ -116,12 +116,26 @@ def _val_split(ids: np.ndarray, seed: int) -> np.ndarray:
     return ((ids.astype(np.uint64) * np.uint64(2654435761) + np.uint64(seed)) >> np.uint64(7)) % np.uint64(10) == 0
 
 
+def pair_margins(h_pos: np.ndarray, h_neg: np.ndarray, scale: float, max_margin: float,
+                 min_margin: float = 0.05) -> np.ndarray:
+    """Per-pair logit margins: ``scale`` times the heuristic's logit gap, clipped to
+    ``[min_margin, max_margin]`` (``scale <= 0``: ``max_margin`` for every pair)."""
+    if scale <= 0:
+        return np.full(len(h_pos), float(max_margin))
+    eps = 1e-4
+    hp = np.clip(np.asarray(h_pos, np.float64), eps, 1 - eps)
+    hn = np.clip(np.asarray(h_neg, np.float64), eps, 1 - eps)
+    gap = np.log(hp / (1 - hp)) - np.log(hn / (1 - hn))
+    return np.clip(scale * gap, min_margin, max_margin)
+
+
 def build_pairs(node: np.ndarray, h: np.ndarray, kind: np.ndarray, gap: float = 0.02, per_node: int = 6,
                 seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
     """Training pairs ``(better_idx, worse_idx)`` from sibling afterstates.
 
-    Rows sharing a ``node`` id are the afterstates of one decision; ``h`` is
-    the heuristic evaluator's value and ``kind`` the action kind
+    Rows sharing a ``node`` id are the afterstates of one decision (each
+    action followed by END_TURN, see ``selfplay.play_game``); ``h`` is the
+    heuristic evaluator's value and ``kind`` the action kind
     (``selfplay.SIBLING_KINDS``, 0 = END_TURN).  A pair is formed only when
     the heuristic values differ by at least ``gap``.  Per node: the top
     afterstate vs END_TURN first (the build-vs-hold counterfactual), then up
@@ -169,10 +183,12 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
     from a saved net (its normalisation is kept); otherwise a fresh net with
     ``args.hidden`` is built.  ``args.mask_features`` (glob patterns over
     feature names, empty = none) is applied to the net in both cases.
-    ``siblings = (Xs, node, h, kind)`` (see ``selfplay.sibling_arrays``) adds
-    the pairwise ranking term with ``args.rank_weight`` / ``rank_margin`` /
-    ``rank_gap`` / ``rank_pairs`` (validation pairs come from 10 % of the
-    nodes); ``history["n_pairs"]`` / ``["n_val_pairs"]`` count them.
+    ``siblings = (Xs, node, h, kind, Xm)`` (see ``selfplay.sibling_arrays``)
+    adds the pairwise ranking term with ``args.rank_weight`` / ``rank_margin``
+    / ``rank_gap`` / ``rank_pairs`` and the mid-turn / END_TURN horizon
+    consistency term with ``args.rank_consistency`` (validation pairs come
+    from 10 % of the nodes); ``history["n_pairs"]`` / ``["n_val_pairs"]`` /
+    ``["n_cons"]`` count them.
     """
     from .features import NUM_FEATURES
     from .model import ValueNet, feature_mask
@@ -193,39 +209,53 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
     net.input_mask = mask
     if log and net.masked_features():
         log(f"  input mask: {len(net.masked_features())} features hidden ({', '.join(net.masked_features())})")
-    pairs = val_pairs = None
-    n_pairs = n_val_pairs = 0
+    pairs = val_pairs = cons = val_cons = None
+    n_pairs = n_val_pairs = n_cons = 0
     rank_weight = float(getattr(args, "rank_weight", 0.0) or 0.0)
-    if siblings is not None and rank_weight > 0 and len(siblings[0]) > 0:
-        Xs, sn, sh, sk = siblings
+    cons_weight = float(getattr(args, "rank_consistency", 0.0) or 0.0)
+    if siblings is not None and len(siblings[0]) > 0 and (rank_weight > 0 or cons_weight > 0):
+        Xs, sn, sh, sk = siblings[:4]
+        Xm = siblings[4] if len(siblings) > 4 and siblings[4] is not None and len(siblings[4]) == len(sn) else None
         sval = _val_split(np.asarray(sn), args.seed)
-        pos, neg = build_pairs(sn, sh, sk, gap=args.rank_gap, per_node=args.rank_pairs, seed=seed)
-        if len(pos):
-            v = sval[pos]
-            pairs = (Xs[pos[~v]], Xs[neg[~v]])
-            val_pairs = (Xs[pos[v]], Xs[neg[v]])
-            n_pairs, n_val_pairs = int((~v).sum()), int(v.sum())
-        if log:
-            log(f"  ranking pairs: {n_pairs} train / {n_val_pairs} val from {len(np.unique(sn))} nodes "
-                f"({len(sn)} afterstates); weight {rank_weight}, margin {args.rank_margin}, gap {args.rank_gap}")
+        if rank_weight > 0:
+            pos, neg = build_pairs(sn, sh, sk, gap=args.rank_gap, per_node=args.rank_pairs, seed=seed)
+            if len(pos):
+                v = sval[pos]
+                m = pair_margins(sh[pos], sh[neg], getattr(args, "rank_margin_scale", 0.0), args.rank_margin)
+                pairs = (Xs[pos[~v]], Xs[neg[~v]], m[~v])
+                val_pairs = (Xs[pos[v]], Xs[neg[v]], m[v])
+                n_pairs, n_val_pairs = int((~v).sum()), int(v.sum())
+            if log:
+                log(f"  ranking pairs: {n_pairs} train / {n_val_pairs} val from {len(np.unique(sn))} nodes "
+                    f"({len(sn)} afterstates); weight {rank_weight}, margin {args.rank_margin} x scale "
+                    f"{getattr(args, 'rank_margin_scale', 0.0)} (mean {float(m.mean()) if len(pos) else 0:.3f}), gap {args.rank_gap}")
+        if cons_weight > 0 and Xm is not None:
+            cons = (Xm[~sval], Xs[~sval])
+            val_cons = (Xm[sval], Xs[sval])
+            n_cons = int((~sval).sum())
+            if log:
+                log(f"  horizon-consistency pairs (mid-turn vs after END_TURN): {n_cons} train / {int(sval.sum())} val; "
+                    f"weight {cons_weight}")
     hist = net.fit(Xtr, ytr, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
                    weight_decay=args.weight_decay, X_val=Xva, y_val=yva, patience=args.patience,
                    input_noise=args.noise, refit_norm=not warm_from, log=log,
                    pairs=pairs, val_pairs=val_pairs, pair_weight=rank_weight,
-                   pair_margin=getattr(args, "rank_margin", 0.5), pair_batch=getattr(args, "rank_batch", 256))
+                   pair_margin=getattr(args, "rank_margin", 0.5), pair_batch=getattr(args, "rank_batch", 256),
+                   consistency=cons, val_consistency=val_cons, consistency_weight=cons_weight)
     hist["n_pairs"] = n_pairs
     hist["n_val_pairs"] = n_val_pairs
+    hist["n_cons"] = n_cons
     return net, hist, len(tr_idx), len(val_idx)
 
 
-def _cap_siblings(Xs, sn, sh, sk, max_rows: int):
+def _cap_siblings(Xs, sn, sh, sk, Xm, max_rows: int):
     """Keep the last ``max_rows`` sibling rows without splitting the first kept node."""
     if len(sn) <= max_rows:
-        return Xs, sn, sh, sk
+        return Xs, sn, sh, sk, Xm
     start = len(sn) - max_rows
     while start < len(sn) and start > 0 and sn[start] == sn[start - 1]:
         start += 1
-    return Xs[start:], sn[start:], sh[start:], sk[start:]
+    return Xs[start:], sn[start:], sh[start:], sk[start:], Xm[start:]
 
 
 def train(args: argparse.Namespace) -> Dict[str, object]:
@@ -255,6 +285,7 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
     sn_buf = np.zeros(0, np.int64)
     sh_buf = np.zeros(0, np.float32)
     sk_buf = np.zeros(0, np.int8)
+    Xm_buf = np.zeros((0, NUM_FEATURES), np.float16)
     buffer_path = os.path.splitext(args.out)[0] + "_replay.npz"
     load_path = getattr(args, "replay", None) or buffer_path
     if (args.resume or getattr(args, "replay", None) or getattr(args, "fit_only", False)) and os.path.exists(load_path):
@@ -264,13 +295,13 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
             g_buf = d["g"] if "g" in d else np.arange(len(y_buf), dtype=np.int32)
             b_buf = d["bias"] if "bias" in d else np.zeros(len(y_buf), np.float32)
             if all(k in d for k in SIBLING_KEYS):
-                Xs_buf, sn_buf, sh_buf, sk_buf = (d[k] for k in SIBLING_KEYS)
+                Xs_buf, sn_buf, sh_buf, sk_buf, Xm_buf = (d[k] for k in SIBLING_KEYS)
             _log(f"loaded replay buffer {load_path} with {len(y_buf)} samples and {len(sn_buf)} sibling rows", fh)
         except Exception:
             pass
     if getattr(args, "siblings", None):
         d = np.load(args.siblings)
-        Xs_buf, sn_buf, sh_buf, sk_buf = (d[k] for k in SIBLING_KEYS)
+        Xs_buf, sn_buf, sh_buf, sk_buf, Xm_buf = (d[k] for k in SIBLING_KEYS)
         _log(f"loaded {len(sn_buf)} sibling rows ({len(np.unique(sn_buf))} nodes) from {args.siblings}", fh)
     _log(f"training: iters={args.iters} games={args.games} workers={args.workers} depth={args.depth} "
          f"features={NUM_FEATURES} best={best_path} mask={args.mask_features!r}", fh)
@@ -288,16 +319,16 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
                                            num_players_choices=(3, 4) if args.mixed_players else (4,),
                                            max_turns=args.max_turns, sample_every=args.sample_every,
                                            sibling_rate=args.rank_rate)
-            Xs_buf, sn_buf, sh_buf, sk_buf = sibling_arrays(rs)
+            Xs_buf, sn_buf, sh_buf, sk_buf, Xm_buf = sibling_arrays(rs)
             sib_path = os.path.splitext(args.out)[0] + "_siblings.npz"
-            np.savez_compressed(sib_path, Xs=Xs_buf, sn=sn_buf, sh=sh_buf, sk=sk_buf)
+            np.savez_compressed(sib_path, Xs=Xs_buf, sn=sn_buf, sh=sh_buf, sk=sk_buf, Xm=Xm_buf)
             _log(f"  {len(sn_buf)} sibling rows ({len(np.unique(sn_buf))} nodes) from {len(rs)} heuristic games "
                  f"in {time.time() - t_s:.0f}s -> {sib_path} (reuse with --siblings)", fh)
         t_fit = time.time()
         net, hist, n_tr, n_va = fit_replay(X_buf, y_buf, g_buf, args,
                                            warm_from=best_path if args.warm_start else None,
                                            seed=args.seed, log=lambda m: _log(m, fh),
-                                           siblings=(Xs_buf, sn_buf, sh_buf, sk_buf))
+                                           siblings=(Xs_buf, sn_buf, sh_buf, sk_buf, Xm_buf))
         last = _fit_summary(hist)
         _log(f"  fit on {n_tr} samples ({n_va} validation) in {time.time() - t_fit:.0f}s: {json.dumps(last)}", fh)
         net.save(args.out)
@@ -349,13 +380,13 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
         g_buf = np.concatenate([g_buf, gids])[-args.buffer:]
         b_buf = np.concatenate([b_buf, bias])[-args.buffer:]
         if args.rank_rate > 0:
-            Xs, sn, sh, sk = sibling_arrays(results, base_id=it * 10_000_000)
-            Xs_buf, sn_buf, sh_buf, sk_buf = _cap_siblings(
+            Xs, sn, sh, sk, Xm = sibling_arrays(results, base_id=it * 10_000_000)
+            Xs_buf, sn_buf, sh_buf, sk_buf, Xm_buf = _cap_siblings(
                 np.concatenate([Xs_buf, Xs]), np.concatenate([sn_buf, sn]), np.concatenate([sh_buf, sh]),
-                np.concatenate([sk_buf, sk]), args.rank_buffer)
+                np.concatenate([sk_buf, sk]), np.concatenate([Xm_buf, Xm]), args.rank_buffer)
             _log(f"  +{len(sn)} sibling afterstates ({len(np.unique(sn))} nodes); buffer {len(sn_buf)} rows", fh)
         np.savez_compressed(buffer_path, X=X_buf, y=y_buf, g=g_buf, bias=b_buf,
-                            Xs=Xs_buf, sn=sn_buf, sh=sh_buf, sk=sk_buf)
+                            Xs=Xs_buf, sn=sn_buf, sh=sh_buf, sk=sk_buf, Xm=Xm_buf)
         if len(bias):
             _log(f"  trading styles: {float((bias != 0).mean()):.0%} of samples from biased traders, "
                  f"mean |bias| {float(np.abs(bias).mean()):.3f}", fh)
@@ -366,7 +397,7 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
         net, hist, n_tr, _ = fit_replay(X_buf, y_buf, g_buf, args,
                                         warm_from=best_path if (best_path and args.warm_start) else None,
                                         seed=args.seed + it, log=lambda m: _log(m, fh),
-                                        siblings=(Xs_buf, sn_buf, sh_buf, sk_buf))
+                                        siblings=(Xs_buf, sn_buf, sh_buf, sk_buf, Xm_buf))
         last = _fit_summary(hist)
         _log(f"  fit on {n_tr} samples in {time.time() - t_fit:.0f}s: {json.dumps(last)}", fh)
         cand_path = os.path.splitext(args.out)[0] + f"_candidate.npz"
@@ -428,10 +459,15 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
                    help="weight of the pairwise sibling-ranking term (0 = plain BCE, the pre-ranking behaviour)")
     p.add_argument("--rank-rate", type=float, default=0.03,
                    help="share of main-phase decisions of the generated games whose sibling afterstates are recorded")
-    p.add_argument("--rank-margin", type=float, default=0.5, help="logit margin of the ranking term")
-    p.add_argument("--rank-gap", type=float, default=0.02,
+    p.add_argument("--rank-consistency", type=float, default=1.0,
+                   help="weight of the mid-turn / END_TURN horizon-consistency term on the siblings (0 = off)")
+    p.add_argument("--rank-margin", type=float, default=0.5, help="max logit margin of the ranking term")
+    p.add_argument("--rank-margin-scale", type=float, default=0.5,
+                   help="per-pair margin = scale x heuristic logit gap, clipped to [0.05, --rank-margin] "
+                        "(0 = fixed --rank-margin for every pair)")
+    p.add_argument("--rank-gap", type=float, default=0.01,
                    help="minimum heuristic win-probability gap between two siblings to form a pair")
-    p.add_argument("--rank-pairs", type=int, default=6, help="pairs per decision node")
+    p.add_argument("--rank-pairs", type=int, default=8, help="pairs per decision node")
     p.add_argument("--rank-batch", type=int, default=256, help="pairs per mini-batch step")
     p.add_argument("--rank-buffer", type=int, default=400000, help="max sibling rows kept in the replay buffer")
     p.add_argument("--rank-games", type=int, default=300,

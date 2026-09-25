@@ -300,34 +300,63 @@ def _is_float32_net(ev) -> bool:
         return False
 
 
+def _is_plain(evaluator, cls) -> bool:
+    """An instance of ``cls`` whose ``evaluate`` is the class's own (a subclass that overrides it - noise for
+    exploration, a test double - has semantics the extension does not know and keeps the Python path)."""
+    return isinstance(evaluator, cls) and getattr(type(evaluator), "evaluate", None) is cls.evaluate
+
+
 def evaluator_key(evaluator):
     """What the native handle was built from (arrays replaced by ``set_params`` / ``load`` change it).
 
-    In-place mutation of the same numpy arrays is not detected (documented); ``None`` for unknown objects.
+    In-place mutation of the same numpy arrays is not detected (documented); ``None`` for unknown objects,
+    including subclasses that override ``evaluate``.  A ``ValueNet.input_mask`` is part of the key (the mask
+    is folded into the first layer of the native twin, see :func:`native_evaluator`).
     """
-    name = getattr(evaluator, "name", None)
-    if name == "heuristic" and hasattr(evaluator, "temperature") and not hasattr(evaluator, "inner"):
+    from .heuristic import HeuristicEvaluator   # lazy: heuristic imports this module at load time
+    from .model import ValueNet
+    from .selfplay import BlendedEvaluator
+    if _is_plain(evaluator, HeuristicEvaluator) and hasattr(evaluator, "temperature"):
         return ("heuristic", float(evaluator.temperature))
-    if name == "blend" and hasattr(evaluator, "net") and hasattr(evaluator, "alpha") and hasattr(evaluator, "heuristic"):
+    if _is_plain(evaluator, BlendedEvaluator) and hasattr(evaluator, "net") and hasattr(evaluator, "alpha") \
+            and hasattr(evaluator, "heuristic"):
         kn = evaluator_key(evaluator.net)
         kh = evaluator_key(evaluator.heuristic)
         if kn is None or kn[0] != "mlp" or kh is None or kh[0] != "heuristic":
             return None
         return ("blend", float(evaluator.alpha), kn, kh)
-    if hasattr(evaluator, "W") and hasattr(evaluator, "b") and hasattr(evaluator, "mean") and hasattr(evaluator, "std") \
-            and hasattr(evaluator, "n_in") and _is_float32_net(evaluator):
-        return ("mlp", id(evaluator), tuple((int(x.ctypes.data), x.shape) for x in list(evaluator.W) + list(evaluator.b)
-                                            + [evaluator.mean, evaluator.std]))
+    if _is_plain(evaluator, ValueNet) and hasattr(evaluator, "W") and hasattr(evaluator, "b") \
+            and hasattr(evaluator, "mean") and hasattr(evaluator, "std") and hasattr(evaluator, "n_in") \
+            and _is_float32_net(evaluator):
+        mask = getattr(evaluator, "_input_mask", None)
+        arrays = list(evaluator.W) + list(evaluator.b) + [evaluator.mean, evaluator.std]
+        return ("mlp", id(evaluator), tuple((int(x.ctypes.data), x.shape) for x in arrays),
+                None if mask is None else (int(mask.ctypes.data), mask.shape))
     return None
+
+
+def _masked_layers(net):
+    """``net.W`` with ``net.input_mask`` folded into the first layer: ``(H * m) @ W0 == H @ (m[:, None] * W0)``
+    exactly (the mask is 0 / 1 in float32, so every product is either unchanged or exactly zero)."""
+    import numpy as np
+    W = list(net.W)
+    mask = getattr(net, "_input_mask", None)
+    if mask is not None:
+        m = np.asarray(mask, dtype=np.float32).ravel()
+        if m.shape != (W[0].shape[0],):
+            raise ValueError("input mask shape mismatch")
+        W[0] = np.ascontiguousarray(W[0] * m[:, None], dtype=np.float32)
+    return W
 
 
 def native_evaluator(evaluator):
     """The extension's twin of ``evaluator`` (a handle), or ``None`` when it has none.
 
-    Duck-typed: a ``HeuristicEvaluator`` (``name == "heuristic"``, ``temperature``), a float32 ``ValueNet``
-    (``W`` / ``b`` / ``mean`` / ``std`` / ``n_in``) or a ``BlendedEvaluator`` (``net`` / ``alpha`` / ``heuristic``)
-    of those two.  Anything else - a timing wrapper, a float64 net, a custom evaluator - gets ``None`` and the
-    search keeps its Python path.
+    A ``HeuristicEvaluator`` (``temperature``), a float32 ``ValueNet`` (``W`` / ``b`` / ``mean`` / ``std`` /
+    ``n_in``; an ``input_mask`` is folded into the first layer) or a ``BlendedEvaluator`` (``net`` / ``alpha`` /
+    ``heuristic``) of those two, each with the class's own ``evaluate``.  Anything else - a timing wrapper, a
+    subclass overriding ``evaluate``, a float64 net, a custom evaluator - gets ``None`` and the search keeps its
+    Python path.  Like ``ValueNet.evaluate``, the native net returns 1 / 0 for a finished game.
     """
     if not native_search_available():
         return None
@@ -338,9 +367,10 @@ def native_evaluator(evaluator):
         if key[0] == "heuristic":
             return _core.HeuristicEval(float(evaluator.temperature))
         if key[0] == "mlp":
-            return _core.MlpEval(list(evaluator.W), list(evaluator.b), evaluator.mean, evaluator.std)
+            return _core.MlpEval(_masked_layers(evaluator), list(evaluator.b), evaluator.mean, evaluator.std)
         if key[0] == "blend":
-            net = _core.MlpEval(list(evaluator.net.W), list(evaluator.net.b), evaluator.net.mean, evaluator.net.std)
+            net = _core.MlpEval(_masked_layers(evaluator.net), list(evaluator.net.b), evaluator.net.mean,
+                                evaluator.net.std)
             return _core.BlendEval(net, float(evaluator.alpha), _core.HeuristicEval(float(evaluator.heuristic.temperature)))
     except (ValueError, TypeError):
         return None

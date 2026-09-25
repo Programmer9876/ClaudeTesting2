@@ -758,3 +758,126 @@ def test_benchmark_future_values(end_of_turn):
     print(f"_future_values on {len(states)} end-of-turn states x {cfg_py.opp_roll_samples} samples: python {t_py * 1e3:.1f} ms, "
           f"native {t_nat * 1e3:.1f} ms ({t_py / max(t_nat, 1e-9):.1f}x)")
     assert t_nat < t_py
+
+
+# ---------------------------------------------------------------------------
+# regressions found by the adversarial verification (independent fuzz, see docs/CPP.md "Verification")
+# ---------------------------------------------------------------------------
+def _finished_copy(s: GameState, winner: int) -> GameState:
+    f = s.copy()
+    f.phase = PHASE_GAME_OVER
+    f.winner = winner
+    return f
+
+
+def test_net_and_blend_handles_are_exact_on_finished_games(positions):
+    """ValueNet.evaluate forces 1 / 0 once the game is decided; the native twins must too (the first build
+    returned the net's own guess, up to 0.87 off, exactly on the leaves where an opponent wins)."""
+    net = ValueNet(hidden=(16, 8), seed=11)
+    blend = BlendedEvaluator(net, 0.3, HeuristicEvaluator(8.0))
+    states, players = [], []
+    for k, s in enumerate(positions[:12]):
+        w = k % s.num_players
+        f = _finished_copy(s, w)
+        for p in range(s.num_players):
+            states.append(f)
+            players.append(p)
+        states.append(s)
+        players.append(w)
+    for ev in (net, blend):
+        h = accel.native_evaluator(ev)
+        assert h is not None
+        got = np.asarray(h.evaluate(states, players), dtype=np.float64)
+        want = np.asarray(ev.evaluate(states, players), dtype=np.float64)
+        over = np.array([s.phase == PHASE_GAME_OVER for s in states])
+        assert np.array_equal(got[over], want[over]) and set(got[over].tolist()) <= {0.0, 1.0}
+        assert np.abs(got[~over] - want[~over]).max() <= 1e-6
+
+
+def test_input_mask_is_folded_into_the_native_net(positions):
+    from catanbot.model import feature_mask, HAND_BLIND_FEATURES
+    from catanbot.features import extract_batch
+    states = [s for s in positions[:20] for _ in range(s.num_players)]
+    players = [i for s in positions[:20] for i in range(s.num_players)]
+    net = ValueNet(hidden=(16, 8), seed=2)
+    net.mean = np.abs(np.asarray(extract_batch(states, players))).mean(axis=0).astype(np.float32) + 0.5
+    key_plain = accel.evaluator_key(net)
+    plain = np.asarray(accel.native_evaluator(net).evaluate(states, players))
+    net.input_mask = feature_mask(HAND_BLIND_FEATURES)
+    assert net.input_mask is not None and accel.evaluator_key(net) != key_plain
+    masked = np.asarray(accel.native_evaluator(net).evaluate(states, players))
+    want = np.asarray(net.evaluate(states, players), dtype=np.float64)
+    assert np.abs(masked - want).max() <= 1e-6
+    assert np.abs(plain - want).max() > 1e-3          # the mask matters on these states
+    # A searcher built before the mask was set rebuilds its twin on the next search.
+    net2 = ValueNet(hidden=(16, 8), seed=2)
+    se = Searcher(net2, SearchConfig(depth=1))
+    assert se.native_active
+    net2.input_mask = feature_mask(HAND_BLIND_FEATURES)
+    s = positions[0]
+    se.search(s, E.acting_player(s), random.Random(1))
+    got = np.asarray(se._native_ev.evaluate(states, players))
+    assert np.abs(got - np.asarray(net2.evaluate(states, players), dtype=np.float64)).max() <= 1e-6
+
+
+def test_pending_trade_response_states_take_the_python_path(game_states):
+    """An end-of-turn state in which other responders still have to answer an offer: the Python simulation
+    asks should_accept for them, the extension only rejects, so _future_values must run the Python body."""
+    from catanbot.state import PHASE_TRADE_RESPONSE
+    found = None
+    for s in game_states:
+        if s.num_players < 3 or s.phase != PHASE_MAIN:
+            continue
+        props = [a for a in E.legal_actions(s) if a[0] == A.PROPOSE_TRADE]
+        if not props:
+            continue
+        s1 = E.apply(s, props[0], random.Random(0))
+        if s1.phase != PHASE_TRADE_RESPONSE or s1.pending_trade is None:
+            continue
+        me = E.acting_player(s1)
+        s2 = E.apply(s1, (A.REJECT_TRADE,), random.Random(0))
+        if s2.phase == PHASE_TRADE_RESPONSE and s2.pending_trade is not None and E.acting_player(s2) != me:
+            found = (s2, me)
+            break
+    assert found is not None
+    s2, me = found
+    ev = HeuristicEvaluator()
+    se_n = Searcher(ev, SearchConfig(depth=2, opponent_expand=1000, opponent_proposals=0))
+    se_p = Searcher(ev, SearchConfig(depth=2, opponent_expand=1000, opponent_proposals=0, native_future=False))
+    assert se_n.native_active
+    assert se_n._native_future_values([s2], me, 1, [[7] * 12]) is None
+    se_n._rng = random.Random(3)
+    se_p._rng = random.Random(3)
+    with _opponents_in_legal_order():
+        vn = se_n._future_values([s2], me, 1)
+        vp = se_p._future_values([s2], me, 1)
+    assert vn == vp and se_n.nodes == se_p.nodes and se_n._rng.getstate() == se_p._rng.getstate()
+    # ... and an ordinary end-of-turn state next to it still runs natively.
+    plain = E.apply(s2, (A.REJECT_TRADE,), random.Random(0))
+    if not (plain.phase == PHASE_TRADE_RESPONSE and plain.pending_trade is not None):
+        assert se_n._native_future_values([plain], me, 1, [[7] * 12]) is not None
+
+
+def test_subclasses_overriding_evaluate_keep_the_python_path(positions):
+    class Noisy(HeuristicEvaluator):
+        def evaluate(self, states, players):
+            return np.asarray(super().evaluate(states, players)) * 0.5
+
+    class NetPlus(ValueNet):
+        def evaluate(self, states, players):
+            return np.asarray(super().evaluate(states, players)) * 0.5
+
+    class BlendPlus(BlendedEvaluator):
+        def evaluate(self, states, players):
+            return np.asarray(super().evaluate(states, players)) * 0.5
+
+    for ev in (Noisy(), NetPlus(hidden=(8,), seed=1), BlendPlus(ValueNet(hidden=(8,), seed=1), 0.5),
+               BlendedEvaluator(NetPlus(hidden=(8,), seed=1), 0.5), BlendedEvaluator(ValueNet(hidden=(8,), seed=1), 0.5, Noisy())):
+        assert accel.evaluator_key(ev) is None and accel.native_evaluator(ev) is None
+        assert not Searcher(ev, SearchConfig(depth=2)).native_active
+    # Plain instances (and a subclass that does not touch evaluate) keep the native path.
+    class Tagged(HeuristicEvaluator):
+        tag = "x"
+
+    assert Searcher(Tagged(), SearchConfig(depth=2)).native_active
+    assert Searcher(BlendedEvaluator(ValueNet(hidden=(8,), seed=1), 0.5), SearchConfig(depth=2)).native_active

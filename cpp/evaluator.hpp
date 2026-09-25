@@ -32,7 +32,9 @@ struct HeuristicEval : Evaluator {
 // double (eight interleaved partial sums, a fixed order on every machine) and are rounded to
 // float32 at the layer boundary, where numpy's sgemm result is float32 as well.  The results
 // agree with ValueNet.predict to float32 precision, not bit for bit (OpenBLAS's blocked
-// accumulation order cannot be reproduced).
+// accumulation order cannot be reproduced).  Like ValueNet.evaluate, a finished game is exact:
+// 1 for the winner, 0 for everyone else.  An input mask (ValueNet.input_mask) is folded into
+// the first layer by the Python side (accel.native_evaluator zeroes the masked rows of W0).
 struct MlpEval : Evaluator {
     int n_in = 0;
     std::vector<int> sizes;                  // n_in, hidden..., 1

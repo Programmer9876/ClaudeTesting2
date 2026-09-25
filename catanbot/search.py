@@ -692,6 +692,11 @@ class Searcher:
         Returns ``None`` when a state cannot be represented natively; the caller then runs the Python body.
         """
         cfg = self.config
+        if any(s.phase == PHASE_TRADE_RESPONSE and s.pending_trade is not None for s in states):
+            # Other responders still have to answer a pending offer: the Python simulation asks should_accept
+            # for them, the extension only rejects.  Searcher.search never produces such end-of-turn states
+            # (_response_outcomes / _respond_all resolve the offer first), direct callers may.
+            return None
         levels = [cfg]
         d = depth
         while d >= 2:

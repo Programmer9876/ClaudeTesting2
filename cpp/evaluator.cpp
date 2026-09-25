@@ -108,13 +108,27 @@ float MlpEval::logit(const GameStateC& s, int player) const {
     return logit_from_features(x);
 }
 
-double MlpEval::evaluate(const GameStateC& s, int player) const { return sigmoid32(logit(s, player)); }
+// ValueNet.evaluate: finished games are exact (1 for the winner, 0 for everyone else), whatever the net says.
+inline bool decided(const GameStateC& s, int player, double& out) {
+    if (s.phase == PHASE_GAME_OVER && s.winner >= 0) {
+        out = s.winner == player ? 1.0 : 0.0;
+        return true;
+    }
+    return false;
+}
+
+double MlpEval::evaluate(const GameStateC& s, int player) const {
+    double v;
+    if (decided(s, player, v)) return v;
+    return sigmoid32(logit(s, player));
+}
 
 void MlpEval::evaluate_batch(const GameStateC* const* states, const int* players, int n, double* out) const {
     Analysis an;
     const GameStateC* last = nullptr;
     float x[NUM_FEATURES];
     for (int i = 0; i < n; ++i) {
+        if (decided(*states[i], players[i], out[i])) continue;
         if (states[i] != last) {  // consecutive identical states share one analysis
             analyse(*states[i], an);
             last = states[i];

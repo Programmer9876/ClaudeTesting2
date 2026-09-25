@@ -573,11 +573,19 @@ Searcher(...).native_active             # True when _future_values runs natively
 ```
 
 `Searcher.__init__` builds the evaluator's native twin
-(`accel.native_evaluator`, duck-typed: `HeuristicEvaluator`, a float32
-`ValueNet`, or a `BlendedEvaluator` of the two; anything else -> `None` ->
-Python path) and `_future_values` hands its states to `accel.future_values`
-right after sampling the dice sequences (so the root's random stream is
-consumed exactly as before).  Fallbacks, all automatic: extension missing or
+(`accel.native_evaluator`: a `HeuristicEvaluator`, a float32 `ValueNet` (its
+`input_mask`, if any, folded into the first layer), or a `BlendedEvaluator` of
+the two, each with the class's own `evaluate`; a subclass that overrides
+`evaluate`, a wrapper, a float64 net or any other object -> `None` -> Python
+path) and `_future_values` hands its states to `accel.future_values` right
+after sampling the dice sequences (so the root's random stream is consumed
+exactly as before).  One input is routed to the Python body on purpose: a
+state in `PHASE_TRADE_RESPONSE` with a pending offer that other responders
+still have to answer (the Python simulation asks `should_accept` for them, the
+extension only rejects).  `Searcher.search` never produces such end-of-turn
+states - `_response_outcomes` / `_respond_all` resolve the offer at the root -
+but `_future_values` is also called directly (tests, tools), and there it must
+keep its semantics.  Fallbacks, all automatic: extension missing or
 stale (`accel.verify()` now also requires the lookahead entry points, so an
 older `.so` is disabled as a whole with the usual `RuntimeWarning`), either
 environment variable, `native_future=False`, an unknown evaluator, a state the
@@ -637,7 +645,15 @@ in double (eight interleaved partial sums, a fixed order on every machine) and
 rounds to float32 at every layer boundary, standardises in float32 like numpy
 and narrows the sigmoid to float32 like `predict`; measured against
 `ValueNet.predict` on 1200 rows: max |dp| 1.8e-7 (fresh 256/128 net), 3.0e-7
-(trained `models/value_net_candidate.npz`), max |dlogit| 1.7e-6.
+(trained `models/value_net_candidate.npz`), max |dlogit| 1.7e-6.  Like
+`ValueNet.evaluate`, `MlpEval` returns exactly 1 / 0 for a finished game
+(the first build returned the net's own guess there - up to 0.87 off on the
+very leaves where an opponent wins during the lookahead; found by the
+verification fuzz below), and `ValueNet.input_mask` is honoured by zeroing
+the masked rows of `W0` on the Python side (`accel._masked_layers`), which is
+exactly `(H * m) @ W0`.  Because the net is float32-precision identical
+rather than bit-identical, a simulated opponent's argmax over candidates can
+flip on a near-tie (2 of 959 fuzzed states, value differences 1e-9 .. 1e-8).
 
 `accel.robber_weights_bundle` mirrors `politics.robber_target_weights` /
 `OpponentModel.robber_habit_factors` by precomputing every factor that does
@@ -739,8 +755,8 @@ inside the binomial interval but leans the wrong way.  The reduced sub-search
 tracks the Python one closely on identical leaves (see above), so this is a
 property of the searcher's depth-3 semantics (two roll samples and two
 lookahead nodes per sub-search make the future values noisier than the
-depth-2 mean shift) rather than of the port; the depth-3 vs depth-3 row below
-says the same about the Python path.
+depth-2 mean shift) rather than of the port; the same-table run below shows the Python depth-3
+bot losing to depth 2 in the same way.
 
 *Native depth 2 vs Python depth 2 at the same table* - `python3
 scripts/bench_search.py --tournament --specs "search:depth=2,native=1"
@@ -755,14 +771,37 @@ scripts/bench_search.py --tournament --specs "search:depth=2,native=1"
 Equal in expectation, as it must be (the two differ only in the opponents'
 candidate set and proposals), at 3.6x less time per decision.
 
-<!-- NATIVE_STRENGTH_C -->
+*Python depth 3 vs native depth 3 vs native depth 2 at the same table* -
+`python3 scripts/bench_search.py --tournament --specs "search:depth=3,native=0"
+"search:depth=3,native=1" "search:depth=2,native=1" --games 16 --workers 2
+--players 3 --max-turns 150 --seed 1` (plus a 4-game batch with seed 0):
+
+| bot | seats (seed 1 / seed 0) | win % (seed 1) | 95 % CI | avg VP | s / decision | wins over both batches |
+| --- | --- | --- | --- | --- | --- | --- |
+| search:depth=3, Python | 16 / 4 | 25.0 | 10.2-49.5 | 6.94 | 0.450 | 4 / 20 |
+| search:depth=3, native | 16 / 4 | 25.0 | 10.2-49.5 | 6.88 | 0.044 | 4 / 20 |
+| search:depth=2, native | 16 / 4 | 50.0 | 28.0-72.0 | 8.62 | 0.025 | 10 / 20 |
+
+The native depth-3 bot plays exactly as strongly as the Python depth-3 bot
+(same win rate, same VP, 10x less time per decision), and *both* depth-3 bots
+lose to depth 2: with this searcher, more depth is affordable now (depth 3 at
+0.05-0.1 s per move, depth 4 at 0.2-0.3 s) but does not yet play better.  The
+reduced sub-search's noise (2 roll samples, 2 lookahead nodes, the mean shift
+applied to every other leaf) is the thing to tune before deeper search pays
+off; that is a search-design question, not an acceleration one.
+
 
 
 ### Limitations / notes
 
 * Simulated opponents never propose trades and try every non-trade candidate
   (see "simplified by design"); `cfg.opponent_proposals` / `opponent_expand`
-  only affect the Python path.  A depth >= 2 search with the native path on
+  only affect the Python path.  Another player's pending offer is rejected
+  natively (Python: `should_accept`), which is why the switch keeps such
+  `PHASE_TRADE_RESPONSE` inputs on the Python path.
+* The per-(level, state, sample) xoshiro seeds are mixed in unsigned 64-bit
+  arithmetic; the first build overflowed a signed `int` for the reduced
+  searches' level offset (defined only thanks to Python's `-fwrapv` CFLAGS).  A depth >= 2 search with the native path on
   therefore ranks a fraction of positions differently from the Python
   reference; self-play data generated with it comes from a slightly different
   opponent model.
