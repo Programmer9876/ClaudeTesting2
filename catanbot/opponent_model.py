@@ -409,8 +409,14 @@ class OpponentModel:
 
     # --- prediction ----------------------------------------------------------
     def predict_accept(self, state: GameState, j: int, receives: Sequence[int], pays: Sequence[int],
-                       proposer: Optional[int] = None, belief: Optional[HandBelief] = None) -> float:
-        """Probability that player ``j`` accepts receiving ``receives`` for ``pays``."""
+                       proposer: Optional[int] = None, belief: Optional[HandBelief] = None,
+                       politics=None) -> float:
+        """Probability that player ``j`` accepts receiving ``receives`` for ``pays``.
+
+        ``politics`` (a ``politics.PoliticalState``) adds a bounded favour
+        slack: friends accept slightly unfavourable deals, the visible leader
+        gets a premium demanded - never enough to make an unfair deal pass.
+        """
         p = state.players[j]
         # Can they pay at all?
         if p.hand_known:
@@ -439,6 +445,8 @@ class OpponentModel:
             need_boost = 1.0 + 0.6 / (1.0 + 8.0 * prod[r])
             gain += vals[r] * need_boost * (receives[r] - pays[r])
         gain += 0.15 * (sum(receives) - sum(pays))  # card count
+        if politics is not None and proposer is not None:
+            gain += politics.favor_slack(state, j, proposer)
         stage = trade_stage_factor(state)
         logit = 1.8 * gain - 0.4 + 1.2 * (stage - 0.65)
         # Personal generosity (deviation from the 45% prior), weighted by confidence.

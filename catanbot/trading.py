@@ -284,7 +284,8 @@ def candidate_offers(state: GameState, player: int, needed: Sequence[int],
 
 
 def should_accept(state: GameState, responder: int, offer: TradeOffer, evaluator=None,
-                  margin: float = 0.002, model: Optional[OpponentModel] = None) -> Tuple[bool, str]:
+                  margin: float = 0.002, model: Optional[OpponentModel] = None,
+                  politics=None) -> Tuple[bool, str]:
     """Accept/reject an incoming offer (``offer.give`` is what we would receive).
 
     The required gain rises with the game stage: early trades grow both
@@ -296,6 +297,8 @@ def should_accept(state: GameState, responder: int, offer: TradeOffer, evaluator
         return False, "cannot pay"
     stage = game_stage(state)
     margin = margin + 0.03 * stage * stage
+    slack = politics.favor_slack(state, responder, proposer) if politics is not None else 0.0
+    margin -= 0.01 * slack          # friends get a little slack, the leader pays a premium
     pvp = estimated_vp(state, proposer)
     if stage >= 0.6 and pvp >= estimated_vp(state, responder) and pvp >= 7:
         return False, f"late game: no trades with a player ahead of us ({pvp:.0f} VP)"
@@ -333,8 +336,8 @@ def should_accept(state: GameState, responder: int, offer: TradeOffer, evaluator
     prod = player_production(state, responder, ignore_robber=True)
     gain_scarce = sum(offer.give[r] * (1.0 / (1.0 + 8 * prod[r])) for r in range(5))
     lose_scarce = sum(offer.get[r] * (1.0 / (1.0 + 8 * prod[r])) for r in range(5))
-    if net == 0 and gain_scarce > lose_scarce + 0.15 + 0.3 * stage:
-        return True, "swaps a surplus card for one we need"
+    if net == 0 and gain_scarce > lose_scarce + 0.15 + 0.3 * stage - 0.5 * slack:
+        return True, "swaps a surplus card for one we need" + (" (floating a friend a little)" if slack > 0.05 else "")
     return False, "no clear benefit" + (" (late game: trades must pay off immediately)" if stage >= 0.6 else "")
 
 

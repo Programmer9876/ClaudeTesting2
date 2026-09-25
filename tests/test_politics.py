@@ -83,3 +83,25 @@ def test_award_opportunities_and_political_trades():
         assert t["action"][0] == A.PROPOSE_TRADE and t["delta_me"] >= -0.01 and t["delta_leader"] < 0
     lines = runway_advice(s, 0, PoliticalState(4))
     assert any("position" in l for l in lines)
+
+
+def test_stage_weight_and_slack_bounds():
+    from catanbot.politics import MAX_SLACK, stage_weight
+    s = played_state()
+    early = stage_weight(s)
+    s.players[1].cities = [B.HEX_VERTICES[16][3], B.HEX_VERTICES[18][2]]
+    s.players[1].settlements = s.players[1].settlements + [B.HEX_VERTICES[0][5]]
+    assert stage_weight(s) >= early
+    pol = PoliticalState(4)
+    pol.capital[0][2] = 1.0
+    assert abs(pol.favor_slack(s, 2, 0)) <= MAX_SLACK
+    pol.capital[0][2] = -1.0
+    assert pol.favor_slack(s, 2, 0) <= 0.0
+    # award transfer detection without state_after
+    pol2 = PoliticalState(4)
+    s.longest_road_owner = 1
+    pol2.observe(s, (A.BUILD_ROAD, s.players[0].roads[0]), 0)
+    s2 = s.copy()
+    s2.longest_road_owner = 0
+    pol2.observe(s2, (A.END_TURN,), 0)
+    assert pol2.get(0, 1) < pol2.baseline

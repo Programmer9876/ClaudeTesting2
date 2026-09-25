@@ -88,6 +88,21 @@ def make_bot(spec: str) -> Bot:
     raise ValueError(f"unknown bot spec: {spec}")
 
 
+def _valid_extra_action(state: GameState, a, legal) -> bool:
+    """Trade proposals outside the engine's bounded candidate list are still legal if well formed."""
+    if not a or a[0] != A.PROPOSE_TRADE or len(a) != 3:
+        return False
+    if not any(x[0] == A.PROPOSE_TRADE for x in legal):
+        return False
+    give, get = a[1], a[2]
+    if len(give) != 5 or len(get) != 5 or sum(give) == 0 or sum(get) == 0:
+        return False
+    if any((give[r] and get[r]) or give[r] < 0 or get[r] < 0 for r in range(5)):
+        return False
+    p = state.players[state.current]
+    return all(p.resources[r] >= give[r] for r in range(5))
+
+
 # ---------------------------------------------------------------------------
 # One game
 # ---------------------------------------------------------------------------
@@ -137,7 +152,7 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
             feats.append(X.astype(np.float16))
             who.extend(range(n))
         a = bots[i].decide(state, legal, rng)
-        if a not in legal:
+        if a not in legal and not _valid_extra_action(state, a, legal):
             a = legal[0]
         for b in bots:
             b.observe(state, a, i)

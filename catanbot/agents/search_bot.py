@@ -17,6 +17,7 @@ from ..actions import Action
 from ..counting import HandBelief
 from ..heuristic import HeuristicEvaluator, action_priors
 from ..opponent_model import OpponentModel
+from ..politics import PoliticalState
 from ..search import ScoredAction, SearchConfig, Searcher
 from ..state import GameState
 from .base import Bot
@@ -35,6 +36,7 @@ class SearchBot(Bot):
         self.model = model
         self.track_opponents = track_opponents
         self.belief: Optional[HandBelief] = None
+        self.politics: Optional[PoliticalState] = None
         self.last_results: List[ScoredAction] = []
         self._searcher: Optional[Searcher] = None
         if name:
@@ -43,14 +45,20 @@ class SearchBot(Bot):
     def reset(self) -> None:
         if self.track_opponents:
             self.model = OpponentModel()
+            self.politics = None
         self.belief = None
         self.last_results = []
         self._searcher = None
 
     def _searcher_for(self) -> Searcher:
-        if self._searcher is None or self._searcher.model is not self.model:
-            self._searcher = Searcher(self.evaluator, self.config, self.model, self.belief)
+        if (self._searcher is None or self._searcher.model is not self.model
+                or self._searcher.politics is not self.politics):
+            self._searcher = Searcher(self.evaluator, self.config, self.model, self.belief, self.politics)
         return self._searcher
+
+    def _ensure_politics(self, state: GameState) -> None:
+        if self.track_opponents and (self.politics is None or self.politics.n != state.num_players):
+            self.politics = PoliticalState(state.num_players)
 
     def decide(self, state: GameState, legal_actions: List[Action], rng) -> Action:
         if len(legal_actions) == 1:
@@ -60,6 +68,7 @@ class SearchBot(Bot):
             return legal_actions[rng.randrange(len(legal_actions))]
         if self.model is not None:
             self.model.attach(state)
+        self._ensure_politics(state)
         searcher = self._searcher_for()
         me = E.acting_player(state)
         results = searcher.search(state, me, random.Random(rng.random()))
@@ -79,7 +88,15 @@ class SearchBot(Bot):
         return results[0].action
 
     def observe(self, state: GameState, action: Action, player: int) -> None:
-        if self.model is None or not self.track_opponents:
+        if not self.track_opponents:
+            return
+        self._ensure_politics(state)
+        if self.politics is not None:
+            try:
+                self.politics.observe(state, action, player)
+            except Exception:
+                pass
+        if self.model is None:
             return
         predicted = None
         if action[0] in (A.PROPOSE_TRADE, A.ACCEPT_TRADE, A.REJECT_TRADE, A.MOVE_ROBBER, A.PLAY_KNIGHT,

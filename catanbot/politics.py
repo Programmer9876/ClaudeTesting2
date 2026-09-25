@@ -42,6 +42,18 @@ from .state import GameState, PHASE_GAME_OVER
 
 BASELINE = 0.1          # low-to-moderate goodwill until proven otherwise
 DECAY = 0.97            # per turn, deviation from baseline shrinks by this factor
+MAX_SLACK = 0.3         # biggest "favour" in card-value units a friend will float you
+
+
+def stage_weight(state: GameState) -> float:
+    """How much a favour / offence counts right now: early ~0.7, late ~1.3.
+
+    Combined with the per-turn decay this makes an early-game favour worth
+    little by the late game, while a mid/late-game favour is both bigger
+    and fresher.
+    """
+    from .opponent_model import game_stage
+    return 0.7 + 0.6 * game_stage(state)
 
 
 def _vp(state: GameState, i: int) -> float:
@@ -85,6 +97,9 @@ class PoliticalState:
         self.baseline = baseline
         self.capital: List[List[float]] = [[baseline] * n for _ in range(n)]
         self.events: List[str] = []
+        self._last_lr: Optional[int] = None
+        self._last_la: Optional[int] = None
+        self._last_actor: Optional[int] = None
 
     # --- basic ---------------------------------------------------------------
     def get(self, i: int, j: int) -> float:
@@ -118,6 +133,9 @@ class PoliticalState:
         self.ensure(state.num_players)
         kind = action[0]
         n = state.num_players
+        sw = stage_weight(state)
+        # Award transfers are detected lazily: compare with the owners seen last time.
+        self._detect_award_transfer(state)
         if kind in (A.MOVE_ROBBER, A.PLAY_KNIGHT):
             h, victim = action[1], action[2]
             # Selfish best alternative: the hex with the best damage score for the actor.
@@ -143,13 +161,13 @@ class PoliticalState:
                 is_leader = j == max(range(n), key=lambda k: _vp(state, k))
                 mag = 0.05 * min(pips, 6) / 6.0 + (0.12 if j == victim else 0.0)
                 mag *= personal if not is_leader else 0.5   # hitting the leader is expected
-                self.adjust(player, j, -mag, f"{_pname(state, player)} robbed {_pname(state, j)}")
+                self.adjust(player, j, -mag * sw, f"{_pname(state, player)} robbed {_pname(state, j)}")
             # Not hitting someone who was the obvious selfish target buys a little goodwill.
             for j in range(n):
                 if j == player or j in hurt:
                     continue
                 if _vp(state, j) >= _vp(state, player) + 1:
-                    self.adjust(player, j, 0.01)
+                    self.adjust(player, j, 0.01 * sw)
         elif kind == A.PLAY_MONOPOLY:
             res = action[1]
             for j in range(n):
@@ -158,7 +176,7 @@ class PoliticalState:
                 pj = state.players[j]
                 k = pj.resources[res] if pj.hand_known else 0
                 if k > 0:
-                    self.adjust(player, j, -0.04 * k, f"{_pname(state, player)} monopolised {k} {B.RESOURCE_NAMES[res]} from {_pname(state, j)}")
+                    self.adjust(player, j, -0.04 * k * sw, f"{_pname(state, player)} monopolised {k} {B.RESOURCE_NAMES[res]} from {_pname(state, j)}")
         elif kind in (A.BUILD_SETTLEMENT, A.BUILD_ROAD, A.SETUP_SETTLEMENT):
             # Blocking: did this take a spot / cut a road another player was heading for?
             occ = state.occupied_vertices()
@@ -170,7 +188,7 @@ class PoliticalState:
                     reach = reachable_spots(state, j, max_roads=1, occ=occ)
                     if v in reach:
                         val = score_settlement_spot(state, j, v, occ=occ)
-                        self.adjust(player, j, -0.02 * min(val, 20) / 10.0,
+                        self.adjust(player, j, -0.02 * sw * min(val, 20) / 10.0,
                                     f"{_pname(state, player)} took a spot {_pname(state, j)} wanted")
             else:
                 e = action[1]
@@ -179,14 +197,14 @@ class PoliticalState:
                         continue
                     reach = reachable_spots(state, j, max_roads=2, occ=occ)
                     if any(first == e for _, first in reach.values()):
-                        self.adjust(player, j, -0.03, f"{_pname(state, player)} cut off {_pname(state, j)}'s road")
+                        self.adjust(player, j, -0.03 * sw, f"{_pname(state, player)} cut off {_pname(state, j)}'s road")
         elif kind == A.EXECUTE_TRADE:
             partner = action[1]
             offer = state.pending_trade
             if offer is not None:
                 # Goodwill grows with how good the deal is for the partner.
                 gain = sum((offer.give[r] - offer.get[r]) * RESOURCE_DEMAND[r] for r in range(5))
-                d = 0.04 + 0.03 * max(0.0, gain)
+                d = (0.04 + 0.03 * max(0.0, gain)) * sw
                 self.adjust(player, partner, d, f"{_pname(state, player)} traded with {_pname(state, partner)}")
                 self.adjust(partner, player, d)
         elif kind == A.REJECT_TRADE:
@@ -195,20 +213,31 @@ class PoliticalState:
                 # Refusing an offer that was fair for us is a snub.
                 gain = sum((offer.give[r] - offer.get[r]) * RESOURCE_DEMAND[r] for r in range(5))
                 if gain >= -0.05:
-                    self.adjust(player, offer.proposer, -0.02)
+                    self.adjust(player, offer.proposer, -0.02 * sw)
         elif kind == A.ACCEPT_TRADE:
             offer = state.pending_trade
             if offer is not None and offer.proposer != player:
-                self.adjust(player, offer.proposer, 0.02)
+                self.adjust(player, offer.proposer, 0.02 * sw)
         elif kind == A.END_TURN:
             self.decay()
-        # Award transfers.
+        # Award transfers: with ``state_after`` we can attribute immediately,
+        # otherwise the next observe() call detects the change.
+        self._last_actor = player
         if state_after is not None:
-            for owner_attr, label in (("longest_road_owner", "Longest Road"), ("largest_army_owner", "Largest Army")):
-                before = getattr(state, owner_attr)
-                after = getattr(state_after, owner_attr)
-                if before >= 0 and after == player and before != player:
-                    self.adjust(player, before, -0.08, f"{_pname(state, player)} took {label} from {_pname(state, before)}")
+            self._detect_award_transfer(state_after, actor=player)
+        else:
+            self._last_lr = state.longest_road_owner
+            self._last_la = state.largest_army_owner
+
+    def _detect_award_transfer(self, state: GameState, actor: Optional[int] = None) -> None:
+        actor = self._last_actor if actor is None else actor
+        sw = stage_weight(state)
+        for attr, label in (("_last_lr", "Longest Road"), ("_last_la", "Largest Army")):
+            prev = getattr(self, attr, None)
+            cur = state.longest_road_owner if attr == "_last_lr" else state.largest_army_owner
+            if prev is not None and prev >= 0 and cur != prev and cur == actor and actor is not None and actor >= 0:
+                self.adjust(actor, prev, -0.08 * sw, f"{_pname(state, actor)} took {label} from {_pname(state, prev)}")
+            setattr(self, attr, cur)
 
     # --- queries -----------------------------------------------------------------
     def grudge(self, actor: int, victim: int) -> float:
@@ -237,13 +266,24 @@ class PoliticalState:
             out.append(w)
         return out
 
-    def trade_willingness(self, state: GameState, responder: int, proposer: int) -> float:
-        """Multiplier on P(responder accepts proposer's offer): 0.4 .. 1.4."""
+    def favor_slack(self, state: GameState, responder: int, proposer: int) -> float:
+        """Bounded slack (card-value units) a responder grants the proposer.
+
+        Positive: they will accept a deal that is *slightly* unfavourable for
+        them ("float you a little"); negative: they demand a premium.  It
+        is capped at +-MAX_SLACK so an unfair deal is still refused, and it
+        shrinks when the proposer is visibly ahead.
+        """
         self.ensure(state.num_players)
         cap = self.get(proposer, responder)          # how responder views proposer
         pos = relative_position(state, proposer)
-        m = 1.0 + 0.6 * (cap - self.baseline) - 0.7 * pos
-        return max(0.4, min(1.4, m))
+        slack = 0.6 * (cap - self.baseline) - 0.35 * pos
+        return max(-MAX_SLACK, min(MAX_SLACK, slack))
+
+    def trade_willingness(self, state: GameState, responder: int, proposer: int) -> float:
+        """Multiplier on P(responder accepts proposer's offer): 0.4 .. 1.4 (derived from the slack)."""
+        slack = self.favor_slack(state, responder, proposer)
+        return max(0.4, min(1.4, 1.0 + 1.2 * slack))
 
     def summary(self, state: GameState, me: int) -> List[str]:
         self.ensure(state.num_players)

@@ -41,6 +41,7 @@ from .discard import choose_discard, explain_seven_risk, seven_risk
 from .heuristic import action_priors
 from .opponent_model import OpponentModel, trade_stage_factor
 from .placement import road_targets, score_city, vertex_production
+from .politics import PoliticalState, political_trade_options
 from .robber import best_robber_move, hex_damage, should_play_knight
 from .state import (GameState, PHASE_DISCARD, PHASE_GAME_OVER, PHASE_MAIN, PHASE_ROBBER, PHASE_ROLL,
                     PHASE_TRADE_RESPONSE, PHASE_TRADE_SELECT)
@@ -107,14 +108,17 @@ class Searcher:
     """Expectimax + beam search over one turn with max^n opponent simulation."""
 
     def __init__(self, evaluator, config: Optional[SearchConfig] = None,
-                 model: Optional[OpponentModel] = None, belief: Optional[HandBelief] = None):
+                 model: Optional[OpponentModel] = None, belief: Optional[HandBelief] = None,
+                 politics: Optional[PoliticalState] = None):
         self.evaluator = evaluator
         self.config = config or SearchConfig()
         self.model = model
         self.belief = belief
+        self.politics = politics
         self.nodes = 0
         self._deadline: Optional[float] = None
         self._rng = random.Random(12345)
+        self._political_reasons: Dict[Action, str] = {}
 
     # ------------------------------------------------------------------
     # public API
@@ -269,6 +273,17 @@ class Searcher:
                 break
         if (A.END_TURN,) in legal and (A.END_TURN,) not in out:
             out.append((A.END_TURN,))
+        # Political options: trades that let a trailing player take an award off the
+        # leader at no cost to our own win probability ("buy runway").
+        if state.phase == PHASE_MAIN and state.dice and state.trades_this_turn < E.MAX_TRADE_PROPOSALS_PER_TURN:
+            try:
+                for opt in political_trade_options(state, me, self.evaluator, self.politics, model=self.model)[:2]:
+                    a = opt["action"]
+                    if a not in out:
+                        out.append(a)
+                    self._political_reasons[a] = opt["reason"]
+            except Exception:
+                pass
         return out
 
     # ------------------------------------------------------------------
@@ -361,11 +376,13 @@ class Searcher:
 
     def _accept_probability(self, state: GameState, j: int, offer, me: int) -> float:
         if self.model is not None and self.config.use_opponent_model:
-            return self.model.predict_accept(state, j, offer.give, offer.get, proposer=me, belief=self.belief)
+            return self.model.predict_accept(state, j, offer.give, offer.get, proposer=me, belief=self.belief,
+                                             politics=self.politics)
         p = state.players[j]
+        will = self.politics.trade_willingness(state, j, me) if self.politics is not None else 1.0
         if p.hand_known:
-            ok, _ = should_accept(state, j, offer)
-            return 0.8 if ok else 0.08
+            ok, _ = should_accept(state, j, offer, politics=self.politics)
+            return min(1.0, (0.8 if ok else 0.08) * will)
         # unknown hand: can they pay?  crude production-based guess
         from .trading import partner_likelihood
         prob = 1.0
@@ -528,7 +545,8 @@ class Searcher:
                 s = self._apply(s, choose_discard(s, j, legal_actions=legal))
                 continue
             if s.phase == PHASE_ROBBER:
-                h, v, _ = best_robber_move(s, j)
+                tw = self.politics.robber_target_weights(s, j) if self.politics is not None else None
+                h, v, _ = best_robber_move(s, j, target_weights=tw)
                 a = (A.MOVE_ROBBER, h, v)
                 if a not in legal:
                     a = legal[0]
@@ -570,6 +588,8 @@ class Searcher:
     # explanations
     # ------------------------------------------------------------------
     def explain(self, state: GameState, action: Action, me: int) -> str:
+        if action in self._political_reasons:
+            return self._political_reasons[action]
         return explain_action(state, action, me, self.model, self.belief)
 
 
@@ -674,18 +694,19 @@ def explain_action(state: GameState, action: Action, me: int, model: Optional[Op
 
 def search_determinized(state: GameState, me: int, evaluator, config: Optional[SearchConfig] = None,
                         samples: int = 4, rng=None, model: Optional[OpponentModel] = None,
-                        belief: Optional[HandBelief] = None) -> List[ScoredAction]:
+                        belief: Optional[HandBelief] = None,
+                        politics: Optional[PoliticalState] = None) -> List[ScoredAction]:
     """Average search results over several determinizations of a partially observed state."""
     from .inference import is_fully_known, sample_states
     rng = rng or random.Random(0)
     if is_fully_known(state):
-        return Searcher(evaluator, config, model, belief).search(state, me, rng)
+        return Searcher(evaluator, config, model, belief, politics).search(state, me, rng)
     states = sample_states(state, me, samples, rng, belief)
     agg: Dict[Action, List[float]] = {}
     expl: Dict[Action, str] = {}
     lines: Dict[Action, List[Action]] = {}
     for s in states:
-        res = Searcher(evaluator, config, model, belief).search(s, me, rng)
+        res = Searcher(evaluator, config, model, belief, politics).search(s, me, rng)
         for r in res:
             agg.setdefault(r.action, []).append(r.value)
             expl.setdefault(r.action, r.explanation)

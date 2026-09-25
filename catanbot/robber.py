@@ -63,8 +63,14 @@ def production_blocked(state: GameState, player: int) -> float:
     return pips * RESOURCE_DEMAND[res] * (scarcity[res] ** 0.5)
 
 
-def hex_damage(state: GameState, h: int, player: int) -> Tuple[float, float]:
-    """(damage to opponents weighted by threat, damage to ourselves) for the robber on ``h``."""
+def hex_damage(state: GameState, h: int, player: int,
+               target_weights: Optional[List[float]] = None) -> Tuple[float, float]:
+    """(damage to opponents weighted by threat, damage to ourselves) for the robber on ``h``.
+
+    ``target_weights`` (per player) replaces the plain ``threat`` weighting,
+    e.g. from ``politics.PoliticalState.robber_target_weights`` (grudges,
+    friends, coalition against the leader).
+    """
     res, num = state.hexes[h]
     if res == B.DESERT or num == 0:
         return 0.0, 0.0
@@ -79,7 +85,8 @@ def hex_damage(state: GameState, h: int, player: int) -> Tuple[float, float]:
         if i == player:
             own += pips * w
         else:
-            opp += pips * w * threat(state, i)
+            tw = target_weights[i] if target_weights is not None else threat(state, i)
+            opp += pips * w * tw
     return opp, own
 
 
@@ -97,8 +104,8 @@ def steal_candidates(state: GameState, h: int, player: int) -> List[int]:
     return out
 
 
-def choose_victim(state: GameState, h: int, player: int) -> int:
-    """Leader first (biggest threat), then the fattest hand; -1 if nobody."""
+def choose_victim(state: GameState, h: int, player: int, target_weights: Optional[List[float]] = None) -> int:
+    """Leader first (biggest threat / grudge), then the fattest hand; -1 if nobody."""
     cands = steal_candidates(state, h, player)
     if not cands:
         return -1
@@ -106,13 +113,15 @@ def choose_victim(state: GameState, h: int, player: int) -> int:
     def key(i):
         p = state.players[i]
         cards = p.total_resources if p.hand_known else p.hand_size
-        return (threat(state, i), min(cards, 8), cards)
+        tw = target_weights[i] if target_weights is not None else threat(state, i)
+        return (round(tw, 3), min(cards, 8), cards)
 
     return max(cands, key=key)
 
 
 def best_robber_move(state: GameState, player: int, evaluator=None,
-                     exclude: Optional[int] = None) -> Tuple[int, int, str]:
+                     exclude: Optional[int] = None,
+                     target_weights: Optional[List[float]] = None) -> Tuple[int, int, str]:
     """Best ``(hex, victim, reason)`` for moving the robber.
 
     ``exclude`` defaults to the current robber hex (it must move).  Hexes
@@ -125,13 +134,14 @@ def best_robber_move(state: GameState, player: int, evaluator=None,
     for h in range(B.NUM_HEXES):
         if h == exclude:
             continue
-        opp, own = hex_damage(state, h, player)
-        victim = choose_victim(state, h, player)
+        opp, own = hex_damage(state, h, player, target_weights)
+        victim = choose_victim(state, h, player, target_weights)
         score = opp - 1.6 * own
         if victim >= 0:
             vp = state.players[victim]
             cards = vp.total_resources if vp.hand_known else vp.hand_size
-            score += 1.5 + 0.35 * min(cards, 6) + 0.8 * (threat(state, victim) - 1.0)
+            tw = target_weights[victim] if target_weights is not None else threat(state, victim)
+            score += 1.5 + 0.35 * min(cards, 6) + 0.8 * (tw - 1.0)
         # tiny preference for the desert over blocking nothing while hurting us
         if score > best_score:
             best_score = score
