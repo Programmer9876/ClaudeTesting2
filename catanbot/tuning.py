@@ -745,3 +745,4 @@ def evaluator_mode() -> str:
         return "c++ (catanbot_core)"
     return "python (catanbot_core not built)"
 from .openings import register_tunables as _register_openings; _register_openings(TUNABLES)  # noqa: E402,E702
+from .winpaths import register_tunables as _register_winpaths; _register_winpaths(TUNABLES)  # noqa: E402,E702

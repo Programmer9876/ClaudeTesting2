@@ -173,6 +173,12 @@ def make_bot(spec: str) -> Bot:
             finished_lookahead=int(kw.get("lookahead", 0)),   # 0 = every end-of-turn node (de-noised lookahead)
             trade_proposals=int(kw.get("trades", 3)),
             max_nodes=int(kw.get("nodes", 20000)),
+            # win-path races (catanbot/winpaths.py): off unless the spec says paths=1
+            paths=int(float(kw.get("paths", 0))),
+            paths_w=float(kw.get("paths_w", 1.0)),
+            paths_crowd=float(kw.get("paths_crowd", 1.0)),
+            paths_priors=int(float(kw.get("paths_priors", 1))),
+            paths_spots=int(float(kw.get("paths_spots", 0))),
         )
         ev = load_evaluator(kw.get("model") or kw.get("evaluator"),
                             float(kw["blend"]) if "blend" in kw else None)

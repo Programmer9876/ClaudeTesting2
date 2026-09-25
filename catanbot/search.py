@@ -51,7 +51,7 @@ from .placement import road_targets, score_city, vertex_production
 from .politics import PoliticalState, political_trade_options
 from .robber import best_robber_move, hex_damage, should_play_knight
 from .state import (GameState, PHASE_DISCARD, PHASE_GAME_OVER, PHASE_MAIN, PHASE_ROBBER, PHASE_ROLL,
-                    PHASE_TRADE_RESPONSE, PHASE_TRADE_SELECT)
+                    PHASE_SETUP_ROAD, PHASE_SETUP_SETTLEMENT, PHASE_TRADE_RESPONSE, PHASE_TRADE_SELECT)
 from .trading import plan_trades, should_accept
 
 
@@ -85,6 +85,15 @@ class SearchConfig:
     # and is used when the extension is missing, ``CATANBOT_NO_ACCEL`` / ``CATANBOT_NO_NATIVE_SEARCH`` is set,
     # the evaluator is not a HeuristicEvaluator / float32 ValueNet / BlendedEvaluator, or a state is unsupported.
     native_future: bool = True
+    # Win-path races with crowding (catanbot/winpaths.py, docs/STRATEGY.md "Win-path races").  Off by default: with
+    # paths = 0 no winpaths code runs and the search is exactly the old one.  Budgeted for depth 1; at depth >= 2
+    # paths = 1 makes _future_values take the Python path (the C++ lookahead cannot see the term).  The five fields
+    # never reach C++ (native_level_dict is unchanged).
+    paths: int = 0                  # 1 = wrap the evaluator in winpaths.PathsEvaluator (race-aware LR / LA credit)
+    paths_w: float = 1.0            # value weight g of the correction (0 = the base evaluator's values)
+    paths_crowd: float = 1.0        # crowding strength: scales the waste cost of fighting a crowded race (0 = none)
+    paths_priors: int = 1           # with paths = 1: race-aware move-ordering nudges (dev buys, Longest Road roads)
+    paths_spots: int = 0            # with paths = 1: rescale the settlement-reach terms by our chance at contested spots
 
 
 @dataclass
@@ -147,7 +156,8 @@ def reduced_config(cfg: SearchConfig, depth: int, budget: int) -> SearchConfig:
                         trade_proposals=1, discard_candidates=2, use_opponent_model=cfg.use_opponent_model,
                         trade_cap_early=cfg.trade_cap_early, trade_cap_late=cfg.trade_cap_late,
                         opponent_proposals=0, dump_candidates=min(2, cfg.dump_candidates),
-                        native_future=cfg.native_future)
+                        native_future=cfg.native_future, paths=cfg.paths, paths_w=cfg.paths_w,
+                        paths_crowd=cfg.paths_crowd, paths_priors=cfg.paths_priors, paths_spots=cfg.paths_spots)
 
 
 def lookahead_weight(cfg: SearchConfig) -> float:
@@ -209,6 +219,7 @@ class Searcher:
         self._chain_next: Dict[Action, Action] = {}   # first step of an intermediary deal -> its second step
         self._arb_cache: Dict[tuple, list] = {}        # arbitrage deals per (hands, trades) within one search
         self._shift = 0.0            # mean(future - static) of the lookahead set, applied to static leaves
+        self._paths = None           # winpaths.PathsEvaluator of the current search (config.paths = 1 only)
         # Native lookahead (C++): the evaluator's twin handle, or None -> the Python _future_values below.
         self._native_ev = None
         self._native_key = None
@@ -238,6 +249,7 @@ class Searcher:
         self._political_reasons = {}
         self._chain_next = {}
         self._arb_cache = {}
+        self._paths = None
         if self._native_ev is not None and _accel.evaluator_key(self.evaluator) != self._native_key:
             # The net's arrays were replaced (set_params / load): rebuild the native twin.
             self._native_ev = _accel.native_evaluator(self.evaluator)
@@ -248,6 +260,9 @@ class Searcher:
         if len(legal) == 1 and legal[0][0] != A.ROLL:
             v = float(self._eval([state], [me])[0])
             return [ScoredAction(legal[0], v, self.explain(state, legal[0], me), [legal[0]], v)]
+        if cfg.paths and state.phase not in (PHASE_SETUP_SETTLEMENT, PHASE_SETUP_ROAD):
+            from . import winpaths   # lazy: nothing of it is imported or run with paths = 0
+            self._paths = winpaths.PathsEvaluator.for_search(self.evaluator, state, me, cfg)
         root = _Node(state, 1.0, [])
         finished: List[_Node] = []
         frontier = [root]
@@ -328,7 +343,8 @@ class Searcher:
         return False
 
     def _eval(self, states: Sequence[GameState], players: Sequence[int]):
-        return self.evaluator.evaluate(list(states), list(players))
+        ev = self.evaluator if self._paths is None else self._paths
+        return ev.evaluate(list(states), list(players))
 
     def _apply(self, state: GameState, action: Action) -> GameState:
         self.nodes += 1
@@ -431,6 +447,8 @@ class Searcher:
                     i = idx.get(a)
                     if i is not None:
                         priors[i] = max(priors[i], 62.0 - k)                     # plan bank trades sit at 60
+        if self._paths is not None and cfg.paths_priors:
+            priors = self._paths.ctx.adjust_priors(state, legal, priors)
         return priors
 
     def _candidates(self, state: GameState, me: int, force_end: bool,
@@ -492,7 +510,8 @@ class Searcher:
         if (state.phase == PHASE_MAIN and state.free_roads == 0
                 and any(a[0] == A.PROPOSE_TRADE for a in legal)):
             try:
-                for opt in political_trade_options(state, me, self.evaluator, self.politics, model=self.model)[:2]:
+                ev = self.evaluator if self._paths is None else self._paths
+                for opt in political_trade_options(state, me, ev, self.politics, model=self.model)[:2]:
                     a = opt["action"]
                     if a not in out:
                         out.append(a)
@@ -719,7 +738,7 @@ class Searcher:
         # Common random numbers: the same roll sequences for every state.
         rng = random.Random(self._rng.random())
         seqs = [[rng.randint(1, 6) + rng.randint(1, 6) for _ in range(3 * 4)] for _ in range(n_samples)]
-        if self._native_ev is not None and states:
+        if self._native_ev is not None and self._paths is None and states:   # C++ cannot see the win-path term
             out = self._native_future_values(states, me, depth, seqs)
             if out is not None:
                 return out
