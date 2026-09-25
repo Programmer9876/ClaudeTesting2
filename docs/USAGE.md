@@ -97,6 +97,25 @@ than subtle ones, and blocs are reported in the Politics section.  `python -m ca
 what has been learned.  During self-play the bot maintains the same
 profiles automatically from the actions it observes.
 
+### Validating the bot on your own games
+
+Human games are the real test, and you do not need an app for it: log the
+positions you analyse, record who won, and score the win estimates.
+
+```bash
+python -m catanbot analyze shot1.png --me red --log mygames.jsonl --game 2026-09-25a
+python -m catanbot analyze shot2.png --me red --log mygames.jsonl --game 2026-09-25a
+python -m catanbot outcome mygames.jsonl --game 2026-09-25a --winner blue
+python -m catanbot calibrate --log mygames.jsonl          # Brier score + reliability table
+python -m catanbot calibrate --selfplay 20                # same check on fresh self-play games
+```
+
+A well-calibrated evaluator's predicted win probabilities match the
+observed win rates bin by bin; the trajectory printed per game shows
+whether the estimate moved the right way as the game unfolded.  Log games
+against strong players in particular - that is where the value net and
+the political model are tested, not against average opponents.
+
 ## 2. Recommend from a JSON state
 
 ```bash
