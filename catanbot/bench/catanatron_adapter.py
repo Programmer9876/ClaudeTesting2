@@ -36,7 +36,13 @@ randomly by the catanatron engine (its only ``DISCARD`` action has value
 ``PLAY_ROAD_BUILDING`` is only offered by catanatron while the player also
 holds wood + brick, and ``PLAY_KNIGHT`` is two catanatron decisions
 (``PLAY_KNIGHT_CARD`` then ``MOVE_ROBBER``) - the robber target chosen by the
-search is remembered and executed at the second prompt.
+search is remembered and executed at the second prompt.  Two engine rules
+differ without any adapter involvement: catanatron never counts a road that
+ends at an opponent's building towards Longest Road (catanbot and the
+official rules do; the awarded owner / length are copied from catanatron, so
+victory points always agree with catanatron), and catanatron prompts the
+*later* discarders of a 7 with a hard-coded ``> 7`` regardless of its
+``discard_limit`` (mirrored by :func:`state_to_catanbot`).
 """
 from __future__ import annotations
 
@@ -455,10 +461,14 @@ def state_to_catanbot(st: State, vps_to_win: int = 10, mapping: Optional[BoardMa
         s.phase = PHASE_DISCARD
         s.dice = 7
         cpi = int(st.current_player_index)
-        limit = int(getattr(st, "discard_limit", 7))
+        # catanatron picks the *first* discarder with ``state.discard_limit`` (at the
+        # ROLL) but advances to the later ones with a hard-coded ``> 7``
+        # (``apply_action``'s DISCARD branch), whatever the configured limit.  The
+        # queue mirrors the prompts catanatron will actually issue, so it is only
+        # in the default ``discard_limit=7`` that both rules coincide.
         queue = [cpi]
         for j in range(cpi + 1, n):
-            if players[j].total_resources > limit:
+            if players[j].total_resources > 7:
                 queue.append(j)
         s.discard_queue = queue
     elif prompt == ActionPrompt.MOVE_ROBBER:
@@ -669,6 +679,7 @@ class CatanbotPlayer(Player):
         self._shadow: Optional[State] = None
         self._observed = 0
         self._pending_robber: Optional[Tuple[int, int]] = None
+        self._knight_state: Optional[GameState] = None   # state a PLAY_KNIGHT_CARD was decided in
         self._reset_stats()
 
     # -- lifecycle --------------------------------------------------------
@@ -685,6 +696,7 @@ class CatanbotPlayer(Player):
         self._shadow = None
         self._observed = 0
         self._pending_robber = None
+        self._knight_state = None
         self.last_explanation = None
 
     def _begin(self, game: Game) -> None:
@@ -694,10 +706,20 @@ class CatanbotPlayer(Player):
         self._shadow = game.state.copy()
         self._observed = len(game.state.actions)
         self._pending_robber = None
+        self._knight_state = None
 
     # -- observation ------------------------------------------------------
     def _catch_up(self, st: State) -> None:
-        """Replay the actions catanatron logged since our last look through ``bot.observe``."""
+        """Replay the actions catanatron logged since our last look through ``bot.observe``.
+
+        Every observation is delivered with the state the action was taken in
+        (the self-play contract).  A knight is two logged catanatron actions
+        (``PLAY_KNIGHT_CARD`` then ``MOVE_ROBBER``) but one catanbot action, so
+        the merged ``PLAY_KNIGHT`` observation is delivered with the state the
+        *card* was played in (``PHASE_ROLL`` / ``PHASE_MAIN``, knight still in
+        hand) rather than the ``PHASE_ROBBER`` state after it, so that
+        ``SearchBot.observe`` predicts from the same legal actions.
+        """
         log = st.actions
         n = len(log)
         if self._shadow is None:
@@ -711,9 +733,17 @@ class CatanbotPlayer(Player):
             try:
                 cb = state_to_catanbot(self._shadow, mapping=self._mapping, suppress_trades=self.suppress_trades)
                 cb_action = catanatron_action_to_catanbot(a, cb, self._mapping, prev)
-                if cb_action is not None:
-                    self.bot.observe(cb, cb_action, self._shadow.color_to_index[a.color])
+                if a.action_type == ActionType.PLAY_KNIGHT_CARD:
+                    self._knight_state = cb
+                elif cb_action is not None:
+                    seen = cb
+                    if cb_action[0] == A.PLAY_KNIGHT and self._knight_state is not None:
+                        seen = self._knight_state
+                    self._knight_state = None
+                    self.bot.observe(seen, cb_action, self._shadow.color_to_index[a.color])
                     self.stats["observed"] += 1
+                else:
+                    self._knight_state = None
             except Exception:
                 if self.strict:
                     raise
@@ -726,6 +756,7 @@ class CatanbotPlayer(Player):
                 # Shadow diverged: resynchronise from the live state and stop observing this gap.
                 self._shadow = st.copy()
                 self._observed = n
+                self._knight_state = None
                 self.stats["observe_errors"] += 1
                 return
             i += 1
@@ -815,17 +846,18 @@ class CatanbotPlayer(Player):
 # ---------------------------------------------------------------------------
 # Game helpers
 # ---------------------------------------------------------------------------
-def make_game(players: Sequence[Player], seed: int, vps_to_win: int = 10) -> Game:
+def make_game(players: Sequence[Player], seed: int, vps_to_win: int = 10, discard_limit: int = 7) -> Game:
     """``Game`` with ``players`` seated exactly in the given order.
 
     catanatron shuffles the seating with the game seed; since no action has been
     taken yet every per-seat field is still identical, so the seating can be
     reordered deterministically (``seed`` must be non-zero: catanatron treats 0
-    as "pick a random seed").
+    as "pick a random seed").  ``discard_limit`` is catanatron's (it only
+    governs who discards *first* on a 7, see :func:`state_to_catanbot`).
     """
     if not seed:
         raise ValueError("seed must be non-zero (catanatron treats 0 as random)")
-    game = Game(list(players), seed=seed, vps_to_win=vps_to_win)
+    game = Game(list(players), seed=seed, vps_to_win=vps_to_win, discard_limit=discard_limit)
     st = game.state
     if list(st.players) != list(players):
         st.players = list(players)
@@ -835,11 +867,12 @@ def make_game(players: Sequence[Player], seed: int, vps_to_win: int = 10) -> Gam
     return game
 
 
-def play_game(players: Sequence[Player], seed: int, vps_to_win: int = 10) -> Dict[str, object]:
+def play_game(players: Sequence[Player], seed: int, vps_to_win: int = 10,
+              discard_limit: int = 7) -> Dict[str, object]:
     """Play one seated game to the end; returns a summary dict (winner may be ``None`` at the turn cap)."""
     for p in players:
         p.reset_state()
-    game = make_game(players, seed, vps_to_win)
+    game = make_game(players, seed, vps_to_win, discard_limit)
     t0 = time.perf_counter()
     winner = game.play()
     st = game.state

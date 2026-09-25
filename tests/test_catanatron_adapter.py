@@ -345,3 +345,177 @@ def test_catanbot_player_smoke_game():
     # a second game with the same player instance resets cleanly
     res2 = AD.play_game(players, seed=6)
     assert res2["turns"] > 0 and me.stats["errors"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Engine rule differences (documented in docs/BENCHMARKS.md, limitations 11 and 12)
+# ---------------------------------------------------------------------------
+def _hand_build(st, color, node=None, edge=None):
+    """Place a settlement / road on a catanatron ``State`` the way ``apply_action`` does (free)."""
+    from catanatron import state_functions as SF
+    if node is not None:
+        st.board.build_settlement(color, node, True)
+        SF.build_settlement(st, color, node, True)
+    if edge is not None:
+        prev, road_color, road_lengths = st.board.build_road(color, edge)
+        SF.build_road(st, color, edge, True)
+        SF.mantain_longest_road(st, prev, road_color, road_lengths)
+
+
+def test_road_ending_at_enemy_settlement_counts_in_catanbot_but_not_catanatron():
+    """Limitation 11: catanatron's ``longest_acyclic_path`` never steps onto an enemy node.
+
+    RED owns a 5-road path whose last road ends at BLUE's settlement.  The
+    official rules (and ``engine.longest_road_length``) count 5 and award
+    Longest Road; catanatron counts 4 and awards nothing.  The adapter copies
+    catanatron's award so victory points agree, while catanbot's own engine,
+    applying the same road on the converted state, books the +2 VP.
+    """
+    import random
+    import networkx as nx
+    from catanatron.models.board import STATIC_GRAPH, longest_acyclic_path
+
+    g = fresh_game(seed=7)
+    st = g.state
+    m = AD.mapping_for(st.board.map)
+    graph = STATIC_GRAPH.subgraph(st.board.map.land_nodes)
+    start = 0
+    dist = nx.single_source_shortest_path_length(graph, start)
+    end = min(n for n, d in dist.items() if d == 5)          # simple 5-edge path, endpoints 5 apart
+    path = nx.shortest_path(graph, start, end)
+    red, blue = st.colors[0], st.colors[1]
+    _hand_build(st, red, node=start)
+    _hand_build(st, blue, node=end)
+    for i in range(4):
+        _hand_build(st, red, edge=(path[i], path[i + 1]))
+    cb = AD.to_catanbot_state(g)
+    assert st.player_state["P0_LONGEST_ROAD_LENGTH"] == E.longest_road_length(cb, 0) == 4
+    assert cb.longest_road_owner == -1
+
+    # catanatron lets RED build the road *into* BLUE's settlement ...
+    last = tuple(sorted((path[4], path[5])))
+    assert last in st.board.buildable_edges(red)
+    # ... and catanbot's engine expects that road to complete Longest Road (+2 VP):
+    sim = cb.copy()
+    sim.phase, sim.current, sim.dice = PHASE_MAIN, 0, 8
+    sim.players[0].resources = [1, 1, 0, 0, 0]
+    road = (A.BUILD_ROAD, m.edge_to_id[last])
+    assert road in E.legal_actions(sim)
+    after = E.apply(sim, road, random.Random(0))
+    assert after.longest_road_owner == 0 and after.longest_road_len == 5
+    assert after.total_vp(0) == cb.total_vp(0) + 2
+
+    # catanatron does not: the road never joins the component and is not counted.
+    _hand_build(st, red, edge=last)
+    component = next(c for c in st.board.connected_components[red] if start in c)
+    assert end not in component
+    assert len(longest_acyclic_path(st.board, component, red)) == 4
+    assert st.player_state["P0_LONGEST_ROAD_LENGTH"] == 4 and not st.player_state["P0_HAS_ROAD"]
+    cb2 = AD.to_catanbot_state(g)
+    assert E.longest_road_length(cb2, 0) == 5                         # catanbot / official counting
+    assert cb2.longest_road_owner == -1 and cb2.longest_road_len == 0  # adapter copies catanatron's award
+    assert cb2.total_vp(0) == st.player_state["P0_ACTUAL_VICTORY_POINTS"] == cb.total_vp(0)
+
+    # Without the enemy building both engines agree on the same five roads.
+    g2 = fresh_game(seed=7)
+    st2 = g2.state
+    _hand_build(st2, st2.colors[0], node=start)
+    for i in range(5):
+        _hand_build(st2, st2.colors[0], edge=(path[i], path[i + 1]))
+    cb3 = AD.to_catanbot_state(g2)
+    assert st2.player_state["P0_LONGEST_ROAD_LENGTH"] == E.longest_road_length(cb3, 0) == 5
+    assert st2.player_state["P0_HAS_ROAD"] and cb3.longest_road_owner == 0 and cb3.longest_road_len == 5
+
+
+def test_longest_road_lengths_never_differ_by_more_than_one_through_games():
+    """Through whole games catanatron's length is catanbot's or exactly one less (limitation 11),
+    the adapter copies catanatron's holder / length and the victory points always agree."""
+    award_ticks = 0
+    for seed in range(201, 205):
+        g = fresh_game(seed=seed)
+        while g.winning_color() is None and g.state.num_turns < TURNS_LIMIT:
+            st = g.state
+            ps = st.player_state
+            cb = AD.to_catanbot_state(g)
+            for i in range(len(st.colors)):
+                cat = int(ps[f"P{i}_LONGEST_ROAD_LENGTH"])
+                ours = E.longest_road_length(cb, i)
+                if ps[f"P{i}_HAS_ROAD"]:
+                    award_ticks += 1
+                    assert cb.longest_road_owner == i and cb.longest_road_len == cat
+                    assert cat in (ours, ours - 1), (seed, i, cat, ours)
+                else:
+                    assert cb.longest_road_owner != i
+                assert cb.total_vp(i) == ps[f"P{i}_ACTUAL_VICTORY_POINTS"]
+            g.play_tick()
+    assert award_ticks > 0
+
+
+def test_discard_queue_mirrors_catanatron_hard_coded_limit():
+    """Limitation 12: catanatron chooses the first discarder with ``discard_limit`` but the later
+    ones with a hard-coded ``> 7``; the converted ``discard_queue`` lists exactly the seats
+    catanatron goes on to prompt, for any limit."""
+    from catanatron.models.enums import Action as CAction
+    from catanatron.state import apply_action
+
+    for limit, hands in ((7, [9, 8, 7, 10]), (9, [10, 8, 6, 9]), (5, [6, 6, 8, 3]), (9, [4, 10, 8, 3])):
+        g = AD.make_game([WeightedRandomPlayer(c) for c in AD.COLORS], seed=11, discard_limit=limit)
+        st = g.state
+        assert st.discard_limit == limit
+        while not (st.current_prompt == ActionPrompt.PLAY_TURN
+                   and not st.player_state[f"P{st.current_turn_index}_HAS_ROLLED"]):
+            g.play_tick()
+        for i in range(4):
+            for r in AD.CB_TO_RESOURCE:
+                st.player_state[f"P{i}_{r}_IN_HAND"] = 0
+            st.player_state[f"P{i}_WOOD_IN_HAND"] = hands[i]
+        apply_action(st, CAction(st.current_color(), ActionType.ROLL, (3, 4)))
+        assert st.current_prompt == ActionPrompt.DISCARD
+        cb = AD.to_catanbot_state(g)
+        assert cb.phase == PHASE_DISCARD and cb.discard_queue[0] == st.current_player_index
+        prompted = []
+        while st.current_prompt == ActionPrompt.DISCARD:
+            prompted.append(st.current_player_index)
+            apply_action(st, CAction(st.current_color(), ActionType.DISCARD, None))
+        assert cb.discard_queue == prompted, (limit, hands, cb.discard_queue, prompted)
+        assert st.current_prompt == ActionPrompt.MOVE_ROBBER
+    # the default limit is the one case where the two rules coincide
+    assert [j for j in range(4) if [9, 8, 7, 10][j] > 7] == [0, 1, 3]
+
+
+def test_merged_knight_observation_uses_the_state_before_the_knight():
+    """A PLAY_KNIGHT_CARD + MOVE_ROBBER pair is observed once, as PLAY_KNIGHT, with the state
+    the card was played in (PHASE_ROLL / PHASE_MAIN, knight still in hand, so the action is
+    among that state's legal actions and SearchBot.observe predicts from the same set)."""
+    from catanbot.state import PHASE_GAME_OVER
+
+    me = AD.CatanbotPlayer(AD.COLORS[1], spec="search:depth=1,beam=2,expand=4,actions=3,evaluator=heuristic",
+                           strict=True, seed=3)
+    seen = []
+    original = me.bot.observe
+
+    def recording_observe(state, action, seat):
+        if action[0] in (A.PLAY_KNIGHT, A.MOVE_ROBBER):
+            seen.append((state.phase, action, seat, action in E.legal_actions(state),
+                         state.players[seat].dev_cards[B.DEV_KNIGHT], state.dev_played_this_turn))
+        assert state.phase != PHASE_GAME_OVER
+        return original(state, action, seat)
+
+    me.bot.observe = recording_observe
+    players = [WeightedRandomPlayer(c) if i != 1 else me for i, c in enumerate(AD.COLORS)]
+    knights = []
+    for seed in range(31, 40):
+        AD.play_game(players, seed=seed)
+        assert me.stats["errors"] == 0 and me.stats["observe_errors"] == 0
+        knights = [s for s in seen if s[1][0] == A.PLAY_KNIGHT]
+        if len(knights) >= 5 and any(s[2] == 1 for s in knights) and any(s[2] != 1 for s in knights):
+            break
+    assert len(knights) >= 5
+    for phase, action, seat, legal, knights_in_hand, played_dev in knights:
+        assert phase in (PHASE_ROLL, PHASE_MAIN), (phase, action, seat)
+        assert knights_in_hand >= 1 and not played_dev
+        assert legal, (phase, action, seat)
+    # plain robber moves (after a 7) still arrive in PHASE_ROBBER, as before
+    robbers = [s for s in seen if s[1][0] == A.MOVE_ROBBER]
+    assert robbers and all(s[0] == PHASE_ROBBER and s[3] for s in robbers)
+    assert me._knight_state is None

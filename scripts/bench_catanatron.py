@@ -4,7 +4,8 @@
 Usage::
 
     python3 scripts/bench_catanatron.py --games 20 --opponent vp \\
-        --spec "search:depth=1,evaluator=heuristic" [--seed 0] [--workers 1] [--json out.json]
+        --spec "search:depth=1,evaluator=heuristic" [--seed 0] [--workers 1] [--json out.json] \\
+        [--vps-to-win 10] [--discard-limit 7]
 
 Every game seats one :class:`catanbot.bench.catanatron_adapter.CatanbotPlayer`
 (built from ``--spec``, see ``catanbot.selfplay.make_bot``) against three
@@ -55,7 +56,7 @@ def game_seed(base_seed: int, g: int) -> int:
 
 def run_one(job: tuple) -> Dict[str, object]:
     """Play game ``g`` of a batch; returns the summary dict plus adapter stats."""
-    g, base_seed, spec, opponent, vps_to_win = job
+    g, base_seed, spec, opponent, vps_to_win, discard_limit = job
     seat = g % len(COLORS)
     seed = game_seed(base_seed, g)
     opp_cls = OPPONENTS[opponent]
@@ -67,7 +68,7 @@ def run_one(job: tuple) -> Dict[str, object]:
             players.append(me)
         else:
             players.append(opp_cls(color))
-    res = play_game(players, seed=seed, vps_to_win=vps_to_win)
+    res = play_game(players, seed=seed, vps_to_win=vps_to_win, discard_limit=discard_limit)
     assert me is not None
     res["game"] = g
     res["seat"] = seat
@@ -147,11 +148,14 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=0, help="base seed (default 0)")
     ap.add_argument("--workers", type=int, default=1, help="parallel processes (default 1)")
     ap.add_argument("--vps-to-win", type=int, default=10, help="victory points needed (default 10)")
+    ap.add_argument("--discard-limit", type=int, default=7,
+                    help="catanatron discard limit on a 7 (default 7; only the first discarder honours it, "
+                         "see docs/BENCHMARKS.md limitation 12)")
     ap.add_argument("--json", default=None, help="write the full results to this JSON file")
     ap.add_argument("--verbose", action="store_true", help="print one line per game")
     args = ap.parse_args(argv)
 
-    jobs = [(g, args.seed, args.spec, args.opponent, args.vps_to_win) for g in range(args.games)]
+    jobs = [(g, args.seed, args.spec, args.opponent, args.vps_to_win, args.discard_limit) for g in range(args.games)]
     results: List[Dict[str, object]] = []
     t0 = time.perf_counter()
 
