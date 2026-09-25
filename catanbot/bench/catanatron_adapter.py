@@ -534,9 +534,23 @@ def state_to_catanbot(st: State, vps_to_win: int = 10, mapping: Optional[BoardMa
         p = CBPlayer(color=COLOR_NAMES.get(color, str(color.value).lower()),
                      name=COLOR_NAMES.get(color, str(color.value).lower()))
         p.resources = [int(ps[f"{key}_{r}_IN_HAND"]) for r in CB_TO_RESOURCE]
-        # catanatron lets a card bought this turn be played immediately -> all playable.
-        p.dev_cards = [int(ps[f"{key}_{d}_IN_HAND"]) for d in CB_TO_DEV]
-        p.dev_cards_new = [0] * 5
+        held = [int(ps[f"{key}_{d}_IN_HAND"]) for d in CB_TO_DEV]
+        if API_33:
+            # 3.3 follows the official rule through ``{DEV}_OWNED_AT_START`` (set at the player's
+            # END_TURN): a type bought this turn is not playable until the next turn, so it goes
+            # to ``dev_cards_new`` (VP cards count either way).  A type owned at the start of the
+            # turn is playable even if more copies were bought since (one play per turn anyway).
+            p.dev_cards = [0] * 5
+            p.dev_cards_new = [0] * 5
+            for d, name in enumerate(CB_TO_DEV):
+                if name == "VICTORY_POINT" or ps.get(f"{key}_{name}_OWNED_AT_START", True):
+                    p.dev_cards[d] = held[d]
+                else:
+                    p.dev_cards_new[d] = held[d]
+        else:
+            # 3.2.1 lets a card bought this turn be played immediately -> all playable.
+            p.dev_cards = held
+            p.dev_cards_new = [0] * 5
         p.played_knights = int(ps[f"{key}_PLAYED_KNIGHT"])
         bb = st.buildings_by_color.get(color, {})
         p.settlements = [n2v[v] for v in bb.get(SETTLEMENT, [])]

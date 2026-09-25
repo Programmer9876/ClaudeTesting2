@@ -182,8 +182,17 @@ def _check_conversion(g, m):
         assert len(p.cities) == B.MAX_CITIES - ps[f"{key}_CITIES_AVAILABLE"]
         assert len(p.roads) == B.MAX_ROADS - ps[f"{key}_ROADS_AVAILABLE"]
         assert p.resources == [ps[f"{key}_{r}_IN_HAND"] for r in AD.CB_TO_RESOURCE]
-        assert p.dev_cards == [ps[f"{key}_{d}_IN_HAND"] for d in AD.CB_TO_DEV]
-        assert p.dev_cards_new == [0] * 5
+        held = [ps[f"{key}_{d}_IN_HAND"] for d in AD.CB_TO_DEV]
+        if API_33:
+            # cards of a type not owned at the start of the turn are held but not playable
+            assert [a + b for a, b in zip(p.dev_cards, p.dev_cards_new)] == held
+            for d, name in enumerate(AD.CB_TO_DEV):
+                if name == "VICTORY_POINT" or ps[f"{key}_{name}_OWNED_AT_START"]:
+                    assert p.dev_cards[d] == held[d] and p.dev_cards_new[d] == 0
+                else:
+                    assert p.dev_cards[d] == 0 and p.dev_cards_new[d] == held[d]
+        else:
+            assert p.dev_cards == held and p.dev_cards_new == [0] * 5
         assert p.played_knights == ps[f"{key}_PLAYED_KNIGHT"]
         assert p.hand_known and p.dev_known and p.hand_size == sum(p.resources) and p.dev_count == sum(p.dev_cards)
         assert (cb.longest_road_owner == i) == bool(ps[f"{key}_HAS_ROAD"])
@@ -635,10 +644,30 @@ def test_observed_discards_are_whole_and_legal_in_their_state():
 
     me.bot.observe = recording_observe
     players = [WeightedRandomPlayer(c) if i != 0 else me for i, c in enumerate(AD.COLORS)]
+
+    def discard_runs(log, upto):
+        """Maximal runs of one colour's discard log entries (3.2.1: one entry per discarder)."""
+        runs, prev = 0, None
+        for entry in log[:upto]:
+            a = AD.log_action(entry)
+            if a.action_type in AD.DISCARD_TYPES:
+                runs += prev != a.color
+                prev = a.color
+            else:
+                prev = None
+        return runs
+
     for seed in range(41, 50):
-        res = AD.play_game(players, seed=seed)
+        before = len(seen)
+        me.reset_state()
+        g = AD.make_game(players, seed=seed)
+        g.play()
         assert me.stats["errors"] == 0 and me.stats["observe_errors"] == 0
-        assert res["actions"] > 0
+        # one observation per run: every run before our last decision was caught up, later ones may not
+        log = AD.action_log(g.state)
+        last_own = max(i for i, e in enumerate(log) if AD.log_action(e).color == me.color)
+        delivered = len(seen) - before
+        assert discard_runs(log, last_own) <= delivered <= discard_runs(log, len(log)), seed
         if len(seen) >= 6 and any(s[2] != 0 for s in seen):
             break
     assert len(seen) >= 6
@@ -646,12 +675,10 @@ def test_observed_discards_are_whole_and_legal_in_their_state():
         assert state.phase == PHASE_DISCARD and state.discard_queue[0] == seat
         counts = action[1]
         hand = state.players[seat].resources
-        assert sum(counts) == sum(hand) // 2 >= 4
+        assert sum(counts) == sum(hand) // 2 >= 4       # the whole discard, never a single card
         assert all(0 <= counts[r] <= hand[r] for r in range(5))
         after = E.apply(state, action, random.Random(0))      # accepted by catanbot's rules
         assert after.players[seat].total_resources == sum(hand) - sum(counts)
-    if API_33:
-        assert me.stats["observed"] < res["actions"]   # runs were merged, not delivered card by card
 
 
 @needs_33
