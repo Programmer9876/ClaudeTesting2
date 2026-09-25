@@ -164,6 +164,88 @@ NODE_REFS: List[NodeRef] = [NodeRef.NORTH, NodeRef.NORTHEAST, NodeRef.SOUTHEAST,
 
 
 # ---------------------------------------------------------------------------
+# Engine version differences (3.2.1 wheel vs 3.3 checkout), detected by feature
+# ---------------------------------------------------------------------------
+def _installed_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("catanatron")
+    except Exception:  # pragma: no cover - not installed as a distribution
+        return "?"
+
+
+#: The installed ``catanatron`` distribution version (informational; the API is detected by feature).
+CATANATRON_VERSION: str = _installed_version()
+#: 3.3 discards one ``DISCARD_RESOURCE`` (value: the resource) per prompt ...
+DISCARD_RESOURCE = getattr(ActionType, "DISCARD_RESOURCE", None)
+#: ... 3.2.1 has a single ``DISCARD`` whose playable value is ``None`` (random) and whose log value is the card list.
+DISCARD_LEGACY = getattr(ActionType, "DISCARD", None)
+DISCARD_TYPES: Tuple[ActionType, ...] = tuple(t for t in (DISCARD_LEGACY, DISCARD_RESOURCE) if t is not None)
+#: True on the 3.3 API (``Game.playable_actions``, ``State.action_records``, per-card discards, trade prompts).
+API_33: bool = DISCARD_RESOURCE is not None
+#: 3.3 domestic-trade prompts (answered with ``REJECT_TRADE`` / ``CANCEL_TRADE`` by :class:`CatanbotPlayer`).
+TRADE_PROMPTS: Tuple[ActionPrompt, ...] = tuple(
+    p for p in (getattr(ActionPrompt, "DECIDE_TRADE", None), getattr(ActionPrompt, "DECIDE_ACCEPTEES", None))
+    if p is not None)
+_TRADE_ANSWERS: Tuple[ActionType, ...] = tuple(
+    t for t in (getattr(ActionType, "REJECT_TRADE", None), getattr(ActionType, "CANCEL_TRADE", None))
+    if t is not None)
+
+
+def action_log(st: State) -> Sequence:
+    """The engine's action log: ``State.actions`` (3.2.1) or ``State.action_records`` (3.3).
+
+    Entries are fully specified either way (dice, drawn card, stolen card):
+    use :func:`log_action` for the ``Action`` and :func:`replay_entry` to re-apply one.
+    """
+    recs = getattr(st, "action_records", None)
+    return st.actions if recs is None else recs
+
+
+def log_action(entry) -> CAction:
+    """The ``Action`` of a log entry (an ``ActionRecord`` on 3.3, the action itself on 3.2.1)."""
+    return getattr(entry, "action", entry)
+
+
+def log_result(entry):
+    """The chance result recorded with a log entry (3.3 ``ActionRecord.result``; ``None`` on
+    3.2.1, whose logged actions carry the outcome in their value instead)."""
+    return getattr(entry, "result", None)
+
+
+def playable_actions_of(game: Game) -> List[CAction]:
+    """The current playable actions (``Game.playable_actions`` on 3.3, ``State.playable_actions`` on 3.2.1)."""
+    acts = getattr(game, "playable_actions", None)
+    if acts is None:
+        acts = game.state.playable_actions
+    return acts
+
+
+def apply_action(state: State, action: CAction, record=None):
+    """Version-tolerant ``apply_action``; ``record`` (a 3.3 ``ActionRecord``) fixes the chance outcome.
+
+    On 3.2.1 the outcome travels in the action value (dice, card, stolen
+    resource, discarded cards) and ``record`` is ignored.
+    """
+    if ActionRecord is not None:
+        return _apply_action(state, action, record)
+    return _apply_action(state, action)
+
+
+def replay_entry(state: State, entry) -> None:
+    """Re-apply a log entry to ``state`` exactly as logged.
+
+    On 3.3 the record must be passed along: ``apply_action`` ignores the value of a
+    logged ``ROLL`` / ``MOVE_ROBBER`` and would draw fresh randomness (from the
+    ``random.Random`` the state *shares* with its copies) without it.
+    """
+    if ActionRecord is not None and isinstance(entry, ActionRecord):
+        _apply_action(state, entry.action, entry)
+    else:
+        _apply_action(state, log_action(entry))
+
+
+# ---------------------------------------------------------------------------
 # Board mapping
 # ---------------------------------------------------------------------------
 class MappingError(ValueError):
@@ -394,9 +476,10 @@ def mapping_for(catan_map: CatanMap) -> BoardMapping:
 # ---------------------------------------------------------------------------
 # State conversion
 # ---------------------------------------------------------------------------
-def _last_roll_this_turn(actions: Sequence[CAction]) -> int:
-    """Dice total of the current turn's ROLL (0 if the turn has not rolled yet)."""
-    for a in reversed(actions):
+def _last_roll_this_turn(log: Sequence) -> int:
+    """Dice total of the current turn's ROLL (0 if the turn has not rolled yet); ``log`` as :func:`action_log`."""
+    for entry in reversed(log):
+        a = log_action(entry)
         t = a.action_type
         if t == ActionType.END_TURN:
             return 0
@@ -414,7 +497,13 @@ def state_to_catanbot(st: State, vps_to_win: int = 10, mapping: Optional[BoardMa
     because catanatron exposes all hands.  With ``suppress_trades`` the state
     reports the maximum number of proposals already made this turn, so
     :func:`catanbot.engine.legal_actions` emits no ``PROPOSE_TRADE`` (there is
-    no player trading in catanatron).
+    no player trading in catanatron 3.2.1, and the benchmark never offers one
+    on 3.3).  The 3.3 domestic-trade prompts (``DECIDE_TRADE`` for a
+    responder, ``DECIDE_ACCEPTEES`` for the offerer) have no catanbot phase:
+    they convert to the turn player's ``PHASE_MAIN`` state.  On 3.3 a
+    ``DISCARD`` prompt reached *mid-way* through a player's per-card discards
+    converts with the already reduced hand (the engine's remaining
+    ``discard_counts`` are then what :class:`CatanbotPlayer` follows).
     """
     m = mapping or mapping_for(st.board.map)
     s = GameState()
@@ -496,23 +585,28 @@ def state_to_catanbot(st: State, vps_to_win: int = 10, mapping: Optional[BoardMa
         s.phase = PHASE_DISCARD
         s.dice = 7
         cpi = int(st.current_player_index)
-        # catanatron picks the *first* discarder with ``state.discard_limit`` (at the
-        # ROLL) but advances to the later ones with a hard-coded ``> 7``
-        # (``apply_action``'s DISCARD branch), whatever the configured limit.  The
-        # queue mirrors the prompts catanatron will actually issue, so it is only
-        # in the default ``discard_limit=7`` that both rules coincide.
         queue = [cpi]
-        for j in range(cpi + 1, n):
-            if players[j].total_resources > 7:
-                queue.append(j)
+        discard_counts = getattr(st, "discard_counts", None)
+        if discard_counts is not None:
+            # 3.3 fixed every discarder (``> discard_limit``) and their counts at the ROLL.
+            queue += [j for j in range(cpi + 1, n) if discard_counts[j] > 0]
+        else:
+            # 3.2.1 picks the *first* discarder with ``state.discard_limit`` (at the
+            # ROLL) but advances to the later ones with a hard-coded ``> 7``
+            # (``apply_action``'s DISCARD branch), whatever the configured limit.  The
+            # queue mirrors the prompts catanatron will actually issue, so it is only
+            # in the default ``discard_limit=7`` that both rules coincide.
+            for j in range(cpi + 1, n):
+                if players[j].total_resources > 7:
+                    queue.append(j)
         s.discard_queue = queue
     elif prompt == ActionPrompt.MOVE_ROBBER:
         s.phase = PHASE_ROBBER
-        s.dice = _last_roll_this_turn(st.actions)
-    else:  # PLAY_TURN
+        s.dice = _last_roll_this_turn(action_log(st))
+    else:  # PLAY_TURN (and the 3.3 trade prompts, which happen after the roll)
         if ps[f"{cur_key}_HAS_ROLLED"]:
             s.phase = PHASE_MAIN
-            s.dice = _last_roll_this_turn(st.actions)
+            s.dice = _last_roll_this_turn(action_log(st))
         else:
             s.phase = PHASE_ROLL
             s.dice = 0
@@ -551,9 +645,9 @@ def playable_key(action: CAction) -> tuple:
         return (t, tuple(sorted(v)))
     if t == ActionType.MARITIME_TRADE:
         return (t, tuple(v))
-    if t in (ActionType.DISCARD, ActionType.ROLL, ActionType.BUY_DEVELOPMENT_CARD):
+    if t == DISCARD_LEGACY or t in (ActionType.ROLL, ActionType.BUY_DEVELOPMENT_CARD):
         return (t, None)
-    return (t, v)
+    return (t, v)   # includes the 3.3 DISCARD_RESOURCE, whose value (the card) matters
 
 
 def index_playable(playable: Sequence[CAction]) -> Dict[tuple, CAction]:
@@ -564,7 +658,13 @@ def index_playable(playable: Sequence[CAction]) -> Dict[tuple, CAction]:
 def catanbot_action_to_key(action: A.Action, state: GameState, mapping: BoardMapping,
                            colors: Sequence[Color]) -> Optional[tuple]:
     """The :func:`playable_key` a catanbot action corresponds to, or ``None`` if it has no
-    catanatron equivalent (``PROPOSE_TRADE`` & friends, forced rolls)."""
+    catanatron equivalent (``PROPOSE_TRADE`` & friends, forced rolls).
+
+    A catanbot ``DISCARD`` (all cards at once) is catanatron 3.2.1's single
+    ``DISCARD None``; on 3.3, which discards one card per prompt, it is the
+    ``DISCARD_RESOURCE`` of the plan's *first* card (:class:`CatanbotPlayer`
+    queues the remaining cards for the following prompts).
+    """
     kind = action[0]
     if kind in (A.SETUP_SETTLEMENT, A.BUILD_SETTLEMENT):
         return (ActionType.BUILD_SETTLEMENT, mapping.vertex_to_node[action[1]])
@@ -596,7 +696,13 @@ def catanbot_action_to_key(action: A.Action, state: GameState, mapping: BoardMap
         offer = [CB_TO_RESOURCE[give]] * ratio + [None] * (4 - ratio) + [CB_TO_RESOURCE[get]]
         return (ActionType.MARITIME_TRADE, tuple(offer))
     if kind == A.DISCARD:
-        return (ActionType.DISCARD, None)
+        if DISCARD_RESOURCE is None:
+            return (DISCARD_LEGACY, None)
+        counts = action[1] if len(action) > 1 else ()
+        for r in range(min(5, len(counts))):
+            if counts[r] > 0:
+                return (DISCARD_RESOURCE, CB_TO_RESOURCE[r])
+        return None
     return None
 
 
@@ -607,7 +713,11 @@ def catanatron_action_to_catanbot(action: CAction, state: GameState, mapping: Bo
     ``previous`` is the action logged right before it: a ``MOVE_ROBBER`` that
     follows the same colour's ``PLAY_KNIGHT_CARD`` becomes ``PLAY_KNIGHT`` (the
     catanatron ``PLAY_KNIGHT_CARD`` itself maps to ``None``, as do single-card
-    Year of Plenty picks which catanbot cannot express).
+    Year of Plenty picks which catanbot cannot express).  A discard becomes
+    ``(DISCARD, counts)`` of the cards it names: all of them for a logged
+    3.2.1 ``DISCARD``, one card for a 3.3 ``DISCARD_RESOURCE`` (the player
+    merges a run of those into one observation), none for 3.2.1's playable
+    ``DISCARD None``.  The 3.3 domestic-trade actions map to ``None``.
     """
     t = action.action_type
     v = action.value
@@ -654,9 +764,10 @@ def catanatron_action_to_catanbot(action: CAction, state: GameState, mapping: Bo
         if not given:
             return None
         return (A.BANK_TRADE, RESOURCE_TO_CB[given[0]], RESOURCE_TO_CB[v[4]])
-    if t == ActionType.DISCARD:
+    if t in DISCARD_TYPES:
         counts = [0] * 5
-        for r in (v or []):
+        cards = v if isinstance(v, (list, tuple)) else ([v] if v else [])
+        for r in cards:
             counts[RESOURCE_TO_CB[r]] += 1
         return (A.DISCARD, tuple(counts))
     return None
@@ -692,6 +803,15 @@ class CatanbotPlayer(Player):
     is counted in ``stats["errors"]`` so a benchmark never crashes.  ``observe``
     replays every catanatron-logged action through ``bot.observe`` (opponent
     model / political tracking).
+
+    catanatron 3.3 specifics: a ``DISCARD`` prompt runs the bot once, on the
+    full hand, for a catanbot ``(DISCARD, counts)``; its first card is played
+    and the rest are queued (``stats["pending_discard"]``) for the engine's
+    following ``DISCARD_RESOURCE`` prompts.  Observed runs of another
+    player's ``DISCARD_RESOURCE`` actions are merged into one ``DISCARD``
+    observation delivered with the state before the first card.  The
+    domestic-trade prompts ``DECIDE_TRADE`` / ``DECIDE_ACCEPTEES`` are
+    answered with ``REJECT_TRADE`` / ``CANCEL_TRADE`` (``stats["trade_prompts"]``).
     """
 
     def __init__(self, color: Color, spec: str = DEFAULT_SPEC, bot: Optional[Bot] = None, seed: int = 0,
@@ -714,13 +834,17 @@ class CatanbotPlayer(Player):
         self._shadow: Optional[State] = None
         self._observed = 0
         self._pending_robber: Optional[Tuple[int, int]] = None
+        self._pending_discard: List[str] = []             # 3.3: cards still to hand over, one prompt each
         self._knight_state: Optional[GameState] = None   # state a PLAY_KNIGHT_CARD was decided in
+        # 3.3: a run of one player's DISCARD_RESOURCE logs being merged: (state before, seat, counts, cards owed)
+        self._discard_run: Optional[Tuple[GameState, int, List[int], int]] = None
         self._reset_stats()
 
     # -- lifecycle --------------------------------------------------------
     def _reset_stats(self) -> None:
-        self.stats = {"decisions": 0, "trivial": 0, "searched": 0, "pending_robber": 0, "unmapped_top": 0,
-                      "fallback": 0, "errors": 0, "observe_errors": 0, "observed": 0, "search_time": 0.0}
+        self.stats = {"decisions": 0, "trivial": 0, "searched": 0, "pending_robber": 0, "pending_discard": 0,
+                      "trade_prompts": 0, "unmapped_top": 0, "fallback": 0, "errors": 0, "observe_errors": 0,
+                      "observed": 0, "search_time": 0.0}
 
     def reset_state(self) -> None:
         """Forget the previous game (called by the bench; also triggered by a new ``game.id``)."""
@@ -731,7 +855,9 @@ class CatanbotPlayer(Player):
         self._shadow = None
         self._observed = 0
         self._pending_robber = None
+        self._pending_discard = []
         self._knight_state = None
+        self._discard_run = None
         self.last_explanation = None
 
     def _begin(self, game: Game) -> None:
@@ -739,9 +865,11 @@ class CatanbotPlayer(Player):
         self._game_id = game.id
         self._mapping = mapping_for(game.state.board.map)
         self._shadow = game.state.copy()
-        self._observed = len(game.state.actions)
+        self._observed = len(action_log(game.state))
         self._pending_robber = None
+        self._pending_discard = []
         self._knight_state = None
+        self._discard_run = None
 
     # -- observation ------------------------------------------------------
     def _catch_up(self, st: State) -> None:
@@ -753,9 +881,14 @@ class CatanbotPlayer(Player):
         the merged ``PLAY_KNIGHT`` observation is delivered with the state the
         *card* was played in (``PHASE_ROLL`` / ``PHASE_MAIN``, knight still in
         hand) rather than the ``PHASE_ROBBER`` state after it, so that
-        ``SearchBot.observe`` predicts from the same legal actions.
+        ``SearchBot.observe`` predicts from the same legal actions.  Likewise
+        a 3.3 run of one player's ``DISCARD_RESOURCE`` actions is one catanbot
+        ``DISCARD``: it is delivered with the state before the first card,
+        where the merged counts are a legal discard (half the hand).  A run
+        the log ends in the middle of (our own, while we are being prompted
+        card by card) is completed on the next catch-up.
         """
-        log = st.actions
+        log = action_log(st)
         n = len(log)
         if self._shadow is None:
             self._shadow = st.copy()
@@ -763,28 +896,33 @@ class CatanbotPlayer(Player):
             return
         i = self._observed
         while i < n:
-            a = log[i]
-            prev = log[i - 1] if i > 0 else None
+            entry = log[i]
+            a = log_action(entry)
+            prev = log_action(log[i - 1]) if i > 0 else None
             try:
                 cb = state_to_catanbot(self._shadow, mapping=self._mapping, suppress_trades=self.suppress_trades)
-                cb_action = catanatron_action_to_catanbot(a, cb, self._mapping, prev)
-                if a.action_type == ActionType.PLAY_KNIGHT_CARD:
-                    self._knight_state = cb
-                elif cb_action is not None:
-                    seen = cb
-                    if cb_action[0] == A.PLAY_KNIGHT and self._knight_state is not None:
-                        seen = self._knight_state
-                    self._knight_state = None
-                    self.bot.observe(seen, cb_action, self._shadow.color_to_index[a.color])
-                    self.stats["observed"] += 1
+                if DISCARD_RESOURCE is not None and a.action_type == DISCARD_RESOURCE:
+                    self._observe_discard_card(cb, a)
                 else:
-                    self._knight_state = None
+                    self._flush_discard_run()
+                    cb_action = catanatron_action_to_catanbot(a, cb, self._mapping, prev)
+                    if a.action_type == ActionType.PLAY_KNIGHT_CARD:
+                        self._knight_state = cb
+                    elif cb_action is not None:
+                        seen = cb
+                        if cb_action[0] == A.PLAY_KNIGHT and self._knight_state is not None:
+                            seen = self._knight_state
+                        self._knight_state = None
+                        self.bot.observe(seen, cb_action, self._shadow.color_to_index[a.color])
+                        self.stats["observed"] += 1
+                    else:
+                        self._knight_state = None
             except Exception:
                 if self.strict:
                     raise
                 self.stats["observe_errors"] += 1
             try:
-                apply_action(self._shadow, a)
+                replay_entry(self._shadow, entry)
             except Exception:
                 if self.strict:
                     raise
@@ -792,10 +930,32 @@ class CatanbotPlayer(Player):
                 self._shadow = st.copy()
                 self._observed = n
                 self._knight_state = None
+                self._discard_run = None
                 self.stats["observe_errors"] += 1
                 return
             i += 1
         self._observed = n
+
+    def _observe_discard_card(self, cb: GameState, a: CAction) -> None:
+        """Merge a logged 3.3 ``DISCARD_RESOURCE`` into the current run (flushed once complete)."""
+        seat = self._shadow.color_to_index[a.color]
+        run = self._discard_run
+        if run is None or run[1] != seat:
+            self._flush_discard_run()
+            owed = cb.players[seat].total_resources // 2     # the engine's count, fixed at the roll
+            run = self._discard_run = (cb, seat, [0] * 5, owed)
+        run[2][RESOURCE_TO_CB[a.value]] += 1
+        if sum(run[2]) >= run[3]:
+            self._flush_discard_run()
+
+    def _flush_discard_run(self) -> None:
+        run = self._discard_run
+        self._discard_run = None
+        if run is None or not any(run[2]):
+            return
+        cb, seat, counts, _ = run
+        self.bot.observe(cb, (A.DISCARD, tuple(counts)), seat)
+        self.stats["observed"] += 1
 
     # -- decision ---------------------------------------------------------
     def decide(self, game: Game, playable_actions):
@@ -812,15 +972,21 @@ class CatanbotPlayer(Player):
                 raise
             self.stats["errors"] += 1
             self._pending_robber = None
+            self._pending_discard = []
             return fallback_action(playable)
 
     def _choose(self, game: Game, playable: List[CAction]) -> CAction:
-        if len(playable) == 1:
-            self.stats["trivial"] += 1
-            return playable[0]
         st = game.state
         m = self._mapping
         assert m is not None
+        prompt = st.current_prompt
+        if DISCARD_RESOURCE is not None and prompt == ActionPrompt.DISCARD:
+            return self._choose_discard(game, playable)
+        if prompt in TRADE_PROMPTS:
+            return self._answer_trade(playable)
+        if len(playable) == 1:
+            self.stats["trivial"] += 1
+            return playable[0]
         index = index_playable(playable)
         if st.current_prompt == ActionPrompt.MOVE_ROBBER and self._pending_robber is not None:
             h, victim = self._pending_robber
@@ -877,6 +1043,61 @@ class CatanbotPlayer(Player):
             self._pending_robber = (int(chosen[1]), int(chosen[2]))
         return lookup[chosen]
 
+    def _answer_trade(self, playable: List[CAction]) -> CAction:
+        """3.3 domestic-trade prompts: decline (``REJECT_TRADE`` as a responder, ``CANCEL_TRADE`` as offerer)."""
+        self.stats["trade_prompts"] += 1
+        for t in _TRADE_ANSWERS:
+            for a in playable:
+                if a.action_type == t:
+                    return a
+        return fallback_action(playable)
+
+    def _choose_discard(self, game: Game, playable: List[CAction]) -> CAction:
+        """3.3 ``DISCARD`` prompt: plan the whole discard once, hand it over one ``DISCARD_RESOURCE`` at a time."""
+        st = game.state
+        m = self._mapping
+        assert m is not None
+        index = index_playable(playable)
+        if self._pending_discard:
+            a = index.get((DISCARD_RESOURCE, self._pending_discard[0]))
+            if a is not None:
+                self._pending_discard.pop(0)
+                self.stats["pending_discard"] += 1
+                return a
+            self._pending_discard = []   # the plan no longer matches the hand: plan again
+        if len(playable) == 1:
+            self.stats["trivial"] += 1
+            return playable[0]
+        seat = st.color_to_index[self.color]
+        owed = int(st.discard_counts[seat])
+        cb = to_catanbot_state(game, self.color, m, self.suppress_trades)
+        legal = [a for a in E.legal_actions(cb) if a[0] == A.DISCARD and sum(a[1]) == owed]
+        if not legal:
+            # Only reachable mid-run (the engine's remaining count is no longer half the hand).
+            self.stats["fallback"] += 1
+            return fallback_action(playable)
+        if len(legal) == 1:
+            decision = legal[0]
+            self.stats["trivial"] += 1
+        else:
+            t0 = time.perf_counter()
+            decision = self.bot.decide(cb, legal, self.rng)
+            self.stats["search_time"] += time.perf_counter() - t0
+            self.stats["searched"] += 1
+            if decision not in legal:
+                decision = legal[0]
+            try:
+                self.last_explanation = self.bot.explain(cb)
+            except Exception:
+                self.last_explanation = None
+        plan = [CB_TO_RESOURCE[r] for r in range(5) for _ in range(int(decision[1][r]))]
+        a = index.get((DISCARD_RESOURCE, plan[0])) if plan else None
+        if a is None:
+            self.stats["fallback"] += 1
+            return fallback_action(playable)
+        self._pending_discard = plan[1:]
+        return a
+
 
 # ---------------------------------------------------------------------------
 # Game helpers
@@ -898,7 +1119,11 @@ def make_game(players: Sequence[Player], seed: int, vps_to_win: int = 10, discar
         st.players = list(players)
         st.colors = tuple(p.color for p in players)
         st.color_to_index = {c: i for i, c in enumerate(st.colors)}
-        st.playable_actions = generate_playable_actions(st)
+        acts = generate_playable_actions(st)
+        if hasattr(game, "playable_actions"):   # 3.3 keeps them on the Game ...
+            game.playable_actions = acts
+        else:                                   # ... 3.2.1 on the State
+            st.playable_actions = acts
     return game
 
 
@@ -920,6 +1145,6 @@ def play_game(players: Sequence[Player], seed: int, vps_to_win: int = 10,
         "colors": [c.value for c in st.colors],
         "vps": vps,
         "turns": int(st.num_turns),
-        "actions": len(st.actions),
+        "actions": len(action_log(st)),
         "duration": time.perf_counter() - t0,
     }
