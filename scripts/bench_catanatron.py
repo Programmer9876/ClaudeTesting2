@@ -48,6 +48,44 @@ OPPONENTS = {
     "random": RandomPlayer,
 }
 
+# Presets that exist only in some catanatron versions (the GitHub checkout has the strong
+# players; PyPI 3.2.1 does not) or in this repo; resolved lazily by import path.
+PRESETS = {
+    "alphabeta": "catanatron.players.minimax:AlphaBetaPlayer",
+    "sameturn": "catanatron.players.minimax:SameTurnAlphaBetaPlayer",
+    "value": "catanatron.players.value:ValueFunctionPlayer",
+    "mcts": "catanatron.players.mcts:MCTSPlayer",
+    "playouts": "catanatron.players.playouts:GreedyPlayoutsPlayer",
+    "vf": "catanbot.bench.catanatron_players:ValueFunctionPlayer",
+    "ab": "catanbot.bench.catanatron_players:AlphaBetaPlayer",
+}
+LADDERS = {
+    "controls": ["random", "weighted", "vp"],
+    "standins": ["vf", "ab"],
+    "strong": ["value", "alphabeta", "sameturn", "playouts", "mcts"],
+    "full": ["random", "weighted", "vp", "vf", "ab", "value", "alphabeta", "sameturn", "playouts", "mcts"],
+}
+
+
+def resolve_opponent(name: str):
+    """Opponent class from a preset key or an import path ``module:Class`` / ``module.Class``."""
+    if name in OPPONENTS:
+        return OPPONENTS[name]
+    path = PRESETS.get(name, name)
+    if ":" in path:
+        mod, cls = path.split(":", 1)
+    elif "." in path:
+        mod, cls = path.rsplit(".", 1)
+    else:
+        raise SystemExit(f"unknown opponent '{name}' (presets: {sorted(OPPONENTS) + sorted(PRESETS)}, "
+                         f"or an import path module:Class)")
+    import importlib
+    try:
+        return getattr(importlib.import_module(mod), cls)
+    except (ImportError, AttributeError) as ex:
+        raise SystemExit(f"opponent '{name}' is not installed here ({path}): {ex}. "
+                         "Install catanatron from GitHub (pip install -e <clone>) for the strong players.")
+
 
 def game_seed(base_seed: int, g: int) -> int:
     """Non-zero per-game seed (catanatron treats seed 0 as 'random')."""
@@ -59,7 +97,7 @@ def run_one(job: tuple) -> Dict[str, object]:
     g, base_seed, spec, opponent, vps_to_win, discard_limit = job
     seat = g % len(COLORS)
     seed = game_seed(base_seed, g)
-    opp_cls = OPPONENTS[opponent]
+    opp_cls = resolve_opponent(opponent)
     players = []
     me = None
     for i, color in enumerate(COLORS):
@@ -102,7 +140,7 @@ def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: 
     return {
         "spec": spec,
         "opponent": opponent,
-        "opponent_class": OPPONENTS[opponent].__name__,
+        "opponent_class": resolve_opponent(opponent).__name__,
         "seed": seed,
         "games": n,
         "wins": wins,
@@ -143,7 +181,12 @@ def print_summary(s: Dict[str, object], wall: float) -> None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--games", type=int, default=20, help="number of games (default 20)")
-    ap.add_argument("--opponent", choices=sorted(OPPONENTS), default="vp", help="catanatron opponent (default vp)")
+    ap.add_argument("--opponent", default="vp",
+                    help="opponent preset (vp, weighted, random, vf, ab, value, alphabeta, sameturn, playouts, mcts), "
+                         "an import path module:Class, or a comma-separated list (default vp)")
+    ap.add_argument("--ladder", choices=sorted(LADDERS), default=None,
+                    help="run a preset ladder of opponents (controls | standins | strong | full); "
+                         "opponents that are not installed are skipped")
     ap.add_argument("--spec", default=DEFAULT_SPEC, help=f'catanbot bot spec (default "{DEFAULT_SPEC}")')
     ap.add_argument("--seed", type=int, default=0, help="base seed (default 0)")
     ap.add_argument("--workers", type=int, default=1, help="parallel processes (default 1)")
@@ -155,35 +198,49 @@ def main(argv=None) -> int:
     ap.add_argument("--verbose", action="store_true", help="print one line per game")
     args = ap.parse_args(argv)
 
-    jobs = [(g, args.seed, args.spec, args.opponent, args.vps_to_win, args.discard_limit) for g in range(args.games)]
-    results: List[Dict[str, object]] = []
-    t0 = time.perf_counter()
+    opponents = LADDERS[args.ladder] if args.ladder else [o.strip() for o in args.opponent.split(",") if o.strip()]
+    summaries: List[Dict[str, object]] = []
+    for opponent in opponents:
+        try:
+            cls = resolve_opponent(opponent)
+        except SystemExit as ex:
+            print(f"skipping {opponent}: {ex}")
+            continue
+        print(f"== catanbot [{args.spec}] vs 3x {cls.__name__} ({opponent}), {args.games} games")
+        jobs = [(g, args.seed, args.spec, opponent, args.vps_to_win, args.discard_limit) for g in range(args.games)]
+        results: List[Dict[str, object]] = []
+        t0 = time.perf_counter()
 
-    def report(r: Dict[str, object]) -> None:
-        results.append(r)
-        if args.verbose:
-            print(f'  game {r["game"]:3d} seat {r["seat"]} seed {r["seed"]}: '
-                  f'{"WIN " if r["won"] else "loss"} vp={r["vps"]} turns={r["turns"]} {r["duration"]:.1f}s',
-                  flush=True)
+        def report(r: Dict[str, object]) -> None:
+            results.append(r)
+            if args.verbose:
+                print(f'  game {r["game"]:3d} seat {r["seat"]} seed {r["seed"]}: '
+                      f'{"WIN " if r["won"] else "loss"} vp={r["vps"]} turns={r["turns"]} {r["duration"]:.1f}s',
+                      flush=True)
 
-    if args.workers > 1 and len(jobs) > 1:
-        ctx = mp.get_context("fork")
-        with ctx.Pool(processes=args.workers) as pool:
-            for r in pool.imap_unordered(run_one, jobs):
-                report(r)
-    else:
-        for job in jobs:
-            report(run_one(job))
-    results.sort(key=lambda r: r["game"])
-    wall = time.perf_counter() - t0
-    summary = summarize(results, args.spec, args.opponent, args.seed)
-    summary["wall_time"] = wall
-    print_summary(summary, wall)
+        if args.workers > 1 and len(jobs) > 1:
+            ctx = mp.get_context("fork")
+            with ctx.Pool(processes=args.workers) as pool:
+                for r in pool.imap_unordered(run_one, jobs):
+                    report(r)
+        else:
+            for job in jobs:
+                report(run_one(job))
+        results.sort(key=lambda r: r["game"])
+        wall = time.perf_counter() - t0
+        summary = summarize(results, args.spec, opponent, args.seed)
+        summary["wall_time"] = wall
+        print_summary(summary, wall)
+        summaries.append(summary)
+    if len(summaries) > 1:
+        print("\n== ladder summary (win rate of catanbot in 4-player games; 25% = seat baseline)")
+        for sm in summaries:
+            print(f"  {sm['opponent_class']:<26} {sm['win_rate'] * 100:5.1f}%  avg VP {sm['avg_vp']:.2f} vs {sm['avg_opp_vp']:.2f}  ({sm['games']} games)")
     if args.json:
         with open(args.json, "w") as fh:
-            json.dump(summary, fh, indent=1, default=str)
+            json.dump(summaries if len(summaries) > 1 else (summaries[0] if summaries else {}), fh, indent=1, default=str)
         print(f"  json        : {args.json}")
-    return 0
+    return 0 if summaries else 2
 
 
 if __name__ == "__main__":

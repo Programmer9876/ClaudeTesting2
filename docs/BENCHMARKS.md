@@ -295,3 +295,30 @@ documented rule differences below.
     catanatron prompts seats 0, 1 and 3 although only seats 0 and 3 exceed
     9; limit 5, hands `[6, 6, 8, 3]`: only seats 0 and 2 are prompted).
     `test_discard_queue_mirrors_catanatron_hard_coded_limit` replays these.
+
+## Running the full ladder (strong Catanatron players)
+
+The PyPI release of Catanatron ships only the weak stock bots.  The strong
+players live in the GitHub checkout; install it into the same Python:
+
+```bash
+git clone https://github.com/bcollazo/catanatron.git
+pip install -e catanatron
+python -c "from catanatron.players.minimax import AlphaBetaPlayer; print('ok')"
+```
+
+Then run our bot against every opponent family with one command (opponents
+that are not installed are skipped; the stock bots are the control group):
+
+```bash
+python scripts/bench_catanatron.py --ladder full --games 100 --workers 4 \
+    --spec "search:depth=1,model=models/value_net.npz,blend=0.6" --json ladder.json
+```
+
+Presets: `random`, `weighted`, `vp` (stock controls), `vf`, `ab` (our
+stand-in value-function / alpha-beta players built inside the Catanatron
+engine), `value`, `alphabeta`, `sameturn`, `playouts`, `mcts` (Catanatron's
+own strong players).  Any other opponent can be given as an import path,
+e.g. `--opponent mypkg.bots:MyPlayer`, and several as a comma list.  In
+4-player games the seat baseline is 25%; use at least 100 games per
+opponent for a win rate of 40%+ to be statistically clear.
