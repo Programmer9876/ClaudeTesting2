@@ -49,7 +49,6 @@ from catanatron.models.enums import (
     CITY,
     DEVELOPMENT_CARDS,
     RESOURCES,
-    ROAD,
     SETTLEMENT,
     Action,
     ActionPrompt,
@@ -57,7 +56,6 @@ from catanatron.models.enums import (
 )
 from catanatron.models.map import DICE_PROBAS
 from catanatron.models.player import Color, Player
-from catanatron.state_functions import player_key
 
 __all__ = [
     "DEFAULT_WEIGHTS",
