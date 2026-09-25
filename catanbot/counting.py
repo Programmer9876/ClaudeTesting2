@@ -233,12 +233,13 @@ class HandBelief:
             if get[r]:
                 self.observe_gain(a, r, get[r])
 
-    def observe_counter(self, i: int, gives: Sequence[int], asks: Sequence[int], strength: float = 0.5) -> None:
-        """Player ``i`` made a counter-offer giving ``gives`` for ``asks`` (counter-offer rules).
+    def observe_offer(self, i: int, gives: Sequence[int], asks: Sequence[int], strength: float = 0.5) -> None:
+        """Player ``i`` publicly offered ``gives`` for ``asks`` (a trade proposal, or a counter-offer).
 
-        Only held cards can be offered, so ``i`` holds at least ``gives`` (those expectations are raised to
-        it); asking for a resource hints they are short of it (soft: its expectation shrinks by ``strength``).
-        The hand size is unchanged (the other resources absorb the difference proportionally).
+        Only held cards can be offered (the engine enforces it for both), so ``i`` holds at least ``gives``
+        (those expectations are raised to it); asking for a resource hints they are short of it (soft: its
+        expectation shrinks by ``strength``).  The hand size is unchanged (the other resources absorb the
+        difference proportionally).
         """
         if self.exact[i] or self.size[i] <= 0:
             return
@@ -261,6 +262,10 @@ class HandBelief:
         elif free:
             for r in free:
                 e[r] = room / len(free)
+
+    def observe_counter(self, i: int, gives: Sequence[int], asks: Sequence[int], strength: float = 0.5) -> None:
+        """A counter-offer (counter-offer rules): the same evidence as :meth:`observe_offer`."""
+        self.observe_offer(i, gives, asks, strength)
 
     def observe_discard(self, i: int, counts: Optional[Sequence[int]] = None, n: Optional[int] = None) -> None:
         """Player ``i`` discarded ``counts`` (shown) or ``n`` cards whose types were not shown
@@ -646,8 +651,8 @@ class CardCounter(HandBelief):
         self.observe_delta(a, [get[r] - give[r] for r in range(5)])
         self.observe_delta(b, [give[r] - get[r] for r in range(5)])
 
-    def observe_counter(self, i: int, gives: Sequence[int], asks: Sequence[int], strength: float = 0.5) -> None:
-        """Player ``i`` made a counter-offer giving ``gives`` for ``asks`` (counter-offer rules).
+    def observe_offer(self, i: int, gives: Sequence[int], asks: Sequence[int], strength: float = 0.5) -> None:
+        """Player ``i`` publicly offered ``gives`` for ``asks`` (a trade proposal, or a counter-offer).
 
         Hard: hypotheses where ``i`` does not hold ``gives`` are dropped (only held cards can be offered).
         Soft: every asked resource ``i`` already holds as many of as asked for scales the hypothesis by
@@ -665,7 +670,11 @@ class CardCounter(HandBelief):
                     w *= (1.0 - strength)
             return ((joint, w),)
 
-        self._update(f, "counter")
+        self._update(f, "offer")
+
+    def observe_counter(self, i: int, gives: Sequence[int], asks: Sequence[int], strength: float = 0.5) -> None:
+        """A counter-offer (counter-offer rules): the same evidence as :meth:`observe_offer`."""
+        self.observe_offer(i, gives, asks, strength)
 
     def observe_discard(self, i: int, counts: Optional[Sequence[int]] = None, n: Optional[int] = None) -> None:
         """Player ``i`` discarded ``counts`` (shown; weighted by its random-discard likelihood) or

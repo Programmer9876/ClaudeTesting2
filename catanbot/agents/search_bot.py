@@ -140,9 +140,11 @@ class SearchBot(Bot):
         if self.model is None:
             return
         predicted = None
-        if action[0] == A.COUNTER_TRADE and self.belief is not None:
-            try:     # card counting: they hold what they offered, and probably lack what they asked for
-                self.belief.observe_counter(player, action[1], action[2])
+        if action[0] in (A.PROPOSE_TRADE, A.COUNTER_TRADE) and self.belief is not None:
+            # Card counting: offers are public and only held cards can be offered (the engine enforces it for
+            # proposals and counters alike), so they hold ``give``; asking for ``get`` hints they lack it.
+            try:
+                self.belief.observe_offer(player, action[1], action[2])
             except Exception:
                 pass
         if action[0] in (A.PROPOSE_TRADE, A.ACCEPT_TRADE, A.REJECT_TRADE, A.MOVE_ROBBER, A.PLAY_KNIGHT,
