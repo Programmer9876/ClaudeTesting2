@@ -1143,18 +1143,31 @@ def _norm_glyph(mask: np.ndarray) -> np.ndarray:
     return out
 
 
+_TEMPLATE_SIZES = (10, 12, 14, 20, 32, 64)
+
+
 def _templates() -> np.ndarray:
+    """``(10, len(_TEMPLATE_SIZES), _TH, _TW)``: every digit rendered at several pixel sizes.
+
+    UI numbers can be tiny (a 9 px glyph in a small screenshot); a template
+    rasterised at a similar size, with the same hinting / thresholding
+    artefacts, matches it far better than one downsampled from 64 px
+    (which confuses 9 with 0 at that scale).
+    """
     global _TEMPLATES
     if _TEMPLATES is None:
-        try:
-            font = ImageFont.truetype(DEFAULT_FONT_PATH, 64)
-        except Exception:
-            font = ImageFont.load_default()
         temps = []
         for d in range(10):
-            img = Image.new("L", (80, 90), 0)
-            ImageDraw.Draw(img).text((10, 5), str(d), fill=255, font=font)
-            temps.append(_norm_glyph(np.asarray(img) > 128))
+            per_size = []
+            for px in _TEMPLATE_SIZES:
+                try:
+                    font = ImageFont.truetype(DEFAULT_FONT_PATH, px)
+                except Exception:
+                    font = ImageFont.load_default()
+                img = Image.new("L", (80, 90), 0)
+                ImageDraw.Draw(img).text((10, 5), str(d), fill=255, font=font)
+                per_size.append(_norm_glyph(np.asarray(img) > 128))
+            temps.append(np.stack(per_size))
         _TEMPLATES = np.stack(temps)
     return _TEMPLATES
 
@@ -1197,9 +1210,12 @@ def _match_digit(mask: np.ndarray) -> Tuple[int, float]:
     gz = g - g.mean()
     scores = []
     for k in range(10):
-        tz = t[k] - t[k].mean()
-        denom = math.sqrt((gz ** 2).sum() * (tz ** 2).sum()) or 1.0
-        scores.append(float((gz * tz).sum() / denom))
+        best = -1.0
+        for tk in t[k]:   # best over the template sizes
+            tz = tk - tk.mean()
+            denom = math.sqrt((gz ** 2).sum() * (tz ** 2).sum()) or 1.0
+            best = max(best, float((gz * tz).sum() / denom))
+        scores.append(best)
     k = int(np.argmax(scores))
     return k, scores[k]
 

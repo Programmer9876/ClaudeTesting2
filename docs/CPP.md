@@ -345,3 +345,151 @@ of 0.5-1.7 s in pure Python).  Set `OPENBLAS_NUM_THREADS=1` (and
 * `first_edge` of `reachable_spots` may differ on ties (see above).
 * Rebuild after changing `heuristic.py`, `placement.py` or `counting.py`:
   there is no run-time check for the heuristic (only the differential test).
+
+## Rules engine (`engine.legal_actions` / `apply` / `apply_inplace` / `random_playout`)
+
+The third port covers the rules engine, so a search (or a rollout) can apply
+actions without running Python.  `cpp/engine.cpp` is a statement-by-statement
+translation of `catanbot/engine.py` over the `GameStateC` struct of
+`state.hpp`: `legal_actions` (every phase, the same tuples in the same
+order, `discard_options` with its ordering and cap, the bounded trade
+candidates), every `_h_*` handler with the same checks in the same order and
+the same error messages, production with the bank-shortage rule, robber /
+steal, dev cards (buy, knight, road building with the free-road rules, year
+of plenty, monopoly), Longest Road (`_update_longest_road_after_road` and the
+full recompute after a cutting settlement), Largest Army, the trade protocol
+(propose / respond / select / execute / cancel, auto-rejects), `END_TURN`,
+the win check and the `max_turns` cap, `hand_size` / `dev_count` re-sync of
+the touched players, and `random_playout`.
+
+**Python-visible behaviour is identical**, including the random draws: the
+engine asks a "draw source" exactly when and how the Python engine consults
+its `random.Random` (`randint(1, 6)` twice for a roll, `randrange(total)` for
+a steal and for a dev-card draw).  Three sources exist: a forced index
+(`apply_forced`, for differential tests), a Python `random.Random` (or any
+object with `randrange` / `randint`; the same rng object then produces the
+same game in both engines and ends in the same state), and a C++ xoshiro256**
+(`rng=None` or an int seed; used by `random_playout_fast`).
+
+### Python API
+
+```python
+core.legal_actions(state) -> list[tuple]            # engine.legal_actions (state may be a CState)
+core.apply(state, action, rng=None) -> GameState     # engine.apply: a NEW GameState (input untouched)
+core.apply_inplace(state, action, rng=None) -> state # engine.apply_inplace: written back into the same objects
+core.apply_forced(state, action, drawn_index) -> GameState
+core.random_playout_fast(state, seed=None, max_turns=None, max_actions=2_000_000, trace=False)
+#   -> GameState, or (GameState, [(action, draw), ...]) with trace=True
+core.production_for_roll(state, value), core.discard_options(resources, k, cap=200),
+core.acting_player(state), core.count_vp(state, player, include_hidden=True)   # helpers (tests)
+
+h = core.CState(state)          # converted once, kept in C++ (~3 us); origin = state
+h.legal_actions(); h.apply(action, rng=None) -> CState; h.apply_inplace(...); h.apply_forced(...)
+h.random_playout(seed=None, max_turns=None) -> CState; h.copy(); h.to_state() -> GameState
+h.phase, h.current, h.turn, h.dice, h.winner, h.num_players, h.acting_player, h.is_terminal,
+h.max_turns (settable), h.rolls_history_len, h.origin; h.count_vp(player, include_hidden=True)
+core.extract_batch / extract / static_values / static_value / heuristic_evaluate accept CState objects
+```
+
+* `rng`: `None` (a fresh C++ generator), an int seed (C++ generator, deterministic) or a
+  `random.Random`.  `apply_forced`'s `drawn_index` is the index of the stolen card among the
+  victim's cards in resource order, the index of the drawn dev card into the deck in dev-type
+  order, or for an unforced `(ROLL,)` the dice-pair index `6 * (d1 - 1) + (d2 - 1)`; out of
+  range raises `ValueError`.
+* Illegal actions raise **`catanbot.engine.IllegalActionError` itself** (the class is looked up
+  when first needed) with the Python message, so `except E.IllegalActionError` in the search
+  works unchanged; `core.IllegalActionError` is only the stand-in when `catanbot.engine` cannot
+  be imported.  `"game is over"` / `"unknown action <repr>"` behave like `engine.apply_inplace`.
+* The new `GameState` is built like `GameState.copy()`: `hexes` / `ports` are the same objects
+  as the input's, the players' `color` / `name` are copied, `rolls_history_len` is carried
+  along (+1 per roll).  `apply_inplace` updates the existing `GameState`, `Player`, list and
+  `TradeOffer` objects in place (item stores / slice assignment), so references held by the
+  caller stay valid exactly as with the Python engine.
+* States the structs cannot hold (> 4 players, ...) raise `core.UnsupportedStateError` as for
+  the other entry points; `accel.engine_*` return `None` for them and `engine.py` falls back.
+* `random_playout_fast(..., trace=True)` also returns every applied action with the random
+  index it consumed (rolls are recorded as `(ROLL, value)`), so a C++ playout can be replayed
+  through the Python engine with `apply_forced`-style stand-ins (the test does exactly that).
+
+### The switch (`CATANBOT_ACCEL_ENGINE=1`, default off)
+
+`engine.legal_actions`, `engine.apply` and `engine.apply_inplace` start with
+
+```python
+if _accel.ENGINE_ACTIVE:
+    out = _accel.engine_apply(state, action, rng)   # None -> unsupported state -> Python path
+    if out is not None:
+        return out
+```
+
+`accel.ENGINE_ACTIVE` is true only when the extension loaded, it has the engine entry points
+**and** the environment variable `CATANBOT_ACCEL_ENGINE` is set (`1` / `true` / `yes`).  The
+Python engine stays the default; `random_playout`, `selfplay.play_game` and the search go
+through these three functions, so setting the variable accelerates them without other changes
+(`accel.verify()` now also requires the engine entry points, so a `.so` built before this port
+is disabled as a whole).  With the switch on, `tests/test_engine.py` (78 tests, incl. the
+30 fuzzed invariant playouts and the soundness / completeness universe) and `tests/test_search.py`
+pass unchanged, i.e. every engine call of those suites runs through C++.
+
+### Tests
+
+```bash
+PYTHONPATH=. python3 -m pytest tests/test_accel_engine.py tests/test_engine.py -q -p no:cacheprovider
+CATANBOT_ACCEL_ENGINE=1 PYTHONPATH=. python3 -m pytest tests/test_engine.py -q -p no:cacheprovider
+```
+
+`tests/test_accel_engine.py` (skipped when the extension is not built) plays 315 games
+(105 each with 2, 3 and 4 players, turn caps 60 / 120 / 250, a build-biased random policy so
+games reach cities, dev cards, both awards, wins and the turn cap): at **every step**
+`legal_actions` must be identical as lists and `apply_forced` must give the same `to_dict()`
+as the Python engine driven with the same forced draw (the continuation alternates between the
+two engines' results, so C++-made states are also checked as inputs); every 7th step the
+in-place variant is checked too, incl. object identity.  Further tests: the `random.Random`
+path (same rng object -> same state and same `rng.getstate()` afterwards, > 500 checks), the
+error parity over the action universe of `test_engine.py` (same class, same message, > 2000
+checks), `apply_forced` index semantics, unsupported states and the `accel` fallbacks,
+`random_playout_fast` replayed through the Python engine (identical final state, the
+`test_engine.py` invariants on cards / board / awards), the helpers, hidden-hand bookkeeping,
+`CState` against the `GameState` path (incl. the evaluators taking handles), the `engine.py`
+switch (routing spy, fallback, env activation in a subprocess) and the benchmark below.
+
+### Benchmark
+
+Measured on the development container (4 shared cores, background training running; states
+from random / heuristic-bot games, best of 5):
+
+| | Python (`engine.py`) | C++ via `GameState` objects | C++ via `CState` |
+| --- | --- | --- | --- |
+| `legal_actions` per call (random-play states, ~12 actions) | 4.2 us | 4.4 us (1.0x) | 0.54 us (**8x**) |
+| `legal_actions` per call (heuristic-bot states, ~13 actions) | 5.8 us | 4.0 us (1.5x) | |
+| `apply` per call, first legal action | 13-23 us | 8-11 us (**1.7-2.0x**) | 0.87 us (**15x**) |
+| `apply` per call by kind | END_TURN 8 us, ROLL 15 us, BUILD_ROAD 22-42 us | 8-11 us flat (0.8x .. 3.8x) | ~1 us |
+| random playout, 4 players, 100 turns (`random_playout` vs `random_playout_fast`) | 8.1 ms/game | 0.19 ms/game (**43x**) | same |
+| random playout to the 400-turn cap | | 0.57 ms/game (19 / 20 end by 10 VP) | |
+
+Reading: the engine itself costs ~0.4 us per action; on the `GameState` path the rest is the
+conversion (~3 us to read a 4-player `GameState`, ~4.5 us to build the new one - the same as
+Python's own `GameState.copy()`), so cheap actions gain nothing and expensive ones (roads with
+the Longest Road DFS, settlements, rolls with production) gain 2-4x.  The 43x of the playout
+and the 8-15x of `CState` are what the engine gives once the state stays in C++: a search that
+keeps `CState` handles and evaluates them directly (the evaluators accept handles, so nothing
+is converted at all) is the way to "apply actions without Python overhead"; converting back
+with `to_state()` costs ~4.5 us only where a Python `GameState` is really needed.
+
+### Limitations / notes
+
+* Same state limits as the other ports (at most 4 players, 32-bit fields, ids in range) ->
+  `core.UnsupportedStateError`; the `accel.engine_*` wrappers and the `engine.py` hook fall
+  back to Python for them.  Hand-built states with a player index / `trade_responder` /
+  award owner outside the player list raise `IndexError` like Python (from `std::out_of_range`),
+  a state without players raises `ValueError` where Python raises `ZeroDivisionError`.
+* Malformed action arguments (non-integers) raise `TypeError` when the action is parsed, i.e.
+  before the phase checks, where Python raises it inside the handler after them; the
+  well-formed-but-illegal cases (the whole `test_engine.py` universe) match message for message.
+* Port types outside `0..5` are ignored (Python would `IndexError` in `_port_ratios`); a
+  responder index >= 4 cannot be stored in `TradeC.responses`.
+* The C++ random generator of `rng=None` / `seed` is not `random.Random`: `core.apply(s, a, 5)`
+  and `engine.apply(s, a, random.Random(5))` draw different values (both are correct games);
+  pass a `random.Random` object for bit-identical sequences.
+* `-march=native` and the rebuild rules of the other ports apply; `setup_cpp.py` now lists
+  `cpp/engine.cpp` as a source.
