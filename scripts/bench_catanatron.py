@@ -122,8 +122,10 @@ from catanatron.players.weighted_random import WeightedRandomPlayer  # noqa: E40
 from catanbot.bench.catanatron_adapter import (  # noqa: E402
     CATANATRON_VERSION,
     COLORS,
+    DEFAULT_INFO_SAMPLES,
     DEFAULT_SPEC,
     DOMESTIC_TRADING,
+    INFO_MODES,
     LOG_FORMAT,
     TRADE_MODES,
     BenchOpponent,
@@ -392,10 +394,60 @@ def plan_games(base_seed: int, indices: Sequence[int], our_seats: int = 1) -> Li
     return [(g, game_seed(base_seed, g), our_seats_for(g, our_seats)) for g in indices]
 
 
-def action_log_path(directory: str, opponent: str, our_seats: int, seed: int, indices: range) -> str:
-    """``DIR/<opponent>_<1v3|2v2>_seed<S>_g<A>-<B>.jsonl.gz`` for ``--log-actions``."""
+#: The 6 orders of the three ``--mixed-opponents`` presets (game ``g`` uses ``(g // 4) % 6``).
+MIXED_PERMUTATIONS: Tuple[Tuple[int, int, int], ...] = tuple(itertools.permutations(range(3)))
+#: Name of the catanbot seat in a mixed lineup / as a winner.
+CATANBOT = "catanbot"
+
+
+def mixed_lineup(g: int, names: Sequence[str]) -> Tuple[str, ...]:
+    """Who sits where in game ``g`` of a ``--mixed-opponents`` run (turn order, seat 0 moves first):
+    catanbot in seat ``g % 4`` exactly as in the 1v3 rotation, and the three presets ``names`` in
+    the seats after it (relative positions 1, 2, 3 in turn order) in the order
+    ``MIXED_PERMUTATIONS[(g // 4) % 6]``.  ``g mod 24`` fixes both, so any 24 consecutive games
+    put every preset in every relative position (and every seat) equally often."""
+    names = list(names)
+    if len(names) != len(COLORS) - 1:
+        raise ValueError(f"--mixed-opponents needs {len(COLORS) - 1} presets, got {names}")
+    seat = g % len(COLORS)
+    perm = MIXED_PERMUTATIONS[(g // len(COLORS)) % len(MIXED_PERMUTATIONS)]
+    lineup: List[str] = [""] * len(COLORS)
+    lineup[seat] = CATANBOT
+    for k in range(3):
+        lineup[(seat + 1 + k) % len(COLORS)] = names[perm[k]]
+    return tuple(lineup)
+
+
+def parse_mixed(text: Optional[str]) -> Optional[List[str]]:
+    """``"value,alphabeta,sameturn"`` -> the preset list (``None`` when not given)."""
+    if not text:
+        return None
+    return [x.strip() for x in text.split(",") if x.strip()]
+
+
+def info_kwargs(opts: Optional[Dict[str, object]]) -> Dict[str, object]:
+    """``CatanbotPlayer`` keyword arguments of the information mode (none for the default ``full``,
+    so a full-information run builds exactly the player it always did)."""
+    opts = opts or {}
+    if opts.get("info", "full") == "full":
+        return {}
+    return {"info": opts["info"], "info_samples": int(opts.get("info_samples") or DEFAULT_INFO_SAMPLES),
+            "discards_public": bool(opts.get("discards_public"))}
+
+
+def info_meta(opts: Optional[Dict[str, object]]) -> Dict[str, object]:
+    """The information mode as recorded in the JSON (``{"mode": "full"}`` or the counted settings)."""
+    kw = info_kwargs(opts)
+    if not kw:
+        return {"mode": "full"}
+    return {"mode": kw["info"], "samples": kw["info_samples"], "discards_public": kw["discards_public"]}
+
+
+def action_log_path(directory: str, opponent: str, our_seats: int, seed: int, indices: range,
+                    fmt: Optional[str] = None) -> str:
+    """``DIR/<opponent>_<1v3|2v2|1v3-mixed>_seed<S>_g<A>-<B>.jsonl.gz`` for ``--log-actions``."""
     tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", opponent)
-    fmt = "2v2" if our_seats == 2 else "1v3"
+    fmt = fmt or ("2v2" if our_seats == 2 else "1v3")
     return os.path.join(directory, f"{tag}_{fmt}_seed{seed}_g{indices.start:05d}-{indices.stop:05d}.jsonl.gz")
 
 
@@ -441,18 +493,25 @@ def run_one(job: tuple) -> Dict[str, object]:
 
 
 def _player_identities(ours: Sequence[int], spec: str, seed: int, opponent: str,
-                       opp_params: Optional[Dict[str, str]], trades: str) -> List[Dict[str, object]]:
-    """Who sits where (turn order) for the action log."""
+                       opp_params: Optional[Dict[str, str]], trades: str,
+                       lineup: Optional[Sequence[str]] = None,
+                       info: Optional[Dict[str, object]] = None) -> List[Dict[str, object]]:
+    """Who sits where (turn order) for the action log (``lineup``: a mixed game's preset per seat;
+    ``info``: the catanbot seats' information mode when it is not the default ``full``)."""
     out = []
     k = 0
     for i, color in enumerate(COLORS):
         if i in ours:
-            out.append({"seat": i, "color": color.value, "kind": "catanbot", "spec": spec,
-                        "bot_seed": seed + BOT_SEED_STRIDE * k, "suppress_trades": trades == "off"})
+            ident = {"seat": i, "color": color.value, "kind": "catanbot", "spec": spec,
+                     "bot_seed": seed + BOT_SEED_STRIDE * k, "suppress_trades": trades == "off"}
+            if info and info.get("mode", "full") != "full":
+                ident["info"] = dict(info)
+            out.append(ident)
             k += 1
         else:
-            out.append({"seat": i, "color": color.value, "kind": "opponent", "preset": opponent,
-                        "class": opponent_path(opponent), "params": dict(opp_params or {}), "trade_rule": trades})
+            name = lineup[i] if lineup else opponent
+            out.append({"seat": i, "color": color.value, "kind": "opponent", "preset": name,
+                        "class": opponent_path(name), "params": dict(opp_params or {}), "trade_rule": trades})
     return out
 
 
@@ -460,10 +519,16 @@ def _log_record(job: tuple, ours: Sequence[int], log: Dict[str, object]) -> Dict
     g, base_seed, spec, opponent = job[:4]
     trades = job[6] if len(job) > 6 else "off"
     opp_params = job[7] if len(job) > 7 else None
+    opts = (job[8] if len(job) > 8 else None) or {}
+    mixed = opts.get("mixed")
+    lineup = mixed_lineup(g, mixed) if mixed else None
     seed = game_seed(base_seed, g)
+    match = "1v3-mixed" if mixed else ("2v2" if len(ours) == 2 else "1v3")
     rec = {"game": g, "seed": seed, "base_seed": base_seed, "hash_seed": os.environ.get("PYTHONHASHSEED"),
-           "match": "2v2" if len(ours) == 2 else "1v3", "our_seats": list(ours),
-           "players": _player_identities(ours, spec, seed, opponent, opp_params, trades)}
+           "match": match, "our_seats": list(ours),
+           "players": _player_identities(ours, spec, seed, opponent, opp_params, trades, lineup, info_meta(opts))}
+    if lineup:
+        rec["lineup"] = list(lineup)
     rec.update(log)
     return rec
 
@@ -475,19 +540,26 @@ def _play_one(job: tuple, opts: Dict[str, object]) -> Dict[str, object]:
     n_ours = int(opts.get("our_seats", 1) or 1)
     ours = our_seats_for(g, n_ours)
     seed = game_seed(base_seed, g)
-    make = opponent_factory(resolve_opponent(opponent), opp_params, opponent)
+    mixed = opts.get("mixed")
+    lineup = mixed_lineup(g, mixed) if mixed else None
+    makers = {name: opponent_factory(resolve_opponent(name), opp_params, name)
+              for name in (sorted(set(mixed)) if mixed else [opponent])}
+    info_kw = info_kwargs(opts)
     players = []
     opps: List[BenchOpponent] = []
+    opp_names: List[str] = []
     mine: List[CatanbotPlayer] = []
     for i, color in enumerate(COLORS):
         if i in ours:
             me = CatanbotPlayer(color, spec=spec, seed=seed + BOT_SEED_STRIDE * len(mine),
-                                suppress_trades=(trades == "off"))
+                                suppress_trades=(trades == "off"), **info_kw)
             mine.append(me)
             players.append(me)
         else:
-            o = BenchOpponent(make(color), trade_rule=trades, vps_to_win=vps_to_win)
+            name = lineup[i] if lineup else opponent
+            o = BenchOpponent(makers[name](color), trade_rule=trades, vps_to_win=vps_to_win)
             opps.append(o)
+            opp_names.append(name)
             players.append(o)
     try:
         res = play_game(players, seed=seed, vps_to_win=vps_to_win, discard_limit=discard_limit,
@@ -546,6 +618,17 @@ def _play_one(job: tuple, opts: Dict[str, object]) -> Dict[str, object]:
     res["_times"] = {"ours": our_times, "ours_choice": our_choice,
                      "opp": opp_times, "opp_choice": opp_choice}
     res["our_seats"] = list(ours)
+    if info_kw:
+        res["info_stats"] = {k: sum(m.stats.get(k, 0) for m in mine) for k in INFO_STAT_KEYS}
+        res["info_stats"]["info_max_hypotheses"] = max(m.stats.get("info_max_hypotheses", 0) for m in mine)
+    if lineup:
+        seat = ours[0]
+        res["lineup"] = list(lineup)
+        res["relative"] = [lineup[(seat + k) % len(COLORS)] for k in (1, 2, 3)]
+        res["winner_name"] = lineup[res["winner_seat"]] if res["winner_seat"] >= 0 else None
+        res["timing"]["opp_by_name"] = {name: timing_summary([t for o, nm in zip(opps, opp_names) if nm == name
+                                                              for t in o.times])
+                                        for name in sorted(set(opp_names))}
     if log is not None:
         res["_log"] = _log_record(job, ours, log)
     return res
@@ -573,6 +656,13 @@ def _crashed_result(job: tuple, opts: Dict[str, object], errors: List[str], part
         res["pattern"] = seat_pattern(ours)
         res["our_vps"] = [0, 0]
         res["stats_by_seat"] = {}
+    if opts.get("mixed"):
+        lineup = mixed_lineup(g, opts["mixed"])
+        res["lineup"] = list(lineup)
+        res["relative"] = [lineup[(ours[0] + k) % len(COLORS)] for k in (1, 2, 3)]
+        res["winner_name"] = None
+    if info_kwargs(opts):
+        res["info_stats"] = {k: 0 for k in INFO_STAT_KEYS}
     if opts.get("log") and partial is not None:
         rec = dict(partial)
         rec["crashed"] = True
@@ -587,6 +677,9 @@ STAT_KEYS = ["decisions", "searched", "trivial", "pending_robber", "pending_disc
              "offers_accepted_by_us", "self_offer_prompts"]
 TRADE_KEYS = ["offers", "offers_accepted", "confirmed", "cancelled", "offers_received", "accepted_by_us",
               "opp_asked", "opp_accepted", "opp_rejected", "opp_cannot_pay", "opp_errors"]
+#: Counted-information-mode counters of ``CatanbotPlayer.stats`` (``res["info_stats"]``).
+INFO_STAT_KEYS = ["info_samples", "info_uncertain", "info_errors", "info_resets", "info_max_hypotheses",
+                  "hidden_steals", "hidden_discards", "hidden_dev_draws"]
 
 
 def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: int,

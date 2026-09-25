@@ -681,6 +681,10 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
             state.dice = 8
     cfg = SearchConfig(depth=args.depth, beam=args.beam, expand=max(6, args.beam + 4),
                        time_limit=getattr(args, "time", None), opp_roll_samples=12, finished_lookahead=0)
+    paths_w = float(getattr(args, "paths", 0.0) or 0.0)
+    if paths_w > 0.0:   # --paths W: win-path races in the search (catanbot/winpaths.py); off by default
+        cfg.paths = 1
+        cfg.paths_w = paths_w
     rng = random.Random(getattr(args, "seed", 0) or 0)
     results, sinfo = run_search(state, me, evaluator, cfg, args, model, politics, rng)
     report["search_seconds"] = sinfo["seconds"]
@@ -740,6 +744,11 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
     except Exception:
         pass
     advice["politics"] = pol
+    try:   # informational: the race / crowding board of catanbot/winpaths.py (never changes the recommendation)
+        from .winpaths import race_lines
+        advice["win_paths"] = race_lines(state, me)
+    except Exception as ex:  # pragma: no cover
+        advice["win_paths"] = [f"(win paths unavailable: {ex})"]
     report["advice"] = advice
     report["me"] = me
     report["state"] = original.to_dict()
@@ -803,7 +812,8 @@ def print_report(state: GameState, me: int, report: Dict[str, Any], parse_warnin
         if len(a["line"]) > 1:
             print(f"     line: {line}")
     titles = [("trading", "Trading"), ("seven_risk", "7-protection"), ("robber", "Knight / robber"),
-              ("dev_cards", "Development cards"), ("politics", "Politics"), ("opponents", "Opponents")]
+              ("dev_cards", "Development cards"), ("politics", "Politics"), ("win_paths", "Win paths"),
+              ("opponents", "Opponents")]
     for key, title in titles:
         lines = report["advice"].get(key) or []
         if not lines:
@@ -1239,6 +1249,9 @@ def _add_recommend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--ids", action="store_true", help="also print the vertex / edge id numbering (for --fix pieces and ports)")
     p.add_argument("--log", help="append this position's win estimate to a JSONL log (for `calibrate`)")
     p.add_argument("--game", help="game id used with --log / outcome")
+    p.add_argument("--paths", type=float, default=0.0, metavar="W",
+                   help="search with the win-path race term at weight W (0 = off, the default; see docs/STRATEGY.md "
+                        "'Win-path races'); the 'Win paths' advice section is shown either way")
 
 
 def build_parser() -> argparse.ArgumentParser:
