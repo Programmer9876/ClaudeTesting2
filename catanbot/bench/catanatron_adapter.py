@@ -42,6 +42,14 @@ Three things live here:
    (:data:`TRADE_MODES`), because catanatron's own players answer offers
    degenerately (``docs/BENCHMARKS.md``, "Domestic trading against catanatron 3.3").
 
+5. Replayable game logs (``play_game(record_log=True)``, :func:`game_log`,
+   :func:`rebuild_game`, :func:`replay_log_action`): the board, robber start,
+   seating and shuffled development deck of a game plus every logged action
+   with its chance outcome (3.3 ``ActionRecord.result``; on 3.2.1 read from the
+   fully specified logged action) and the final state with a full-state
+   :func:`state_fingerprint`.  A fresh game rebuilt on the logged board with the
+   logged outcomes reproduces the original exactly (``scripts/replay_catanatron.py``).
+
 Known semantic differences (see ``docs/BENCHMARKS.md``): player-to-player
 trading is off by default (catanatron 3.2.1 has none; on 3.3 the default
 ``suppress_trades=True`` never offers and answers the domestic-trade prompts
@@ -1384,6 +1392,8 @@ class CatanbotPlayer(Player):
             self.stats["search_time"] += time.perf_counter() - t0
             self.stats["searched"] += 1
             if decision not in legal:
+                # The search's discard is not one the engine accepts: an illegal-action fallback.
+                self.stats["fallback"] += 1
                 decision = legal[0]
             try:
                 self.last_explanation = self.bot.explain(cb)
@@ -1651,3 +1661,311 @@ def play_game(players: Sequence[Player], seed: int, vps_to_win: int = 10,
     if header is not None:
         res["log"] = game_log(game, header)
     return res
+
+
+# ---------------------------------------------------------------------------
+# Replayable game logs (``scripts/bench_catanatron.py --log-actions``,
+# ``scripts/replay_catanatron.py``)
+# ---------------------------------------------------------------------------
+#: Version tag of the per-game log records written by :func:`game_log`.
+LOG_FORMAT = "catanbot-actionlog/1"
+
+
+class ReplayMismatch(RuntimeError):
+    """A logged action is not playable in the rebuilt state, or re-applies to a different record."""
+
+
+def _plain(v):
+    """JSON form of an action value / chance result: colours and enums by value, tuples as lists."""
+    if isinstance(v, Color):
+        return v.value
+    if isinstance(v, (list, tuple)):
+        return [_plain(x) for x in v]
+    if isinstance(v, dict):
+        return {str(_plain(k)): _plain(x) for k, x in v.items()}
+    if hasattr(v, "value") and hasattr(v, "name") and type(v).__module__.startswith("catanatron"):
+        return v.value   # any other catanatron enum
+    return v
+
+
+def _tuplify(v):
+    return tuple(_tuplify(x) for x in v) if isinstance(v, list) else v
+
+
+def _legacy_result(action: CAction):
+    """3.2.1 keeps the chance outcome in the logged action's value: extract it in 3.3's
+    ``ActionRecord.result`` shape (dice, drawn card, stolen card, discarded cards)."""
+    t = action.action_type
+    v = action.value
+    if t in (ActionType.ROLL, ActionType.BUY_DEVELOPMENT_CARD) or (DISCARD_LEGACY is not None and t == DISCARD_LEGACY):
+        return v
+    if t == ActionType.MOVE_ROBBER:
+        return v[2] if v is not None and len(v) > 2 else None
+    return None
+
+
+def encode_log_entry(entry) -> list:
+    """``[colour, action type, value, result]`` (JSON-ready) of an engine log entry.
+
+    ``result`` is the chance outcome as catanatron records it: 3.3's
+    ``ActionRecord.result`` (dice, discarded / stolen card, drawn development
+    card), or on 3.2.1 the same outcome read from the fully specified logged
+    action (:func:`_legacy_result`; 3.2.1 records every outcome there,
+    including its random discards)."""
+    a = log_action(entry)
+    result = log_result(entry) if ActionRecord is not None else _legacy_result(a)
+    return [a.color.value, a.action_type.name, _plain(a.value), _plain(result)]
+
+
+def decode_log_action(item: Sequence) -> CAction:
+    """The catanatron ``Action`` of an :func:`encode_log_entry` item (runs on the engine that wrote it)."""
+    color = Color(item[0])
+    t = ActionType[item[1]]
+    v = item[2]
+    if v is not None:
+        if t == ActionType.MOVE_ROBBER:
+            who = Color(v[1]) if v[1] is not None else None
+            v = (tuple(v[0]), who) + tuple(v[2:])
+        elif AT_CONFIRM is not None and t == AT_CONFIRM:
+            v = tuple(v[:10]) + (Color(v[10]),)
+        elif DISCARD_LEGACY is not None and t == DISCARD_LEGACY:
+            v = list(v)   # 3.2.1 logs its discards as a list
+        else:
+            v = _tuplify(v)
+    return CAction(color, t, v)
+
+
+def decode_log_result(action_type: ActionType, result):
+    """Chance result of an :func:`encode_log_entry` item in the engine's own types."""
+    if result is None:
+        return None
+    if action_type == ActionType.ROLL:
+        return tuple(result)
+    if DISCARD_LEGACY is not None and action_type == DISCARD_LEGACY:
+        return list(result)
+    return result
+
+
+def encode_board(board) -> Dict[str, object]:
+    """The random part of a catanatron board: every tile of the (BASE) topology in catanatron's
+    order with its type, id, resource and number (land) or resource and direction (port),
+    the robber's start and, for reading, the port nodes by resource (``"3:1"`` = generic)."""
+    from catanatron.models.map import LandTile, Port
+    cmap = board.map
+    tiles = []
+    for coord, tile in cmap.tiles.items():
+        c = [int(x) for x in coord]
+        if isinstance(tile, LandTile):
+            tiles.append({"c": c, "t": "land", "id": int(tile.id), "resource": tile.resource,
+                          "number": None if tile.number is None else int(tile.number)})
+        elif isinstance(tile, Port):
+            tiles.append({"c": c, "t": "port", "id": int(tile.id), "resource": tile.resource,
+                          "direction": tile.direction.name})
+        else:
+            tiles.append({"c": c, "t": "water"})
+    ports = {("3:1" if r is None else r): sorted(int(n) for n in nodes) for r, nodes in cmap.port_nodes.items()}
+    return {"template": "BASE", "tiles": tiles, "robber": [int(x) for x in board.robber_coordinate],
+            "ports": ports}
+
+
+def decode_board(doc: Dict[str, object]) -> CatanMap:
+    """Rebuild the ``CatanMap`` of :func:`encode_board`: the BASE template's topology is walked in
+    catanatron's order (so node and edge ids come out identical) with the logged tiles."""
+    from catanatron.models.map import BASE_MAP_TEMPLATE, LandTile, Port, Water, get_nodes_and_edges
+    if doc.get("template", "BASE") != "BASE":
+        raise ValueError(f"unsupported map template {doc.get('template')!r}")
+    by_coord = {tuple(t["c"]): t for t in doc["tiles"]}
+    if set(by_coord) != set(BASE_MAP_TEMPLATE.topology):
+        raise ValueError("logged tiles do not cover the BASE map topology")
+    all_tiles: Dict[Coordinate, object] = {}
+    node_autoinc = 0
+    for coordinate, tile_type in BASE_MAP_TEMPLATE.topology.items():
+        nodes, edges, node_autoinc = get_nodes_and_edges(all_tiles, coordinate, node_autoinc)
+        stored = by_coord[coordinate]
+        if isinstance(tile_type, tuple):
+            _, direction = tile_type
+            if stored["t"] != "port" or stored["direction"] != direction.name:
+                raise ValueError(f"tile at {coordinate}: logged {stored} but the template has a {direction.name} port")
+            all_tiles[coordinate] = Port(stored["id"], stored["resource"], direction, nodes, edges)
+        elif tile_type == LandTile:
+            if stored["t"] != "land":
+                raise ValueError(f"tile at {coordinate}: logged {stored} but the template has land")
+            all_tiles[coordinate] = LandTile(stored["id"], stored["resource"], stored["number"], nodes, edges)
+        else:
+            all_tiles[coordinate] = Water(nodes, edges)
+    return CatanMap.from_tiles(all_tiles)
+
+
+def state_summary(st: State) -> Dict[str, object]:
+    """Readable, JSON-ready summary of a catanatron state: per seat VP (actual / public), hand,
+    development cards held and played, buildings, road / army titles; bank, deck, robber, prompt."""
+    ps = st.player_state
+    players = []
+    for i, color in enumerate(st.colors):
+        k = f"P{i}"
+        bb = st.buildings_by_color.get(color, {})
+        players.append({
+            "seat": i,
+            "color": color.value,
+            "vp": int(ps[f"{k}_ACTUAL_VICTORY_POINTS"]),
+            "public_vp": int(ps[f"{k}_VICTORY_POINTS"]),
+            "resources": {r: int(ps[f"{k}_{r}_IN_HAND"]) for r in CB_TO_RESOURCE},
+            "dev_cards": {d: int(ps[f"{k}_{d}_IN_HAND"]) for d in CB_TO_DEV},
+            "dev_played": {d: int(ps.get(f"{k}_PLAYED_{d}", 0)) for d in CB_TO_DEV if f"{k}_PLAYED_{d}" in ps},
+            "settlements": sorted(int(n) for n in bb.get(SETTLEMENT, [])),
+            "cities": sorted(int(n) for n in bb.get(CITY, [])),
+            "roads": sorted([int(min(e)), int(max(e))] for e in bb.get(ROAD, [])),
+            "longest_road_length": int(ps[f"{k}_LONGEST_ROAD_LENGTH"]),
+            "has_longest_road": bool(ps[f"{k}_HAS_ROAD"]),
+            "has_largest_army": bool(ps[f"{k}_HAS_ARMY"]),
+        })
+    return {
+        "turn": int(st.num_turns),
+        "current_turn_seat": int(st.current_turn_index),
+        "current_player_seat": int(st.current_player_index),
+        "prompt": st.current_prompt.name,
+        "robber": [int(x) for x in st.board.robber_coordinate],
+        "bank": {r: int(x) for r, x in zip(CB_TO_RESOURCE, st.resource_freqdeck)},
+        "dev_deck_left": len(st.development_listdeck),
+        "actions": len(action_log(st)),
+        "players": players,
+    }
+
+
+def _fingerprint_doc(st: State) -> Dict[str, object]:
+    board = st.board
+    doc = {
+        "player_state": {k: _plain(v) for k, v in sorted(st.player_state.items())},
+        "buildings": sorted([int(n), c.value, str(bt)] for n, (c, bt) in board.buildings.items()),
+        "roads": sorted([int(e[0]), int(e[1]), c.value] for e, c in board.roads.items()),
+        # a defaultdict: reading ``[color][CITY]`` creates an empty list, so empty entries are ignored
+        "buildings_by_color": {c.value: {str(t): sorted(_plain(x) for x in xs) for t, xs in sorted(d.items()) if xs}
+                               for c, d in st.buildings_by_color.items()},
+        "robber": [int(x) for x in board.robber_coordinate],
+        "road": [board.road_color.value if board.road_color else None, int(board.road_length)],
+        "bank": [int(x) for x in st.resource_freqdeck],
+        "dev_deck": list(st.development_listdeck),
+        "turn": [int(st.num_turns), int(st.current_player_index), int(st.current_turn_index), st.current_prompt.name],
+        "flags": [bool(st.is_initial_build_phase), bool(st.is_discarding), bool(st.is_moving_knight),
+                  bool(st.is_road_building), int(st.free_roads_available)],
+        "colors": [c.value for c in st.colors],
+    }
+    if hasattr(st, "discard_counts"):
+        doc["discard_counts"] = [int(x) for x in st.discard_counts]
+    if hasattr(st, "current_trade"):
+        doc["trade"] = [_plain(st.current_trade), [bool(x) for x in st.acceptees], bool(st.is_resolving_trade)]
+    return doc
+
+
+def state_fingerprint(st: State) -> str:
+    """SHA-256 (first 20 hex digits) of the complete game state: every ``player_state`` field,
+    buildings, roads, robber, bank, development deck *in order*, turn / prompt / phase flags."""
+    import hashlib
+    import json
+    text = json.dumps(_fingerprint_doc(st), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()[:20]
+
+
+def game_log_header(game: Game) -> Dict[str, object]:
+    """Everything random that is fixed before the first action: seating (colours in turn
+    order), board, robber start and the shuffled development deck (in draw order: the
+    engine pops from the end), plus the rules and engine version."""
+    st = game.state
+    if len(action_log(st)):
+        raise ValueError("game_log_header must be taken before the first action")
+    return {
+        "format": LOG_FORMAT,
+        "catanatron": CATANATRON_VERSION,
+        "api": "3.3" if API_33 else "3.2",
+        "seed": int(game.seed),
+        "vps_to_win": int(game.vps_to_win),
+        "discard_limit": int(st.discard_limit),
+        "turns_limit": int(TURNS_LIMIT),
+        "colors": [c.value for c in st.colors],
+        "board": encode_board(st.board),
+        "dev_deck": list(st.development_listdeck),
+    }
+
+
+def game_log(game: Game, header: Dict[str, object], crashed: bool = False) -> Dict[str, object]:
+    """``header`` + every logged action (:func:`encode_log_entry`) + the final state
+    (winner, VPs, turns, :func:`state_fingerprint`, :func:`state_summary`)."""
+    st = game.state
+    winner = game.winning_color()
+    out = dict(header)
+    out["actions"] = [encode_log_entry(e) for e in action_log(st)]
+    out["final"] = {
+        "winner": winner.value if winner is not None else None,
+        "winner_seat": st.color_to_index[winner] if winner is not None else -1,
+        "vps": [int(st.player_state[f"P{i}_ACTUAL_VICTORY_POINTS"]) for i in range(len(st.colors))],
+        "turns": int(st.num_turns),
+        "num_actions": len(action_log(st)),
+        "fingerprint": state_fingerprint(st),
+        "state": state_summary(st),
+    }
+    if crashed:
+        out["crashed"] = True
+    return out
+
+
+class _LogSeat(Player):
+    """Placeholder seat of a rebuilt game (actions come from the log, never from ``decide``)."""
+
+    def decide(self, game, playable_actions):
+        raise RuntimeError("a replayed game takes its actions from the log")
+
+
+def rebuild_game(doc: Dict[str, object]) -> Game:
+    """A fresh catanatron game in the logged initial state: same board, robber, seating
+    and development deck order, no action taken.  Raises ``ValueError`` when the log was
+    written by the other catanatron API generation (3.2.1 vs 3.3)."""
+    if doc.get("format") != LOG_FORMAT:
+        raise ValueError(f"not a {LOG_FORMAT} record (format {doc.get('format')!r})")
+    api = "3.3" if API_33 else "3.2"
+    if doc.get("api") != api:
+        raise ValueError(f"log written with catanatron {doc.get('catanatron')} ({doc.get('api')} API); this "
+                         f"interpreter runs catanatron {CATANATRON_VERSION} ({api} API) - replay it with the "
+                         f"interpreter that played it")
+    cmap = decode_board(doc["board"])
+    seats = [_LogSeat(Color(c)) for c in doc["colors"]]
+    game = make_game(seats, seed=int(doc.get("seed") or 1), vps_to_win=int(doc["vps_to_win"]),
+                     discard_limit=int(doc["discard_limit"]), catan_map=cmap)
+    st = game.state
+    st.development_listdeck = list(doc["dev_deck"])
+    robber = tuple(doc["board"]["robber"])
+    if tuple(st.board.robber_coordinate) != robber:
+        raise ReplayMismatch(f"robber starts on {tuple(st.board.robber_coordinate)}, logged {robber}")
+    return game
+
+
+def replay_log_action(game: Game, item: Sequence, check: bool = True):
+    """Apply one logged item to ``game`` with its logged chance outcome; returns the engine's
+    record.  With ``check`` the item must be playable for the colour to move and must
+    re-apply to exactly the logged item (else :class:`ReplayMismatch`)."""
+    st = game.state
+    action = decode_log_action(item)
+    result = decode_log_result(action.action_type, item[3])
+    if check:
+        if action.color != st.current_color():
+            raise ReplayMismatch(f"{item[0]} acts but {st.current_color().value} is to move")
+        if AT_OFFER is not None and action.action_type == AT_OFFER:
+            from catanatron.game import is_valid_action
+            ok = is_valid_action(playable_actions_of(game), st, action)
+        else:
+            ok = any(a.color == action.color and playable_key(a) == playable_key(action)
+                     for a in playable_actions_of(game))
+        if not ok:
+            raise ReplayMismatch(f"{list(item)} is not playable in the rebuilt state")
+    if ActionRecord is not None:
+        rec = game.execute(action, validate_action=False, action_record=ActionRecord(action, result))
+    else:
+        to_apply = action
+        deck = st.development_listdeck
+        if action.action_type == ActionType.BUY_DEVELOPMENT_CARD and deck and deck[-1] == action.value:
+            to_apply = CAction(action.color, action.action_type, None)   # draw like the original: deck order kept
+        rec = game.execute(to_apply, validate_action=False)
+    if check:
+        got = encode_log_entry(rec)
+        if got != list(item):
+            raise ReplayMismatch(f"logged {list(item)} re-applied as {got}")
+    return rec

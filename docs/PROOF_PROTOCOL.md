@@ -91,3 +91,110 @@ quality (production, diversity, port access vs the winner), build order,
 robber exposure, dev-card use, trades, and the decisions where the
 opponent's choice beat ours by rollout.  The summary states why the bot is
 being outsmarted, with numbers.
+
+## Amendment 2026-09-25: Tooling
+
+Written before any proof game.  It changes none of the hypotheses,
+opponents, formats, sample sizes, seeds, statistics or thresholds above; it
+records how the tooling plays and reads them.
+
+**Trading.**  The tooling verification found that catanatron 3.3's own
+players never answer a trade offer with their own evaluation
+(`ValueFunctionPlayer` always rejects, `AlphaBetaPlayer` /
+`SameTurnAlphaBetaPlayer` raise on `REJECT_TRADE`), so by the rule under
+"Bot under test" trading is **off** (`--trades off`) in every proof game.
+
+**Running.**  `scripts/run_proof.sh` plays every test with
+`scripts/bench_catanatron.py` and these arguments (T1-T6 with
+`/home/user/venv_cat33/bin/python`, catanatron 3.3.0; R1-R2 with the system
+`python3`, catanatron 3.2.1):
+
+| test | bench arguments | chunk (games) |
+|---|---|---|
+| T1 | `--opponent value --our-seats 1 --seed 900001`, games 0..999 | 250 |
+| T2 | `--opponent alphabeta --our-seats 1 --seed 900001`, games 0..399 | 40 |
+| T3 | `--opponent sameturn --our-seats 1 --seed 900001`, games 0..399 | 50 |
+| T4 | `--opponent value --our-seats 2 --seed 900001`, games 0..999 | 250 |
+| T5 | `--opponent alphabeta --our-seats 2 --seed 900001`, games 0..399 | 40 |
+| T6 | `--opponent sameturn --our-seats 2 --seed 900001`, games 0..399 | 50 |
+| R1 | `--opponent vf --our-seats 1 --seed 900101`, games 0..999 | 250 |
+| R2 | `--opponent ab --our-seats 1 --seed 900101`, games 0..399 | 80 |
+
+plus, for every chunk, `--spec "search:depth=1,beam=4,expand=8,evaluator=heuristic"
+--trades off --hash-seed 0 --workers 3 --rerun-crashes --log-actions DIR
+--verbose --game-range A:B --json FILE`, under `timeout 1200` (20 minutes).
+Opponent parameters are catanatron's defaults (no `--opponent-params`).
+Game `g` always has catanatron seed `seed * 100003 + g + 1`; in 1v3
+catanbot sits in seat `g % 4`, in 2v2 its two seats are arrangement `g % 6`
+of (0,1), (0,2), (0,3), (1,2), (1,3), (2,3) (turn-order patterns `CCoo`,
+`CoCo`, `CooC`, `oCCo`, `oCoC`, `ooCC`); seat = turn-order position, seat 0
+moves first.  1000 and 400 are not multiples of 6: the first four
+arrangements get one game more (167 / 166 and 67 / 66).  The two catanbot
+seats of a 2v2 game are independent bot instances (same spec; bot seeds
+`seed` and `seed + 7919`).  Because every per-game quantity depends on the
+game index alone, the chunks `--game-range A:B` that cover `0..N-1` play
+exactly the games of one uninterrupted run.  A chunk whose JSON exists is
+skipped (the script can be restarted after an interruption); a chunk that
+times out is split in two, down to single games.  A game that crashes is
+re-played once with the same seed (`--rerun-crashes`); a second crash is
+recorded as a loss.  Commands:
+
+    scripts/run_proof.sh                 # all tests, then replay --check of every log and the analysis
+    scripts/run_proof.sh T2 T5           # some tests only (resumes where they stopped)
+    scripts/run_proof.sh --analyze       # replay checks and analysis of what exists
+    python3 scripts/prove_strength.py --test T1=OUT/json/T1 ... --test R2=OUT/json/R2 --markdown docs/PROOF.md
+    PY scripts/replay_catanatron.py OUT/logs/T2 --check
+    PY scripts/replay_catanatron.py OUT/logs/T2 --game 17 --turn 40
+
+(`OUT` defaults to the session scratchpad `.../scratchpad/proof/run`, `PY`
+is the interpreter that played the test.)  Smoke runs of the tooling
+(`PROOF_SMOKE=1`) use the seeds 424201 / 424301, never the proof seeds.
+
+**Action logs.**  Every game is logged (gzip JSONL, one line per game):
+seeds, `PYTHONHASHSEED`, catanatron version, players in turn order
+(catanbot spec / opponent class and parameters), board (resource and number
+of every land tile, ports), robber start, the shuffled development deck,
+every action with its colour and chance outcome (3.3: `ActionRecord`
+results; 3.2.1 records dice, stolen card, drawn card and its random
+discards in the logged action itself, so nothing needs the seed to be
+re-run) and the final state with a full-state fingerprint.
+`scripts/replay_catanatron.py` rebuilds any position by replaying the log
+into a fresh game on the logged board; `--check` verifies every action and
+the final VPs, winner, turns and fingerprint.  About 2.5-3 KiB per game
+compressed (about 14 MiB for all 5 000 games).  Games are deterministic
+given the seed and `PYTHONHASHSEED` (chunked and single-game runs of the
+same seed reproduced each other exactly in the tooling tests), except that
+catanatron's alpha-beta players stop a search after 20 s of wall time (their
+slowest decision in `docs/BENCHMARKS.md` took 6.1 s); the logs record what
+was actually played.
+
+**Reading of the rules** (`scripts/prove_strength.py`, fixed here before
+any proof game):
+
+* one-sided p-value = P(X >= wins) under the null (exact, rational
+  arithmetic); a game's win is recomputed from the winner seat; turn-cap
+  games and games that crashed twice are losses;
+* Clopper-Pearson intervals are the central two-sided ones: "the lower 99 %
+  bound" is the lower end of the 99 % interval (0.5 % in each tail), the
+  conservative reading;
+* Holm-Bonferroni is always over the six tests T1-T6 (a test without
+  results enters with p = 1);
+* condition 3: every seat of T1-T3 has one-sided exact p < 0.05 against 0.25;
+* condition 4, over all eight tests: adapter errors = the catanbot player's
+  `errors` (a decision raised) + `observe_errors`, illegal-action fallbacks
+  = `fallback` (no legal action had a catanatron equivalent, or the bot's
+  own choice could not be played and a default was played instead, e.g. a
+  discard the engine does not accept), crashes =
+  every crashed attempt, even one whose re-run succeeded; `unmapped_top`
+  (the search's first choice had no catanatron equivalent and the best
+  mapped one was played) is reported but is not a failure;
+* condition 5 fails only when a 1v3 rate <= 0.25 has two-sided exact
+  p <= 0.01 (minlike rule, as scipy and R);
+* both claims also require the data to be the registered data: exactly
+  games 0..N-1 of the registered seed, the registered opponent with default
+  parameters, engine, format and seats, the registered spec, trades off,
+  `PYTHONHASHSEED=0`, 10 VP to win and discard limit 7, each read from the
+  bench's run metadata (a field that is missing, or results without that
+  metadata, count as not registered); the opponent must match both as
+  preset and as class (on 3.3 the stand-ins `vf` / `ab` have catanatron's
+  class names).
