@@ -146,7 +146,7 @@ class Server:
     def hello(self) -> dict:
         info = {"protocol": PROTOCOL, "label": self.label, "spec": self.spec, "pid": os.getpid(),
                 "python": sys.version.split()[0], "executable": sys.executable,
-                "catanbot_file": os.path.abspath(self.catanbot.__file__),
+                "catanbot_file": os.path.realpath(self.catanbot.__file__),
                 "hash_seed": os.environ.get("PYTHONHASHSEED"),
                 "catanbot_env": {k: v for k, v in os.environ.items() if k.startswith("CATANBOT_")},
                 "shim": bool(self.shim)}
@@ -162,7 +162,7 @@ class Server:
             info["accel"] = False
             info["accel_error"] = repr(exc)
         if self.tree:
-            info["tree_ok"] = info["catanbot_file"].startswith(os.path.abspath(self.tree) + os.sep)
+            info["tree_ok"] = info["catanbot_file"].startswith(os.path.realpath(self.tree) + os.sep)
         return info
 
     # --- state handling ----------------------------------------------------

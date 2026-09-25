@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import gate as G
+from .match import ServerError
 from .registry import (DEFAULT_GATES_DIR, DEFAULT_LEAGUE_HOME, DEFAULT_REGISTRY, REPO_ROOT, Champion, LeagueError,
                        Registry, materialize, resolve_commit, sha256_file, spec_model, spec_with_model, tree_commit)
 
@@ -254,6 +255,8 @@ def cmd_status(args) -> int:
             for k, s in st["summaries"].items():
                 share = "-" if s["share"] is None else f"{s['share']:.3f}"
                 print(f"      {k}: {s['wins']}/{s['decisive']} = {share}  p(better) {s['p_greater']:.3g}")
+            if str(p.get("state", "")).startswith("error"):
+                print(f"      stopped by {p['state']}")
             if st["state"] == "stopped":
                 print(f"      resume: scripts/league.py gate --resume {st['gate_id']}")
     return 0
@@ -348,6 +351,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.fn(args)
-    except LeagueError as exc:
-        print(f"league: error: {exc}", file=sys.stderr)
+    except (LeagueError, ServerError) as exc:
+        print(f"league: error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2

@@ -671,6 +671,13 @@ def run_gate(cfg: GateConfig, gate_dir: Path, seat_factory: Optional[SeatFactory
                                     if i not in recs.get(c, {}))
                     progress.update(ev2["complete_looks"] + 1, remaining, state="interrupted")
                     return {"interrupted": True, "games_done": progress.done}
+    except BaseException as exc:
+        # version skew, a server that cannot start, too many voids, Ctrl-C: the records so far stay valid
+        try:
+            progress.update(-1, -1, state=f"error: {type(exc).__name__}: {str(exc)[:300]}")
+        except Exception:
+            pass
+        raise
     finally:
         for p in pools:
             p.close()

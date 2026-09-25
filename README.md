@@ -60,3 +60,4 @@ uncertain is flagged and correctable with `--fix`.
 `python -m catanbot train` runs the self-play loop (see `docs/USAGE.md`).
 Results of the training run shipped in `models/value_net.npz` are in
 `docs/RESULTS.md`.
+Champion league and promotion gate for every new training run / strategy (exact old bots, sequential tests): `docs/LEAGUE.md`.

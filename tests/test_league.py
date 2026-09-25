@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 from fractions import Fraction
 from itertools import combinations
@@ -208,7 +209,7 @@ def test_serve_round_trip_real_game_matches_in_process(tree_copy, tmp_path):
 
     r1, log1, info = run({0, 2})
     r2, log2, _ = run(set())
-    assert info[0]["catanbot_file"].startswith(str(tree_copy))
+    assert info[0]["catanbot_file"].startswith(os.path.realpath(tree_copy))
     assert log1 == log2 and len(log1) == r1["actions"]
     assert (r1["winner"], r1["vps"], r1["turns"]) == (r2["winner"], r2["vps"], r2["turns"])
     assert r1["seats"][2]["observes"] == r1["actions"]          # the search bot observed every action
@@ -498,7 +499,7 @@ def test_cli_gate_with_servers_status_and_promote_refusal(tree_copy, tmp_path, c
     assert len(recs) == 2 and all(r["specs"].count("heuristic:temp=0.3") == 2 for r in recs)
     assert all(len(r["seat_stats"]) == 4 and r["seat_stats"][0]["decisions"] > 0 for r in recs)
     servers = json.loads((gd / "servers.json").read_text())
-    assert servers["candidate"]["catanbot_file"].startswith(str(tree_copy))
+    assert servers["candidate"]["catanbot_file"].startswith(os.path.realpath(tree_copy))
     assert json.loads((gd / "verdict.json").read_text())["verdict"] == "FAIL"
     capsys.readouterr()
     assert L.main(common + ["status"]) == 0

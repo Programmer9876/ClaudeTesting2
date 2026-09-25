@@ -219,6 +219,23 @@ def test_build_runs_tunable_and_specs():
     assert aa[0]["cand_key"] != aa[0]["def_key"]
 
 
+def test_information_mode_passes_through_to_both_arms():
+    """``--info counted`` (bench_catanatron.py's option) reaches CatanbotPlayer on both arms; the default
+    ``full`` adds nothing, so the keys of every earlier full-information arm are unchanged."""
+    runs, _ = AB.build_runs(_args(["--cand-spec", "heuristic", "--def-spec", "heuristic", "--opponent", "vf"]))
+    assert runs[0]["cand"]["adapter"] == runs[0]["def"]["adapter"] == {"trades": "off"}
+    runs, _ = AB.build_runs(_args(["--cand-spec", "heuristic", "--def-spec", "heuristic", "--opponent", "vf",
+                                   "--info", "counted", "--info-samples", "2", "--discards-public"]))
+    want = {"trades": "off", "info": "counted", "info_samples": 2, "discards_public": True}
+    assert runs[0]["cand"]["adapter"] == runs[0]["def"]["adapter"] == want
+    assert AB._catanbot_kwargs(want) == {"info": "counted", "info_samples": 2, "discards_public": True,
+                                         "suppress_trades": True}
+    runs, _ = AB.build_runs(_args(["--cand-spec", "heuristic", "--def-spec", "heuristic", "--opponent", "vf",
+                                   "--cand-adapter-opt", "info=counted"]))
+    assert runs[0]["cand"]["adapter"] == {"trades": "off", "info": "counted"}
+    assert runs[0]["def"]["adapter"] == {"trades": "off"}
+
+
 def test_catanbot_kwargs_follow_the_bench():
     assert AB._catanbot_kwargs({"trades": "off"}) == {"suppress_trades": True}
     assert AB._catanbot_kwargs({"trades": "value", "strict": False}) == {"suppress_trades": False, "strict": False}
