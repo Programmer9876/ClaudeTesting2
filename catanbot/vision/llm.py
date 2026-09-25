@@ -201,7 +201,9 @@ side 0 = upper-right edge, 1 = right (vertical) edge, 2 = lower-right edge,
   `resources` with the exact hand from the hand bar; if the development cards in the hand bar
   are visible, give `dev_cards` as an object with exact counts by type, otherwise an integer.
 - `me` is the colour of the screen owner; `current_player` is the colour of the player on
-  turn; `dice` is the last dice total shown (omit if none is visible).
+  turn; `dice` is the last dice total shown (omit if none is visible). Set `rolled` to true when
+  the player on turn has already rolled this turn and to false when the roll is still pending
+  (the dice may still display the previous player's roll); omit it if you cannot tell.
 - If the bank stock or the size of the development deck is displayed, report `bank` /
   `dev_deck_remaining`; otherwise omit them.
 
@@ -523,21 +525,21 @@ def _import_anthropic() -> Any:
 
 
 def _make_client(api_key: Optional[str]) -> Any:
+    """Build the SDK client, letting the SDK resolve credentials itself.
+
+    Besides ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_AUTH_TOKEN`` the SDK can use a
+    stored ``ant auth login`` profile or workload-identity variables, so no
+    environment pre-check is done here; the SDK's own credential error is
+    translated into a hint.
+    """
     anthropic = _import_anthropic()
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-    has_profile = bool(os.environ.get("ANTHROPIC_PROFILE"))
-    if not key and not has_profile:
-        raise RuntimeError(
-            "No Anthropic API key found. Set one with:\n"
-            "    export ANTHROPIC_API_KEY=sk-ant-...\n"
-            "(or pass api_key=... to parse_with_claude, or log in with `ant auth login`)."
-        )
     try:
         return anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
     except Exception as exc:  # the SDK raises AnthropicError when no credential resolves
         raise RuntimeError(
-            f"Could not create the Anthropic client: {exc}. "
-            "Set ANTHROPIC_API_KEY (export ANTHROPIC_API_KEY=sk-ant-...) or pass api_key=..."
+            f"No Anthropic credentials found ({exc}). Set an API key with:\n"
+            "    export ANTHROPIC_API_KEY=sk-ant-...\n"
+            "(or pass api_key=... to parse_with_claude, or log in with `ant auth login`)."
         ) from exc
 
 
@@ -677,12 +679,23 @@ def parse_with_claude(path_or_image: _ImageLike, me: Optional[str] = None, model
     parsed = convert_pieces(raw, warnings)
     confidence = _normalise_confidence(parsed.pop("confidence", None), warnings)
     colors = [str(p.get("color", "")).strip().lower() for p in parsed.get("players", []) if isinstance(p, dict)]
-    if me:
-        if colors and me not in colors:
-            warnings.append(f"requested me={me!r} is not one of the detected players {colors}")
+    model_me = parsed.get("me")
+    model_me = model_me.strip().lower() if isinstance(model_me, str) and model_me.strip() else None
+    if me and (me in colors or not colors):
         parsed["me"] = me
-    elif "me" not in parsed and colors:
+    elif me:
+        # Same contract as the CV parser: an unknown colour is reported, never propagated,
+        # so ``state.player_index(parsed["me"])`` cannot fail downstream.
+        fallback = model_me if model_me in colors else colors[0]
+        warnings.append(f"requested me={me!r} is not one of the detected players {colors}; using {fallback!r}")
+        parsed["me"] = fallback
+    elif model_me is None and colors:
         warnings.append("model did not identify the screen owner; assuming the first player")
+        parsed["me"] = colors[0]
+    elif model_me is not None and colors and model_me not in colors:
+        warnings.append(f"model reported me={model_me!r} which is not one of the detected players {colors}; "
+                        f"assuming {colors[0]!r}")
+        parsed["me"] = colors[0]
     warnings.extend(S.validate(parsed))
     state = S.parsed_to_state(parsed)
     debug: Dict[str, Any] = {

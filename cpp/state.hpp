@@ -9,9 +9,11 @@
 //
 // The converter (`state_from_python`) reads the attributes of a
 // catanbot.state.GameState / Player / TradeOffer directly through the CPython
-// C API (interned attribute names, PySequence_Fast, PyLong_AsLong) - it never
-// goes through GameState.to_dict().  Define CATAN_NO_PYTHON to use the struct
-// without Python.h.
+// C API (interned attribute names, PySequence_Fast, PyLong_AsLongAndOverflow) -
+// it never goes through GameState.to_dict().  Every integer is range-checked
+// against the 32-bit fields below; a state the struct cannot represent raises
+// `unsupported_state` (never a silently wrapped value).  Define CATAN_NO_PYTHON
+// to use the struct without Python.h.
 #pragma once
 
 #include <cstdint>
@@ -25,6 +27,21 @@
 namespace catanbot {
 
 constexpr int MAX_DISCARD_QUEUE = 8;
+
+// Thrown (by the converter below and by the feature code) for a GameState the
+// extension cannot represent: more than MAX_PLAYERS players, lists of the wrong
+// length, ids out of range, integers outside the 32-bit fields, more than 64
+// road entries for one player.  The Python reference implementation handles
+// many of these states, so module.cpp exposes the type as
+// `catanbot_core.UnsupportedStateError` (a ValueError subclass) and
+// catanbot.accel falls back to Python when it sees one.
+struct unsupported_state : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+[[noreturn]] inline void unsupported(const std::string& msg) {
+    throw unsupported_state("catanbot_core: unsupported GameState: " + msg);
+}
 
 struct PlayerC {
     int32_t resources[NUM_RESOURCES] = {0, 0, 0, 0, 0};
@@ -140,16 +157,23 @@ struct GameStateC {
 namespace catanbot {
 namespace detail {
 
+// An interned attribute name plus the same text as a C string (for error messages).
+struct Attr {
+    PyObject* obj = nullptr;
+    const char* name = "";
+    operator PyObject*() const { return obj; }
+};
+
 // Interned attribute names, created once (leaked on purpose: they must outlive
 // every static destructor that could run after interpreter finalisation).
 struct Names {
-    PyObject *hexes, *robber, *ports, *players, *bank, *dev_deck, *current, *phase, *turn, *setup_round,
-        *setup_last_settlement, *dice, *dev_played_this_turn, *free_roads, *discard_queue, *pending_trade,
-        *trade_responder, *trades_this_turn, *longest_road_owner, *longest_road_len, *largest_army_owner,
-        *winner, *max_turns;
-    PyObject *resources, *dev_cards, *dev_cards_new, *played_knights, *settlements, *cities, *roads,
-        *hand_known, *hand_size, *dev_known, *dev_count;
-    PyObject *proposer, *give, *get, *responses;
+    Attr hexes, robber, ports, players, bank, dev_deck, current, phase, turn, setup_round,
+        setup_last_settlement, dice, dev_played_this_turn, free_roads, discard_queue, pending_trade,
+        trade_responder, trades_this_turn, longest_road_owner, longest_road_len, largest_army_owner,
+        winner, max_turns;
+    Attr resources, dev_cards, dev_cards_new, played_knights, settlements, cities, roads,
+        hand_known, hand_size, dev_known, dev_count;
+    Attr proposer, give, get, responses;
     PyObject* phase_str[NUM_PHASES];
 };
 
@@ -159,56 +183,56 @@ inline PyObject* intern(const char* s) {
     return o;
 }
 
+inline Attr attr(const char* s) { return Attr{intern(s), s}; }
+
 inline const Names& names() {
     static const Names* n = [] {
         Names* m = new Names();
-        m->hexes = intern("hexes");
-        m->robber = intern("robber");
-        m->ports = intern("ports");
-        m->players = intern("players");
-        m->bank = intern("bank");
-        m->dev_deck = intern("dev_deck");
-        m->current = intern("current");
-        m->phase = intern("phase");
-        m->turn = intern("turn");
-        m->setup_round = intern("setup_round");
-        m->setup_last_settlement = intern("setup_last_settlement");
-        m->dice = intern("dice");
-        m->dev_played_this_turn = intern("dev_played_this_turn");
-        m->free_roads = intern("free_roads");
-        m->discard_queue = intern("discard_queue");
-        m->pending_trade = intern("pending_trade");
-        m->trade_responder = intern("trade_responder");
-        m->trades_this_turn = intern("trades_this_turn");
-        m->longest_road_owner = intern("longest_road_owner");
-        m->longest_road_len = intern("longest_road_len");
-        m->largest_army_owner = intern("largest_army_owner");
-        m->winner = intern("winner");
-        m->max_turns = intern("max_turns");
-        m->resources = intern("resources");
-        m->dev_cards = intern("dev_cards");
-        m->dev_cards_new = intern("dev_cards_new");
-        m->played_knights = intern("played_knights");
-        m->settlements = intern("settlements");
-        m->cities = intern("cities");
-        m->roads = intern("roads");
-        m->hand_known = intern("hand_known");
-        m->hand_size = intern("hand_size");
-        m->dev_known = intern("dev_known");
-        m->dev_count = intern("dev_count");
-        m->proposer = intern("proposer");
-        m->give = intern("give");
-        m->get = intern("get");
-        m->responses = intern("responses");
+        m->hexes = attr("hexes");
+        m->robber = attr("robber");
+        m->ports = attr("ports");
+        m->players = attr("players");
+        m->bank = attr("bank");
+        m->dev_deck = attr("dev_deck");
+        m->current = attr("current");
+        m->phase = attr("phase");
+        m->turn = attr("turn");
+        m->setup_round = attr("setup_round");
+        m->setup_last_settlement = attr("setup_last_settlement");
+        m->dice = attr("dice");
+        m->dev_played_this_turn = attr("dev_played_this_turn");
+        m->free_roads = attr("free_roads");
+        m->discard_queue = attr("discard_queue");
+        m->pending_trade = attr("pending_trade");
+        m->trade_responder = attr("trade_responder");
+        m->trades_this_turn = attr("trades_this_turn");
+        m->longest_road_owner = attr("longest_road_owner");
+        m->longest_road_len = attr("longest_road_len");
+        m->largest_army_owner = attr("largest_army_owner");
+        m->winner = attr("winner");
+        m->max_turns = attr("max_turns");
+        m->resources = attr("resources");
+        m->dev_cards = attr("dev_cards");
+        m->dev_cards_new = attr("dev_cards_new");
+        m->played_knights = attr("played_knights");
+        m->settlements = attr("settlements");
+        m->cities = attr("cities");
+        m->roads = attr("roads");
+        m->hand_known = attr("hand_known");
+        m->hand_size = attr("hand_size");
+        m->dev_known = attr("dev_known");
+        m->dev_count = attr("dev_count");
+        m->proposer = attr("proposer");
+        m->give = attr("give");
+        m->get = attr("get");
+        m->responses = attr("responses");
         for (int i = 0; i < NUM_PHASES; ++i) m->phase_str[i] = intern(PHASE_NAMES[i]);
         return m;
     }();
     return *n;
 }
 
-[[noreturn]] inline void bad_state(const std::string& msg) {
-    throw pybind11::value_error("catanbot_core: invalid GameState: " + msg);
-}
+[[noreturn]] inline void bad_state(const std::string& msg) { unsupported(msg); }
 
 // Owned reference helper (tiny RAII wrapper, no pybind11 overhead in the hot path).
 struct Ref {
@@ -225,23 +249,38 @@ inline PyObject* getattr(PyObject* obj, PyObject* name) {
     return v;  // new reference
 }
 
-inline long to_long(PyObject* v) {
-    long r = PyLong_AsLong(v);
+// Python int (or anything int() accepts: floats and numpy scalars are truncated) -> long.
+// An int beyond the range of a C long has no counterpart in GameStateC and is reported as
+// unsupported (`what` names the field) instead of raising OverflowError.
+inline long to_long(PyObject* v, const char* what) {
+    int overflow = 0;
+    long r = PyLong_AsLongAndOverflow(v, &overflow);
+    if (overflow) bad_state(std::string(what) + " does not fit in 64 bits");
     if (r == -1 && PyErr_Occurred()) {
         // Lenient fallback for floats / numpy scalars that are not ints.
         PyErr_Clear();
         PyObject* i = PyNumber_Long(v);
         if (!i) throw pybind11::error_already_set();
-        r = PyLong_AsLong(i);
+        r = PyLong_AsLongAndOverflow(i, &overflow);
         Py_DECREF(i);
+        if (overflow) bad_state(std::string(what) + " does not fit in 64 bits");
         if (r == -1 && PyErr_Occurred()) throw pybind11::error_already_set();
     }
     return r;
 }
 
-inline long get_long(PyObject* obj, PyObject* name) {
-    Ref v(getattr(obj, name));
-    return to_long(v.p);
+// Every integer field of GameStateC is 32 bits wide: a value outside that range is rejected
+// rather than narrowed (robber = 2**32 + 5 must not silently become hex 5).
+inline int32_t to_int32(PyObject* v, const char* what) {
+    const long r = to_long(v, what);
+    if (r < INT32_MIN || r > INT32_MAX)
+        bad_state(std::string(what) + " = " + std::to_string(r) + " is outside the supported 32-bit range");
+    return (int32_t)r;
+}
+
+inline int32_t get_int32(PyObject* obj, const Attr& a) {
+    Ref v(getattr(obj, a.obj));
+    return to_int32(v.p, a.name);
 }
 
 inline bool get_bool(PyObject* obj, PyObject* name) {
@@ -251,6 +290,15 @@ inline bool get_bool(PyObject* obj, PyObject* name) {
     return r != 0;
 }
 
+// Dict key -> int, or -1 when the key is not an int or is too big for a long: such a key can
+// never name a vertex / player, and no Python error is left pending (PyLong_AsLong would set one).
+inline long key_to_long(PyObject* key) {
+    if (!PyLong_Check(key)) return -1;
+    int overflow = 0;
+    const long v = PyLong_AsLongAndOverflow(key, &overflow);
+    return overflow ? -1 : v;
+}
+
 // Read a sequence of ints into out[0..cap); returns the length.  Raises when longer than cap.
 inline int read_ints(PyObject* seq, int32_t* out, int cap, const char* what) {
     Ref fast(PySequence_Fast(seq, "expected a sequence"));
@@ -258,7 +306,7 @@ inline int read_ints(PyObject* seq, int32_t* out, int cap, const char* what) {
     Py_ssize_t n = PySequence_Fast_GET_SIZE(fast.p);
     if (n > cap) bad_state(std::string(what) + " has " + std::to_string(n) + " entries (max " + std::to_string(cap) + ")");
     PyObject** items = PySequence_Fast_ITEMS(fast.p);
-    for (Py_ssize_t i = 0; i < n; ++i) out[i] = (int32_t)to_long(items[i]);
+    for (Py_ssize_t i = 0; i < n; ++i) out[i] = to_int32(items[i], what);
     return (int)n;
 }
 
@@ -280,7 +328,7 @@ inline int read_ids(PyObject* obj, PyObject* name, uint8_t* out, int cap, int li
     if (n > cap) bad_state(std::string(what) + " has " + std::to_string(n) + " entries (max " + std::to_string(cap) + ")");
     PyObject** items = PySequence_Fast_ITEMS(fast.p);
     for (Py_ssize_t i = 0; i < n; ++i) {
-        long id = to_long(items[i]);
+        long id = to_long(items[i], what);
         if (id < 0 || id >= limit)
             bad_state(std::string(what) + " id " + std::to_string(id) + " out of range [0, " + std::to_string(limit) + ")");
         out[i] = (uint8_t)id;
@@ -308,7 +356,7 @@ inline void read_player(PyObject* obj, PlayerC& p) {
     read_exact5(obj, N.resources, p.resources, "Player.resources");
     read_exact5(obj, N.dev_cards, p.dev_cards, "Player.dev_cards");
     read_exact5(obj, N.dev_cards_new, p.dev_cards_new, "Player.dev_cards_new");
-    p.played_knights = (int32_t)get_long(obj, N.played_knights);
+    p.played_knights = get_int32(obj, N.played_knights);
     uint64_t sb[2] = {0, 0}, cb[2] = {0, 0};
     p.n_settlements = read_ids(obj, N.settlements, p.settlements, NUM_VERTICES, NUM_VERTICES, sb, "Player.settlements");
     p.n_cities = read_ids(obj, N.cities, p.cities, NUM_VERTICES, NUM_VERTICES, cb, "Player.cities");
@@ -317,9 +365,9 @@ inline void read_player(PyObject* obj, PlayerC& p) {
     p.road_bits[0] = p.road_bits[1] = 0;
     p.n_roads = read_ids(obj, N.roads, p.roads, NUM_EDGES, NUM_EDGES, p.road_bits, "Player.roads");
     p.hand_known = get_bool(obj, N.hand_known);
-    p.hand_size = (int32_t)get_long(obj, N.hand_size);
+    p.hand_size = get_int32(obj, N.hand_size);
     p.dev_known = get_bool(obj, N.dev_known);
-    p.dev_count = (int32_t)get_long(obj, N.dev_count);
+    p.dev_count = get_int32(obj, N.dev_count);
 }
 
 inline void read_ports(PyObject* obj, int8_t* ports) {
@@ -332,11 +380,10 @@ inline void read_ports(PyObject* obj, int8_t* ports) {
         PyObject *key, *val;
         Py_ssize_t pos = 0;
         while (PyDict_Next(d.p, &pos, &key, &val)) {
-            if (!PyLong_Check(key)) continue;  // a non-int key can never match an int vertex
-            long v = PyLong_AsLong(key);
+            const long v = key_to_long(key);
             if (v < 0 || v >= NUM_VERTICES) continue;  // never queried by the feature code
-            long t = to_long(val);
-            ports[v] = (int8_t)(t < -128 ? -128 : (t > 127 ? 127 : t));
+            const long t = to_long(val, "port type");
+            ports[v] = (int8_t)(t < -128 ? -128 : (t > 127 ? 127 : t));  // outside 0..5 = ignored
         }
     } else {
         Ref fast(PySequence_Fast(items.p, "ports.items()"));
@@ -346,11 +393,9 @@ inline void read_ports(PyObject* obj, int8_t* ports) {
         for (Py_ssize_t i = 0; i < n; ++i) {
             PyObject* kv = arr[i];
             if (!PyTuple_Check(kv) || PyTuple_GET_SIZE(kv) != 2) bad_state("ports items");
-            PyObject* key = PyTuple_GET_ITEM(kv, 0);
-            if (!PyLong_Check(key)) continue;
-            long v = PyLong_AsLong(key);
+            const long v = key_to_long(PyTuple_GET_ITEM(kv, 0));
             if (v < 0 || v >= NUM_VERTICES) continue;
-            long t = to_long(PyTuple_GET_ITEM(kv, 1));
+            const long t = to_long(PyTuple_GET_ITEM(kv, 1), "port type");
             ports[v] = (int8_t)(t < -128 ? -128 : (t > 127 ? 127 : t));
         }
     }
@@ -365,18 +410,26 @@ inline void read_hexes(PyObject* obj, GameStateC& s) {
     PyObject** items = PySequence_Fast_ITEMS(fast.p);
     for (int i = 0; i < NUM_HEXES; ++i) {
         PyObject* pair = items[i];
-        long res, num;
+        PyObject *res_o, *num_o;
+        Ref seq(nullptr);
         if (PyTuple_Check(pair) && PyTuple_GET_SIZE(pair) == 2) {
-            res = to_long(PyTuple_GET_ITEM(pair, 0));
-            num = to_long(PyTuple_GET_ITEM(pair, 1));
+            res_o = PyTuple_GET_ITEM(pair, 0);
+            num_o = PyTuple_GET_ITEM(pair, 1);
         } else {
-            int32_t tmp[2];
-            if (read_ints(pair, tmp, 2, "hex") != 2) bad_state("hex entries must be (resource, number) pairs");
-            res = tmp[0];
-            num = tmp[1];
+            seq.p = PySequence_Fast(pair, "hex entries must be (resource, number) pairs");
+            if (!seq.p) throw pybind11::error_already_set();
+            if (PySequence_Fast_GET_SIZE(seq.p) != 2) bad_state("hex entries must be (resource, number) pairs");
+            res_o = PySequence_Fast_GET_ITEM(seq.p, 0);
+            num_o = PySequence_Fast_GET_ITEM(seq.p, 1);
         }
+        const long res = to_long(res_o, "hex resource");
         if (res < 0 || res > DESERT) bad_state("hex resource " + std::to_string(res) + " out of range");
         s.hex_res[i] = (int8_t)res;
+        if (res == DESERT) {  // the desert's number is never read by the Python code (it may be None)
+            s.hex_num[i] = 0;
+            continue;
+        }
+        const long num = to_long(num_o, "hex number");
         s.hex_num[i] = (int8_t)(num < -128 ? -128 : (num > 127 ? 127 : num));  // PIPS lookup treats it as "no pips"
     }
 }
@@ -388,7 +441,7 @@ inline void read_trade(PyObject* obj, GameStateC& s) {
     if (t.p == Py_None) return;
     s.has_pending_trade = true;
     TradeC& tr = s.pending_trade;
-    tr.proposer = (int32_t)get_long(t.p, N.proposer);
+    tr.proposer = get_int32(t.p, N.proposer);
     read_exact5(t.p, N.give, tr.give, "TradeOffer.give");
     read_exact5(t.p, N.get, tr.get, "TradeOffer.get");
     for (int i = 0; i < MAX_PLAYERS; ++i) tr.responses[i] = -1;
@@ -398,8 +451,7 @@ inline void read_trade(PyObject* obj, GameStateC& s) {
             PyObject *key, *val;
             Py_ssize_t pos = 0;
             while (PyDict_Next(r.p, &pos, &key, &val)) {
-                if (!PyLong_Check(key)) continue;
-                long k = PyLong_AsLong(key);
+                const long k = key_to_long(key);
                 if (k < 0 || k >= MAX_PLAYERS) continue;
                 int b = PyObject_IsTrue(val);
                 if (b < 0) throw pybind11::error_already_set();
@@ -412,14 +464,15 @@ inline void read_trade(PyObject* obj, GameStateC& s) {
 }  // namespace detail
 
 // Fill `s` from a catanbot.state.GameState instance (attribute access, no to_dict()).
-// Throws pybind11::error_already_set on Python errors and pybind11::value_error on
-// malformed states (wrong list lengths, ids out of range, > MAX_PLAYERS players).
+// Throws pybind11::error_already_set on Python errors and catanbot::unsupported_state
+// (-> catanbot_core.UnsupportedStateError, a ValueError) on states the struct cannot hold
+// (wrong list lengths, ids out of range, > MAX_PLAYERS players, integers outside 32 bits).
 inline void state_from_python(PyObject* obj, GameStateC& s) {
     using namespace detail;
     const Names& N = names();
     s = GameStateC{};
     read_hexes(obj, s);
-    s.robber = (int32_t)get_long(obj, N.robber);
+    s.robber = get_int32(obj, N.robber);
     read_ports(obj, s.ports);
     {
         Ref pl(getattr(obj, N.players));
@@ -433,26 +486,26 @@ inline void state_from_python(PyObject* obj, GameStateC& s) {
     }
     read_exact5(obj, N.bank, s.bank, "GameState.bank");
     read_exact5(obj, N.dev_deck, s.dev_deck, "GameState.dev_deck");
-    s.current = (int32_t)get_long(obj, N.current);
+    s.current = get_int32(obj, N.current);
     s.phase = read_phase(obj);
-    s.turn = (int32_t)get_long(obj, N.turn);
-    s.setup_round = (int32_t)get_long(obj, N.setup_round);
-    s.setup_last_settlement = (int32_t)get_long(obj, N.setup_last_settlement);
-    s.dice = (int32_t)get_long(obj, N.dice);
+    s.turn = get_int32(obj, N.turn);
+    s.setup_round = get_int32(obj, N.setup_round);
+    s.setup_last_settlement = get_int32(obj, N.setup_last_settlement);
+    s.dice = get_int32(obj, N.dice);
     s.dev_played_this_turn = get_bool(obj, N.dev_played_this_turn);
-    s.free_roads = (int32_t)get_long(obj, N.free_roads);
+    s.free_roads = get_int32(obj, N.free_roads);
     {
         Ref q(getattr(obj, N.discard_queue));
         s.n_discard = read_ints(q.p, s.discard_queue, MAX_DISCARD_QUEUE, "GameState.discard_queue");
     }
     read_trade(obj, s);
-    s.trade_responder = (int32_t)get_long(obj, N.trade_responder);
-    s.trades_this_turn = (int32_t)get_long(obj, N.trades_this_turn);
-    s.longest_road_owner = (int32_t)get_long(obj, N.longest_road_owner);
-    s.longest_road_len = (int32_t)get_long(obj, N.longest_road_len);
-    s.largest_army_owner = (int32_t)get_long(obj, N.largest_army_owner);
-    s.winner = (int32_t)get_long(obj, N.winner);
-    s.max_turns = (int32_t)get_long(obj, N.max_turns);
+    s.trade_responder = get_int32(obj, N.trade_responder);
+    s.trades_this_turn = get_int32(obj, N.trades_this_turn);
+    s.longest_road_owner = get_int32(obj, N.longest_road_owner);
+    s.longest_road_len = get_int32(obj, N.longest_road_len);
+    s.largest_army_owner = get_int32(obj, N.largest_army_owner);
+    s.winner = get_int32(obj, N.winner);
+    s.max_turns = get_int32(obj, N.max_turns);
 }
 
 inline GameStateC state_from_python(pybind11::handle obj) {

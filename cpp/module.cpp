@@ -14,6 +14,11 @@
 // distinct consecutive object (like features.extract_batch) with the raw
 // CPython API (see state.hpp).  The GIL is held throughout (the work per state
 // is a few microseconds, releasing it would cost more than it saves).
+//
+// A state the C++ structs cannot represent (> 4 players, lists of the wrong
+// length, ids / integers out of range, > 64 road entries) raises
+// `UnsupportedStateError` (a ValueError subclass, from catanbot::unsupported_state);
+// catanbot.accel catches it and falls back to the Python reference.
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
@@ -252,6 +257,10 @@ double progress_to_build_py(py::handle state, long player) {
 PYBIND11_MODULE(catanbot_core, m) {
     m.doc() = "C++ feature extraction and heuristic evaluation for catanbot (exact ports of "
               "catanbot.features.extract and catanbot.heuristic.static_value)";
+    py::register_exception<unsupported_state>(m, "UnsupportedStateError", PyExc_ValueError)
+        .attr("__doc__") = "The GameState cannot be represented by the extension (more than 4 players, lists "
+                           "of the wrong length, ids or integers out of range, more than 64 road entries); "
+                           "catanbot.accel falls back to the Python implementation for such states.";
     m.def("extract_batch", &extract_batch, py::arg("states"), py::arg("players"),
           "Feature matrix (N, NUM_FEATURES) float32 for the (state, player) pairs.");
     m.def("extract", &extract, py::arg("state"), py::arg("player"),
@@ -295,5 +304,5 @@ PYBIND11_MODULE(catanbot_core, m) {
     m.attr("PLAYER_BLOCK") = (int)PLAYER_BLOCK;
     m.attr("GLOBAL_BLOCK") = (int)GLOBAL_BLOCK;
     m.attr("MAX_PLAYERS") = (int)MAX_PLAYERS;
-    m.attr("__version__") = "0.2.0";
+    m.attr("__version__") = "0.2.1";
 }

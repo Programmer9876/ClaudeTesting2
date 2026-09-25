@@ -827,6 +827,67 @@ def test_settlement_cut_drops_holder_to_nobody_unique_or_tie():
     assert s.longest_road_owner == 2 and s.longest_road_len == 6
 
 
+def _external_state(red_roads: Sequence[int], blue_roads: Sequence[int], owner: int, length: int) -> GameState:
+    """A hand-built 2-player position round-tripped through JSON with the award fields forced.
+
+    ``GameState.from_dict`` (like ``vision.schema.parsed_to_state`` with a badge
+    from the player panel) takes ``longest_road_owner`` verbatim, so the recorded
+    holder's real trail may be shorter than 5.  Red (player 0, to move) can afford
+    one road.
+    """
+    s = blank_main(2)
+    s.players[0].settlements.append(CORNER[0])
+    s.players[0].roads = list(red_roads)
+    s.players[1].settlements.append(B.HEX_VERTICES[FAR_B][0])
+    s.players[1].roads = list(blue_roads)
+    set_hand(s, 0, [1, 1, 0, 0, 0])
+    d = s.to_dict()
+    d["longest_road_owner"] = owner
+    d["longest_road_len"] = length
+    return GameState.from_dict(d)
+
+
+def test_road_build_on_external_state_never_awards_or_keeps_a_sub_five_trail():
+    """The fast path must not trust a recorded holder whose trail is < 5 (missed road in a screenshot)."""
+    blue = list(B.HEX_EDGES[FAR_B][:3])                    # blue's real trail is 3 but it wears the badge
+    # a branch off the middle: 5 roads yet still a 4-trail -> nobody qualifies (not "4 > 3, award")
+    s = _external_state(RING[:4], blue, owner=1, length=5)
+    assert E.longest_road_length(s, 1) == 3 and s.longest_road_owner == 1
+    s = E.apply(s, (A.BUILD_ROAD, outward_edge(CENTER, 2)))
+    assert E.longest_road_length(s, 0) == 4
+    assert s.longest_road_owner == -1 and s.longest_road_len == 0
+    assert E.count_vp(s, 0) == 1 and E.count_vp(s, 1) == 1
+    # the builder only ties the stale holder below 5: the holder is dropped, not kept at length 3
+    scattered = RING[:2] + [B.HEX_EDGES[FAR_A][0], B.HEX_EDGES[FAR_A][2], B.HEX_EDGES[FAR_A][4]]
+    s = _external_state(scattered, blue, owner=1, length=5)
+    s = E.apply(s, (A.BUILD_ROAD, RING[2]))
+    assert E.longest_road_length(s, 0) == 3 == E.longest_road_length(s, 1)
+    assert s.longest_road_owner == -1 and s.longest_road_len == 0
+    # a build that really reaches 5 takes the card from the stale holder
+    s = _external_state(RING[:4], blue, owner=1, length=5)
+    s = E.apply(s, (A.BUILD_ROAD, RING[4]))
+    assert s.longest_road_owner == 0 and s.longest_road_len == 5 and E.count_vp(s, 0) == 3
+    # the recorded holder is the builder itself and is still short of 5 after the build
+    s = _external_state(RING[:3] + [B.HEX_EDGES[FAR_A][0], B.HEX_EDGES[FAR_A][2]], blue, owner=0, length=5)
+    s = E.apply(s, (A.BUILD_ROAD, RING[3]))
+    assert E.longest_road_length(s, 0) == 4
+    assert s.longest_road_owner == -1 and s.longest_road_len == 0
+    set_hand(s, 0, [1, 1, 0, 0, 0])
+    s = E.apply(s, (A.BUILD_ROAD, RING[4]))                # ... and qualifies with the next road
+    assert s.longest_road_owner == 0 and s.longest_road_len == 5 and E.count_vp(s, 0) == 3
+    # a stale recorded length is re-derived from the holder's real trail
+    s = _external_state(RING[:5], blue, owner=0, length=9)
+    s = E.apply(s, (A.BUILD_ROAD, outward_edge(CENTER, 5)))
+    assert s.longest_road_owner == 0 and s.longest_road_len == 6
+    # a genuine holder is still handled by the shortcut exactly as before (tie keeps, 6 > 5 takes over)
+    s = _external_state(RING[:4], list(B.HEX_EDGES[FAR_B][:5]), owner=1, length=5)
+    s = E.apply(s, (A.BUILD_ROAD, RING[4]))
+    assert s.longest_road_owner == 1 and s.longest_road_len == 5
+    set_hand(s, 0, [1, 1, 0, 0, 0])
+    s = E.apply(s, (A.BUILD_ROAD, outward_edge(CENTER, 5)))
+    assert s.longest_road_owner == 0 and s.longest_road_len == 6
+
+
 # ---------------------------------------------------------------------------
 # trading
 # ---------------------------------------------------------------------------

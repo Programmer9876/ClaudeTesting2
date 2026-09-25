@@ -2,8 +2,11 @@
 
 Pure catanatron: this module imports nothing from ``catanbot`` so the players
 can be dropped into any ``catanatron.game.Game`` (they are in the spirit of
-the ``ValueFunctionPlayer`` / ``AlphaBetaPlayer`` of the Catanatron project,
-which are not shipped on PyPI).
+the ``ValueFunctionPlayer`` / ``AlphaBetaPlayer`` of the Catanatron project).
+It works with catanatron 3.2.1 (PyPI wheel) and with the 3.3.x engine (the
+GitHub checkout: ``game.playable_actions``, chance outcomes carried by an
+``ActionRecord``, per-resource ``DISCARD_RESOURCE`` actions, 2-tuple robber
+values, domestic-trade prompts).
 
 Contents
 --------
@@ -24,20 +27,26 @@ Contents
 * an opening book for the initial placements (production x diversity x
   scarcity, road toward the best free spot), robber targeting, discard
   planning (:func:`plan_discard`) and :func:`play_game`, a ``Game.play``
-  replacement that lets players choose their discards.
+  replacement that lets players choose their discards on catanatron 3.2.1
+  (whose engine loop discards at random).
 
-Notes on the engine (catanatron 3.2.1)
---------------------------------------
-* ``discard_possibilities`` only exposes ``Action(color, DISCARD, None)``
-  (a random discard) and ``Game.play`` validates actions, so a player cannot
-  choose its discard through ``decide``; :func:`play_game` applies the
-  chosen discard with ``validate_action=False`` instead.
+Notes on the engine
+-------------------
+* catanatron 3.2.1: ``discard_possibilities`` only exposes
+  ``Action(color, DISCARD, None)`` (a random discard) and ``Game.play``
+  validates actions, so a player cannot choose its discard through
+  ``decide``; :func:`play_game` applies the chosen discard with
+  ``validate_action=False`` instead.  catanatron 3.3 exposes one
+  ``DISCARD_RESOURCE`` action per resource and the players choose.
 * All hands and the dev-card deck are visible in ``state``; the players below
   use the hand *composition* of a robbed player for the exact steal
   expectation (the stock ``VictoryPointPlayer`` sees the same state) but
   never peek at the order of the dev-card deck: dev-card purchases are
   averaged over the card types still in the deck with their starting
   probabilities.
+* Chance outcomes (dice, drawn card, stolen resource) are always specified
+  explicitly when simulating, so the search never consumes the game's random
+  stream (which 3.3 shares between a game and its copies).
 """
 from __future__ import annotations
 
@@ -57,16 +66,24 @@ from catanatron.models.enums import (
 from catanatron.models.map import DICE_PROBAS
 from catanatron.models.player import Color, Player
 
+try:  # catanatron >= 3.3: chance results travel in an ActionRecord
+    from catanatron.models.enums import ActionRecord
+except ImportError:  # catanatron 3.2.1: the result is encoded in the action value
+    ActionRecord = None
+
 __all__ = [
     "DEFAULT_WEIGHTS",
     "AlphaBetaPlayer",
     "ValueFunctionPlayer",
+    "action_outcomes",
     "choose_initial_road",
     "choose_initial_settlement",
+    "execute",
     "get_map_tables",
     "opening_spot_score",
     "plan_discard",
     "play_game",
+    "playable",
     "robber_candidates",
     "value_function",
 ]
@@ -78,6 +95,10 @@ ROAD_COST = (1, 1, 0, 0, 0)
 SETTLEMENT_COST = (1, 1, 1, 1, 0)
 CITY_COST = (0, 0, 0, 2, 3)
 DEV_COST = (0, 0, 1, 1, 1)
+
+# Action types that only some engine versions have.
+DISCARD_RESOURCE = getattr(ActionType, "DISCARD_RESOURCE", None)  # 3.3+
+DISCARD_LEGACY = getattr(ActionType, "DISCARD", None)  # 3.2.1
 
 # One representative dice pair per sum (the engine only uses the sum).
 DICE_PAIR = {2: (1, 1), 3: (1, 2), 4: (2, 2), 5: (2, 3), 6: (3, 3), 7: (3, 4),
@@ -117,6 +138,38 @@ def _merge_weights(weights: Optional[Dict[str, object]]) -> Dict[str, object]:
     merged = dict(DEFAULT_WEIGHTS)
     merged.update(weights)
     return merged
+
+
+# --------------------------------------------------------------------------
+# Engine-version helpers
+# --------------------------------------------------------------------------
+def playable(game: Game) -> List[Action]:
+    """The current playable actions (``game.playable_actions`` on 3.3, on the state on 3.2.1)."""
+    acts = getattr(game, "playable_actions", None)
+    if acts is None:
+        acts = game.state.playable_actions
+    return acts
+
+
+def execute(game: Game, action: Action, result=None) -> None:
+    """Apply ``action`` to ``game`` without validation; ``result`` fixes a chance outcome.
+
+    ``result`` is the dice pair of a ROLL, the card of a BUY_DEVELOPMENT_CARD,
+    the stolen resource of a MOVE_ROBBER with a victim, or the list of cards of
+    a legacy DISCARD.
+    """
+    if result is None:
+        game.execute(action, validate_action=False)
+    elif ActionRecord is not None:
+        game.execute(action, validate_action=False,
+                     action_record=ActionRecord(action=action, result=result))
+    else:
+        t = action.action_type
+        if t == ActionType.MOVE_ROBBER:
+            value = (action.value[0], action.value[1], result)
+        else:
+            value = result
+        game.execute(Action(action.color, t, value), validate_action=False)
 
 
 # --------------------------------------------------------------------------
@@ -490,7 +543,7 @@ def robber_candidates(game: Game, mover: Color, k: int = 4, target: Optional[Col
     board = state.board
     tables = get_map_tables(board.map)
     ps = state.player_state
-    actions = playable_actions if playable_actions is not None else state.playable_actions
+    actions = playable_actions if playable_actions is not None else playable(game)
     own_nodes = set(state.buildings_by_color[mover][SETTLEMENT]) | set(state.buildings_by_color[mover][CITY])
     vp_of = {c: ps[_KEYS[state.color_to_index[c]].vp] for c in state.colors}
     min_vp = min(vp_of.values())
@@ -498,7 +551,7 @@ def robber_candidates(game: Game, mover: Color, k: int = 4, target: Optional[Col
     for action in actions:
         if action.action_type != ActionType.MOVE_ROBBER:
             continue
-        coord, victim, _ = action.value
+        coord, victim = action.value[0], action.value[1]
         nodes = tables.tile_nodes.get(coord)
         if nodes is None:
             continue
@@ -579,11 +632,12 @@ def plan_discard(game: Game, color: Color, num: Optional[int] = None) -> List[st
 def play_game(game: Game, smart_discard: bool = True, accumulators: Iterable = ()) -> Optional[Color]:
     """``Game.play`` replacement: players with ``choose_discard(game)`` pick their discards.
 
-    Everything else goes through ``Game.play_tick`` (validated actions).  With
-    ``smart_discard=False`` this is exactly ``Game.play``.
+    Only catanatron 3.2.1 needs it (its engine loop discards at random);
+    on engines with per-resource DISCARD_RESOURCE actions, and with
+    ``smart_discard=False``, this is exactly ``Game.play``.
     """
     accumulators = list(accumulators)
-    if not smart_discard:
+    if not smart_discard or DISCARD_LEGACY is None:
         return game.play(accumulators=accumulators)
     for acc in accumulators:
         acc.before(game.copy())
@@ -591,16 +645,24 @@ def play_game(game: Game, smart_discard: bool = True, accumulators: Iterable = (
         state = game.state
         player = state.current_player()
         chooser = getattr(player, "choose_discard", None)
-        if state.current_prompt == ActionPrompt.DISCARD and chooser is not None:
+        acts = playable(game)
+        if (state.current_prompt == ActionPrompt.DISCARD and chooser is not None
+                and acts and acts[0].action_type == DISCARD_LEGACY):
             cards = list(chooser(game))
-            action = Action(player.color, ActionType.DISCARD, cards)
+            action = Action(player.color, DISCARD_LEGACY, cards)
             if accumulators:
                 snapshot = game.copy()
                 for acc in accumulators:
                     acc.step(snapshot, action)
             game.execute(action, validate_action=False)
+        elif accumulators:
+            action = player.decide(game, acts)
+            snapshot = game.copy()
+            for acc in accumulators:
+                acc.step(snapshot, action)
+            game.execute(action)
         else:
-            game.play_tick(accumulators=accumulators)
+            game.play_tick()
     for acc in accumulators:
         acc.after(game.copy())
     return game.winning_color()
@@ -609,29 +671,32 @@ def play_game(game: Game, smart_discard: bool = True, accumulators: Iterable = (
 # --------------------------------------------------------------------------
 # Chance-action expansion
 # --------------------------------------------------------------------------
-def action_outcomes(game: Game, action: Action) -> List[Tuple[float, Action]]:
-    """(probability, fully specified action) pairs for a possibly random action."""
+def action_outcomes(game: Game, action: Action) -> List[Tuple[float, Action, object]]:
+    """(probability, action, chance result) triples for a possibly random action.
+
+    The result is ``None`` for deterministic actions; otherwise it is what
+    :func:`execute` needs to reproduce that outcome.
+    """
     t = action.action_type
     state = game.state
-    if t == ActionType.BUY_DEVELOPMENT_CARD and action.value is None:
+    if t == ActionType.BUY_DEVELOPMENT_CARD:
         deck = state.development_listdeck
         present = [c for c in DEVELOPMENT_CARDS if c in deck]
         if not present:
-            return [(1.0, action)]
+            return [(1.0, action, None)]
         weights = [starting_devcard_proba(c) for c in present]
         z = sum(weights)
-        return [(wt / z, Action(action.color, t, c)) for c, wt in zip(present, weights)]
+        return [(wt / z, action, c) for c, wt in zip(present, weights)]
     if t == ActionType.MOVE_ROBBER:
-        coord, victim, resource = action.value
-        if victim is None or resource is not None:
-            return [(1.0, action)]
+        victim = action.value[1]
+        if victim is None:
+            return [(1.0, action, None)]
         hand = _hand(state.player_state, _KEYS[state.color_to_index[victim]])
         total = sum(hand)
         if total <= 0:
-            return [(1.0, Action(action.color, t, (coord, None, None)))]
-        return [(hand[i] / total, Action(action.color, t, (coord, victim, RESOURCES[i])))
-                for i in range(5) if hand[i] > 0]
-    return [(1.0, action)]
+            return [(1.0, action, None)]
+        return [(hand[i] / total, action, RESOURCES[i]) for i in range(5) if hand[i] > 0]
+    return [(1.0, action, None)]
 
 
 def _affordable(hand: Sequence[int], cost: Sequence[int]) -> bool:
@@ -652,13 +717,17 @@ class ValueFunctionPlayer(Player):
     * knights are played before rolling when the robber blocks own production
       or when the knight takes Largest Army,
     * initial placements from the opening book (``opening_book=True``),
-    * :meth:`choose_discard` keeps the cards of the next build (used by
-      :func:`play_game`; the engine's own loop discards at random).
+    * discards keep the cards of the next build (:meth:`choose_discard`, used
+      directly with 3.3's DISCARD_RESOURCE actions and by :func:`play_game`
+      on 3.2.1),
+    * domestic-trade prompts (3.3) are answered by the 1-ply value.
     """
+
+    IS_BOT = True
 
     def __init__(self, color: Color, weights: Optional[Dict[str, object]] = None,
                  opening_book: bool = True, robber_k: int = 6, is_bot: bool = True):
-        super().__init__(color, is_bot)
+        Player.__init__(self, color)
         self.weights = _merge_weights(weights)
         self.opening_book = opening_book
         self.robber_k = robber_k
@@ -681,23 +750,25 @@ class ValueFunctionPlayer(Player):
                 return choose_initial_road(game, self.color, playable_actions)
             return self._greedy(game, playable_actions)
         if prompt == ActionPrompt.DISCARD:
-            return playable_actions[0]  # the engine only exposes the random discard
+            return self._decide_discard(game, playable_actions)
         if prompt == ActionPrompt.MOVE_ROBBER:
             return self._decide_robber(game, playable_actions)
         if prompt == ActionPrompt.PLAY_TURN and not state.player_state[
             _KEYS[state.color_to_index[self.color]].has_rolled
         ]:
             return self._decide_pre_roll(game, playable_actions)
-        return self._decide_turn(game, playable_actions)
+        if prompt == ActionPrompt.PLAY_TURN:
+            return self._decide_turn(game, playable_actions)
+        return self._greedy(game, playable_actions)  # trade prompts and anything new
 
     def choose_discard(self, game: Game) -> List[str]:
         return plan_discard(game, self.color)
 
     # -- helpers ----------------------------------------------------------
-    def _copy_exec(self, game: Game, action: Action) -> Game:
+    def _copy_exec(self, game: Game, action: Action, result=None) -> Game:
         self.nodes += 1
         child = game.copy()
-        child.execute(action, validate_action=False)
+        execute(child, action, result)
         return child
 
     def _value(self, game: Game) -> float:
@@ -708,6 +779,15 @@ class ValueFunctionPlayer(Player):
 
     def _decide_turn(self, game: Game, playable_actions: List[Action]) -> Action:
         return self._greedy(game, playable_actions)
+
+    def _decide_discard(self, game: Game, playable_actions: List[Action]) -> Action:
+        if DISCARD_RESOURCE is not None and playable_actions[0].action_type == DISCARD_RESOURCE:
+            plan = plan_discard(game, self.color, 1)
+            if plan:
+                for a in playable_actions:
+                    if a.value == plan[0]:
+                        return a
+        return playable_actions[0]  # 3.2.1 only exposes the random discard
 
     def _greedy(self, game: Game, playable_actions: List[Action]) -> Action:
         has_build = any(a.action_type in (ActionType.BUILD_SETTLEMENT, ActionType.BUILD_CITY)
@@ -733,8 +813,10 @@ class ValueFunctionPlayer(Player):
     def _decide_pre_roll(self, game: Game, playable_actions: List[Action]) -> Action:
         roll = next((a for a in playable_actions if a.action_type == ActionType.ROLL), None)
         knight = next((a for a in playable_actions if a.action_type == ActionType.PLAY_KNIGHT_CARD), None)
-        if roll is None or knight is None:
+        if roll is None:
             return playable_actions[0]
+        if knight is None:
+            return roll
         state = game.state
         ps = state.player_state
         k = self._keys(state)
@@ -749,7 +831,7 @@ class ValueFunctionPlayer(Player):
             takes_army = ps[k.knights] + 1 > army_size
         if blocked or takes_army:
             after = self._copy_exec(game, knight)
-            robber_action = self._decide_robber(after, after.state.playable_actions)
+            robber_action = self._decide_robber(after, playable(after))
             if self.expected_value(after, robber_action) > self._value(game):
                 return knight
         return roll
@@ -758,8 +840,8 @@ class ValueFunctionPlayer(Player):
     def expected_value(self, game: Game, action: Action) -> float:
         """Expectation of the value after ``action`` (chance actions averaged exactly)."""
         total = 0.0
-        for p, a in action_outcomes(game, action):
-            total += p * self._value(self._copy_exec(game, a))
+        for p, a, result in action_outcomes(game, action):
+            total += p * self._value(self._copy_exec(game, a, result))
         return total
 
     def evaluate_action(self, game: Game, action: Action) -> float:
@@ -777,7 +859,7 @@ class ValueFunctionPlayer(Player):
         if t == ActionType.PLAY_ROAD_BUILDING:
             after = self._copy_exec(game, action)
             for _ in range(2):
-                acts = after.state.playable_actions
+                acts = playable(after)
                 if not after.state.is_road_building or not acts:
                     break
                 roads = self._road_candidates(after, acts, 3)
@@ -791,10 +873,10 @@ class ValueFunctionPlayer(Player):
                         best, best_v = child, v
                 after = best
             return self._value(after)
-        if t == ActionType.MOVE_ROBBER:
+        if t == ActionType.MOVE_ROBBER or t == ActionType.BUY_DEVELOPMENT_CARD:
             return self.expected_value(game, action)
-        if t == ActionType.BUY_DEVELOPMENT_CARD:
-            return self.expected_value(game, action)
+        if t == ActionType.ROLL:
+            return self._value(game)
         return self._value(self._copy_exec(game, action))
 
     def _best_follow_up(self, game: Game) -> float:
@@ -806,7 +888,7 @@ class ValueFunctionPlayer(Player):
         best = float("-inf")
         cities = settlements = None
         buy = None
-        for a in state.playable_actions:
+        for a in playable(game):
             at = a.action_type
             if at == ActionType.BUILD_CITY:
                 tot = tables.node_total[a.value]
@@ -826,7 +908,7 @@ class ValueFunctionPlayer(Player):
         return best
 
     def _road_candidates(self, game: Game, playable_actions: Sequence[Action], k: int) -> List[Action]:
-        """Top-``k`` BUILD_ROAD actions by the spots they open (cheap, no copies)."""
+        """Top-``k`` BUILD_ROAD actions by the spots they open / the longest road (no copies)."""
         state = game.state
         board = state.board
         tables = get_map_tables(board.map)
@@ -886,7 +968,8 @@ class AlphaBetaPlayer(ValueFunctionPlayer):
     (1, 2, ... ``depth`` own actions) and keeps the last iteration that
     completed within the budget, so every root candidate is compared at the
     same depth.  Other prompts (robber, initial placements, pre-roll knight,
-    road building) use the 1-ply logic of :class:`ValueFunctionPlayer`.
+    road building, discards, trades) use the 1-ply logic of
+    :class:`ValueFunctionPlayer`.
     """
 
     def __init__(self, color: Color, budget: int = 2000, beam: int = 8, depth: int = 3,
@@ -946,11 +1029,11 @@ class AlphaBetaPlayer(ValueFunctionPlayer):
             return self._opponent_node(game, action, alpha)
         total = 0.0
         done = 0.0
-        for p, a in action_outcomes(game, action):
+        for p, a, result in action_outcomes(game, action):
             if self.nodes >= self.budget:
                 self._exhausted = True
                 return total + (1.0 - done) * self._value(game)
-            child = self._copy_exec(game, a)
+            child = self._copy_exec(game, a, result)
             total += p * self._max_node(child, depth, alpha)
             done += p
         return total
@@ -964,7 +1047,7 @@ class AlphaBetaPlayer(ValueFunctionPlayer):
             self._exhausted = True
             return self._value(game)
         prompt = state.current_prompt
-        acts = state.playable_actions
+        acts = playable(game)
         if state.current_color() != self.color or prompt == ActionPrompt.DISCARD:
             return self._value(game)  # should not happen mid-turn
         end_turn = next((a for a in acts if a.action_type == ActionType.END_TURN), None)
@@ -987,9 +1070,10 @@ class AlphaBetaPlayer(ValueFunctionPlayer):
         opp = after.state.current_color()
         if opp == self.color:
             return self._value(after)
+        roll = Action(opp, ActionType.ROLL, None)
         post = []
         for p, dice in self._dice:
-            c = self._copy_exec(after, Action(opp, ActionType.ROLL, dice))
+            c = self._copy_exec(after, roll, dice)
             self._resolve_discards(c)
             post.append((p, c, self._value(c)))
         total = 0.0
@@ -1013,35 +1097,44 @@ class AlphaBetaPlayer(ValueFunctionPlayer):
     def _resolve_discards(self, game: Game) -> None:
         state = game.state
         guard = 0
-        while state.current_prompt == ActionPrompt.DISCARD and guard < 8:
+        while state.current_prompt == ActionPrompt.DISCARD and guard < 48:
             color = state.current_color()
-            cards = plan_discard(game, color)
-            game.execute(Action(color, ActionType.DISCARD, cards), validate_action=False)
+            acts = playable(game)
             guard += 1
+            if DISCARD_RESOURCE is not None and acts and acts[0].action_type == DISCARD_RESOURCE:
+                plan = plan_discard(game, color, 1)
+                if not plan:
+                    break
+                execute(game, Action(color, DISCARD_RESOURCE, plan[0]))
+            elif DISCARD_LEGACY is not None:
+                execute(game, Action(color, DISCARD_LEGACY, None), plan_discard(game, color))
+            else:
+                break
 
     def _reply_value(self, game: Game, reply) -> float:
-        """Our value after an opponent reply (a single action or a short sequence)."""
+        """Our value after an opponent reply (a sequence of (action, result) pairs)."""
         g = game
-        for a in reply:
-            g = self._copy_exec(g, a)
+        for a, result in reply:
+            g = self._copy_exec(g, a, result)
         return self._value(g)
 
-    def _opponent_replies(self, game: Game, opp: Color) -> List[Tuple[Action, ...]]:
+    def _opponent_replies(self, game: Game, opp: Color) -> List[Tuple[Tuple[Action, object], ...]]:
         state = game.state
-        acts = state.playable_actions
+        acts = playable(game)
         tables = get_map_tables(state.board.map)
-        replies: List[Tuple[float, Tuple[Action, ...]]] = []
+        replies: List[Tuple[float, tuple]] = []
         if state.current_prompt == ActionPrompt.MOVE_ROBBER:
             for a in robber_candidates(game, opp, 2, target=self.color, playable_actions=acts):
-                replies.append((3.0, (a,)))
+                replies.append((3.0, ((a, self._likely_steal(game, a)),)))
             return [r for _, r in replies[: self.opponent_replies]]
+        if state.current_prompt != ActionPrompt.PLAY_TURN:
+            return []
         best_city = best_settle = None
         knight = None
-        road_race = False
         ps = state.player_state
         ko = _KEYS[state.color_to_index[opp]]
-        if not ps[ko.has_road] and ps[ko.road_len] >= 4 and ps[ko.road_len] + 1 > state.board.road_length:
-            road_race = True
+        road_race = (not ps[ko.has_road] and ps[ko.road_len] >= 4
+                     and ps[ko.road_len] + 1 > state.board.road_length)
         best_road = None
         for a in acts:
             t = a.action_type
@@ -1058,23 +1151,29 @@ class AlphaBetaPlayer(ValueFunctionPlayer):
             elif t == ActionType.BUILD_ROAD and road_race and best_road is None:
                 best_road = a
         if best_city is not None:
-            replies.append((4.0 + best_city[0], (best_city[1],)))
+            replies.append((4.0 + best_city[0], ((best_city[1], None),)))
         if best_settle is not None:
-            replies.append((3.0 + best_settle[0], (best_settle[1],)))
+            replies.append((3.0 + best_settle[0], ((best_settle[1], None),)))
         if knight is not None:
             after = self._copy_exec(game, knight)
             for a in robber_candidates(after, opp, 1, target=self.color):
-                # steal outcome: take the victim's most common resource (deterministic)
-                coord, victim, _ = a.value
-                if victim is not None:
-                    hand = _hand(after.state.player_state, _KEYS[after.state.color_to_index[victim]])
-                    res = RESOURCES[max(range(5), key=lambda i: hand[i])]
-                    a = Action(a.color, a.action_type, (coord, victim, res))
-                replies.append((2.5, (knight, a)))
+                replies.append((2.5, ((knight, None), (a, self._likely_steal(after, a)))))
         if best_road is not None:
-            replies.append((2.0, (best_road,)))
+            replies.append((2.0, ((best_road, None),)))
         replies.sort(key=lambda t: -t[0])
         return [r for _, r in replies[: self.opponent_replies]]
+
+    @staticmethod
+    def _likely_steal(game: Game, robber_action: Action):
+        """The victim's most common resource (deterministic stand-in for the random steal)."""
+        victim = robber_action.value[1]
+        if victim is None:
+            return None
+        state = game.state
+        hand = _hand(state.player_state, _KEYS[state.color_to_index[victim]])
+        if sum(hand) <= 0:
+            return None
+        return RESOURCES[max(range(5), key=lambda i: hand[i])]
 
     # -- own move ordering / pruning (no game copies) -----------------------
     def _own_candidates(self, game: Game, playable_actions: Sequence[Action]) -> List[Action]:

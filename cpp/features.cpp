@@ -133,7 +133,8 @@ int longest_road_length(const GameStateC& s, int player) {
     const PlayerC& p = s.players[player];
     const int nr = p.n_roads;
     if (nr == 0) return 0;
-    if (nr > 64) throw std::length_error("longest_road_length: more than 64 roads");
+    if (nr > 64)  // one "used" bit per entry; the Python reference has no such limit -> accel falls back to it
+        unsupported("more than 64 road entries for one player (features.longest_road_length)");
     RoadGraph g;
     std::memset(g.blocked, 0, sizeof(g.blocked));
     for (int i = 0; i < s.num_players; ++i) {

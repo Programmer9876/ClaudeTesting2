@@ -10,7 +10,14 @@ the pieces, public per-player counters and *my* own hand.
 applying standard priors for everything that is hidden:
 
 * opponents get ``hand_known=False`` / ``dev_known=False`` with only the
-  visible card counts;
+  visible card counts (a player whose ``resources`` are given, e.g. after a
+  monopoly or via ``--fix COLOR.hand=``, is taken as exactly known);
+* the phase is ``PHASE_MAIN`` when a dice total is shown (or ``rolled`` is
+  true) and ``PHASE_ROLL`` otherwise, so a screenshot taken before the roll
+  offers ``ROLL`` / knight-before-roll;
+* when "me" reports more VP than the pieces and awards show and their dev
+  cards are only a count, the difference is taken as hidden victory point
+  cards (they count in ``total_vp`` and survive determinization);
 * the bank is ``19`` minus every card whose type is known (the hands flagged
   ``hand_known``), never below zero, unless the parse carries a ``bank``;
 * the development deck starts from the standard ``14/5/2/2/2`` counts,
@@ -28,11 +35,12 @@ synthetic renderer and the round-trip tests.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 from .. import board as B
-from ..state import PHASE_MAIN, PLAYER_COLORS, GameState, Player
+from ..state import PHASE_MAIN, PHASE_ROLL, PLAYER_COLORS, GameState, Player
 
 __all__ = [
     "PARSE_SCHEMA",
@@ -43,6 +51,8 @@ __all__ = [
     "validate",
     "resource_from_name",
     "port_type_from_name",
+    "dev_type_from_name",
+    "port_edge_pairs",
     "longest_road_length",
 ]
 
@@ -141,7 +151,8 @@ PARSE_SCHEMA: Dict[str, Any] = {
                     "roads": _id_list_schema(B.NUM_EDGES - 1, "Edge ids with a road."),
                     "resources": {
                         "type": "object",
-                        "description": "Exact hand by resource; only for 'me'.",
+                        "description": "Exact hand by resource. Normally only for 'me' (the hand bar); give it "
+                                       "for an opponent only when their cards are known exactly.",
                         "additionalProperties": {"type": "integer", "minimum": 0},
                     },
                 },
@@ -151,6 +162,9 @@ PARSE_SCHEMA: Dict[str, Any] = {
         "current_player": {"type": "string", "description": "Colour of the player on turn."},
         "dice": {"type": ["integer", "null"], "minimum": 0, "maximum": 12,
                  "description": "Last dice total shown (0/null if not rolled yet)."},
+        "rolled": {"type": "boolean",
+                   "description": "Optional. Whether the player on turn has already rolled this turn. When absent, "
+                                  "a non-zero 'dice' means rolled (a displayed previous roll counts as rolled)."},
         "bank": {
             "type": "object",
             "description": "Optional. Bank stock per resource if visible.",
@@ -211,6 +225,32 @@ def port_type_from_name(name: Union[str, int, None]) -> Optional[int]:
     return None
 
 
+_DEV_KEY_ALIASES: Dict[str, int] = {
+    "knight": B.DEV_KNIGHT, "soldier": B.DEV_KNIGHT,
+    "victorypoint": B.DEV_VP, "victorypointcard": B.DEV_VP, "victory": B.DEV_VP, "vp": B.DEV_VP, "point": B.DEV_VP,
+    "roadbuilding": B.DEV_ROAD_BUILDING, "roadbuild": B.DEV_ROAD_BUILDING, "road": B.DEV_ROAD_BUILDING,
+    "yearofplenty": B.DEV_YEAR_OF_PLENTY, "yop": B.DEV_YEAR_OF_PLENTY, "plenty": B.DEV_YEAR_OF_PLENTY,
+    "monopoly": B.DEV_MONOPOLY, "mono": B.DEV_MONOPOLY,
+}
+
+
+def dev_type_from_name(name: Union[str, int, None]) -> Optional[int]:
+    """Dev-card type index (``board.DEV_*``) for a label; ``None`` if unknown.
+
+    Case, spaces, underscores, hyphens and a plural ``s`` are ignored, so
+    ``"knights"``, ``"Year of Plenty"``, ``"road-building"``, ``"VP"`` and
+    ``"victory_points"`` all resolve.
+    """
+    if name is None or isinstance(name, bool):
+        return None
+    if isinstance(name, int):
+        return name if 0 <= name < len(B.DEV_NAMES) else None
+    key = re.sub(r"[\s_\-]+", "", str(name).strip().lower())
+    if key not in _DEV_KEY_ALIASES and key.endswith("s"):
+        key = key[:-1]
+    return _DEV_KEY_ALIASES.get(key)
+
+
 def _color_of(p: Any) -> str:
     """Normalised colour string of a parsed player entry."""
     return str(p.get("color", p.get("colour", "")) or "").strip().lower()
@@ -252,18 +292,13 @@ def _resource_counts(d: Any) -> List[int]:
 
 
 def _dev_counts(d: Any) -> List[int]:
+    """``{"knight": 1, ...}`` (aliases via :func:`dev_type_from_name`) or a 5-list -> 5 counts."""
     counts = [0] * 5
     if isinstance(d, dict):
         for k, v in d.items():
-            key = str(k).strip().lower()
-            if key in B.DEV_NAMES:
-                counts[B.DEV_NAMES.index(key)] += max(0, _int(v))
-            elif key in ("vp", "victory", "victorypoint", "victory point"):
-                counts[B.DEV_VP] += max(0, _int(v))
-            elif key in ("yop", "plenty"):
-                counts[B.DEV_YEAR_OF_PLENTY] += max(0, _int(v))
-            elif key in ("roads", "road"):
-                counts[B.DEV_ROAD_BUILDING] += max(0, _int(v))
+            t = dev_type_from_name(k)
+            if t is not None:
+                counts[t] += max(0, _int(v))
     elif isinstance(d, (list, tuple)):
         for i, v in enumerate(list(d)[:5]):
             counts[i] = max(0, _int(v))
@@ -341,12 +376,58 @@ def _apportion(total: int, weights: Sequence[int]) -> List[int]:
     return out
 
 
+def _port_entry(entry: Any) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """One port entry -> ``(edge, vertex, type)``; edge or vertex is ``None`` when absent / invalid."""
+    edge = vertex = None
+    ptype: Optional[int] = None
+    if isinstance(entry, dict):
+        if "edge" in entry:
+            edge = _int(entry.get("edge"), -1)
+        elif "vertex" in entry:
+            vertex = _int(entry.get("vertex"), -1)
+        ptype = port_type_from_name(entry.get("type"))
+    elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+        edge = _int(entry[0], -1)
+        ptype = port_type_from_name(entry[1])
+    if edge is not None and not 0 <= edge < B.NUM_EDGES:
+        edge = None
+    if vertex is not None and not 0 <= vertex < B.NUM_VERTICES:
+        vertex = None
+    return edge, vertex, ptype
+
+
+def _port_map(ports: Any) -> Dict[int, int]:
+    """``ports`` field (edge list, ``[edge, type]`` pairs, ``{vertex: type}`` map or
+    ``{vertex, type}`` entries) -> ``{vertex: type}``; empty when nothing is valid."""
+    out: Dict[int, int] = {}
+    coastal = set(B.COASTAL_VERTICES)
+    if isinstance(ports, dict):
+        for k, v in ports.items():
+            vi, t = _int(k, -1), port_type_from_name(v)
+            if vi in coastal and t is not None:
+                out[vi] = t
+        return out
+    if not isinstance(ports, (list, tuple)):
+        return out
+    for entry in ports:
+        e, v, t = _port_entry(entry)
+        if t is None:
+            continue
+        if e is not None:
+            for vv in B.EDGE_VERTICES[e]:
+                out[vv] = t
+        elif v is not None and v in coastal:
+            out[v] = t
+    return out
+
+
 def parsed_to_state(parsed: Dict[str, Any]) -> GameState:
     """Build a :class:`GameState` from a parsed screenshot dict (see module doc).
 
     Never raises on missing optional fields; unknown resource names fall back
-    to the desert, out-of-range ids are dropped.  Use :func:`validate` to get
-    warnings about such problems.
+    to the desert, out-of-range ids are dropped, a ``ports`` field without a
+    single valid entry means the standard layout.  Use :func:`validate` to
+    get warnings about such problems.
     """
     s = GameState()
     # --- board ------------------------------------------------------------
@@ -369,19 +450,8 @@ def parsed_to_state(parsed: Dict[str, Any]) -> GameState:
     robber = _int(parsed.get("robber"), -1)
     s.robber = robber if 0 <= robber < B.NUM_HEXES else desert
 
-    ports = parsed.get("ports")
-    if ports:
-        port_edges: List[Tuple[int, int]] = []
-        for entry in ports:
-            if isinstance(entry, dict):
-                e, t = _int(entry.get("edge"), -1), port_type_from_name(entry.get("type"))
-            else:
-                e, t = _int(entry[0], -1), port_type_from_name(entry[1])
-            if 0 <= e < B.NUM_EDGES and t is not None:
-                port_edges.append((e, t))
-        s.ports = B.ports_from_edges(port_edges)
-    else:
-        s.ports = dict(B.STANDARD_PORTS)
+    port_map = _port_map(parsed.get("ports"))
+    s.ports = port_map if port_map else dict(B.STANDARD_PORTS)
 
     # --- players ----------------------------------------------------------
     raw_players = [p for p in (parsed.get("players") or []) if isinstance(p, dict)]
@@ -396,7 +466,7 @@ def parsed_to_state(parsed: Dict[str, Any]) -> GameState:
         p.played_knights = max(0, _int(rp.get("knights")))
         cards = max(0, _int(rp.get("cards")))
         resources = rp.get("resources")
-        if i == me and isinstance(resources, (dict, list, tuple)):
+        if isinstance(resources, (dict, list, tuple)):
             p.resources = _resource_counts(resources)
             p.hand_known = True
             p.hand_size = sum(p.resources)
@@ -415,6 +485,28 @@ def parsed_to_state(parsed: Dict[str, Any]) -> GameState:
             p.dev_count = max(0, _int(dev))
         players.append(p)
     s.players = players
+
+    # --- awards -----------------------------------------------------------
+    s.longest_road_owner = next((i for i, rp in enumerate(raw_players) if rp.get("longest_road")), -1)
+    s.largest_army_owner = next((i for i, rp in enumerate(raw_players) if rp.get("largest_army")), -1)
+    if s.longest_road_owner >= 0:
+        owner = s.longest_road_owner
+        blocked = [v for j, p in enumerate(players) if j != owner for v in p.settlements + p.cities]
+        s.longest_road_len = max(5, longest_road_length(players[owner].roads, blocked))
+    else:
+        s.longest_road_len = 0
+
+    # --- hidden VP cards of "me" ------------------------------------------
+    # The screen owner sees their total VP; when it exceeds what the board shows and
+    # their dev cards are only a count, the surplus can only be victory point cards.
+    inferred_vp = 0
+    if 0 <= me < len(players) and not players[me].dev_known and players[me].dev_count > 0:
+        vp_raw = raw_players[me].get("vp")
+        if vp_raw is not None and not isinstance(vp_raw, bool):
+            hidden = _int(vp_raw, 0) - s.public_vp(me)
+            if hidden > 0:
+                inferred_vp = min(hidden, players[me].dev_count)
+                players[me].dev_cards[B.DEV_VP] = inferred_vp
 
     # --- bank -------------------------------------------------------------
     bank = parsed.get("bank")
@@ -442,14 +534,17 @@ def parsed_to_state(parsed: Dict[str, Any]) -> GameState:
         deck[B.DEV_KNIGHT] -= sum(p.played_knights for p in players)
         deck = [max(0, x) for x in deck]
         unknown_held = 0
-        for p in players:
+        for i, p in enumerate(players):
             if p.dev_known:
                 for t in range(5):
                     deck[t] = max(0, deck[t] - p.dev_cards[t])
+            elif i == me and inferred_vp:
+                deck[B.DEV_VP] = max(0, deck[B.DEV_VP] - inferred_vp)
+                unknown_held += p.dev_count - inferred_vp
             else:
                 unknown_held += p.dev_count
         remaining = parsed.get("dev_deck_remaining")
-        if remaining is not None and not isinstance(remaining, bool):
+        if remaining is not None and not isinstance(remaining, bool) and _int(remaining, -1) >= 0:
             unknown_held = max(0, sum(deck) - _int(remaining))
         taken = _apportion(unknown_held, deck)
         s.dev_deck = [deck[t] - taken[t] for t in range(5)]
@@ -462,21 +557,15 @@ def parsed_to_state(parsed: Dict[str, Any]) -> GameState:
     elif isinstance(cur, str) and cur.strip().lower() in colors:
         cur_idx = colors.index(cur.strip().lower())
     s.current = cur_idx if cur_idx >= 0 else max(0, me)
-    s.phase = PHASE_MAIN
     s.dice = _int(parsed.get("dice"), 0)
     if not 0 <= s.dice <= 12:
         s.dice = 0
-    s.turn = max(0, _int(parsed.get("turn"), 0))
-
-    # --- awards -----------------------------------------------------------
-    s.longest_road_owner = next((i for i, rp in enumerate(raw_players) if rp.get("longest_road")), -1)
-    s.largest_army_owner = next((i for i, rp in enumerate(raw_players) if rp.get("largest_army")), -1)
-    if s.longest_road_owner >= 0:
-        owner = s.longest_road_owner
-        blocked = [v for j, p in enumerate(players) if j != owner for v in p.settlements + p.cities]
-        s.longest_road_len = max(5, longest_road_length(players[owner].roads, blocked))
+    rolled = parsed.get("rolled")
+    if isinstance(rolled, bool):
+        s.phase = PHASE_MAIN if rolled else PHASE_ROLL
     else:
-        s.longest_road_len = 0
+        s.phase = PHASE_MAIN if s.dice else PHASE_ROLL
+    s.turn = max(0, _int(parsed.get("turn"), 0))
     return s
 
 
@@ -495,9 +584,15 @@ def _player_index(state: GameState, me: Union[int, str, None]) -> int:
     return int(me)
 
 
-def _port_edge_list(ports: Dict[int, int]) -> List[Dict[str, Any]]:
-    """Invert a ``{vertex: type}`` port map to ``[{edge, type}]`` on coastal edges."""
-    out: List[Dict[str, Any]] = []
+def port_edge_pairs(ports: Dict[int, int]) -> List[Tuple[int, int]]:
+    """Invert a ``{vertex: type}`` port map to ``[(coastal_edge, type)]``.
+
+    Two equal-typed vertices sharing a coastal edge form one port; a vertex
+    that cannot be paired is attached to any coastal edge it touches.  Used
+    by :func:`state_to_parsed` and by the synthetic renderer, so what is
+    drawn and what is reported always agree.
+    """
+    out: List[Tuple[int, int]] = []
     consumed: Set[int] = set()
     for e in B.COASTAL_EDGES:
         a, b = B.EDGE_VERTICES[e]
@@ -505,18 +600,22 @@ def _port_edge_list(ports: Dict[int, int]) -> List[Dict[str, Any]]:
             continue
         ta, tb = ports.get(a), ports.get(b)
         if ta is not None and ta == tb:
-            out.append({"edge": e, "type": B.PORT_NAMES[ta]})
+            out.append((e, ta))
             consumed.update((a, b))
-    # ports whose vertices could not be paired on a single coastal edge: attach to any edge
     for v, t in sorted(ports.items()):
         if v in consumed:
             continue
         for e in B.VERTEX_EDGES[v]:
             if e in _COASTAL_EDGE_SET:
-                out.append({"edge": e, "type": B.PORT_NAMES[t]})
+                out.append((e, t))
                 consumed.add(v)
                 break
     return out
+
+
+def _port_edge_list(ports: Dict[int, int]) -> List[Dict[str, Any]]:
+    """``{vertex: type}`` -> ``[{edge, type}]`` (see :func:`port_edge_pairs`)."""
+    return [{"edge": e, "type": B.PORT_NAMES[t]} for e, t in port_edge_pairs(ports)]
 
 
 def state_to_parsed(state: GameState, me: Union[int, str, None] = None,
@@ -584,9 +683,11 @@ def validate(parsed: Dict[str, Any]) -> List[str]:
     numbers on the desert (or missing elsewhere), robber and port sanity,
     unknown / duplicate colours, piece ids out of range, pieces stacked on
     the same vertex or edge, the distance rule, roads disconnected from their
-    owner's buildings, piece-count limits, VP consistent with pieces and
-    awards, award flags versus knights / road length, and that ``me`` /
-    ``current_player`` refer to listed players.
+    owner's buildings, piece-count limits, card counts versus listed
+    resources, unrecognised dev-card types, VP consistent with pieces and
+    awards, award flags versus knights / road length (including a road of 5
+    or 3 knights with no holder flagged), bank / dev-deck values, and that
+    ``me`` / ``current_player`` refer to listed players.
     """
     w: List[str] = []
     if not isinstance(parsed, dict):
@@ -645,12 +746,39 @@ def validate(parsed: Dict[str, Any]) -> List[str]:
 
     # --- ports ------------------------------------------------------------
     ports = parsed.get("ports")
-    if ports is not None:
+    if isinstance(ports, dict):
+        coastal_vertices = set(B.COASTAL_VERTICES)
+        n_valid = 0
+        for k, t in ports.items():
+            vi = _int(k, -1)
+            if vi not in coastal_vertices:
+                w.append(f"port at vertex {k!r} which is not a coastal vertex")
+            if port_type_from_name(t) is None:
+                w.append(f"port at vertex {k!r}: unknown type {t!r}")
+            elif vi in coastal_vertices:
+                n_valid += 1
+        if ports and n_valid == 0:
+            w.append("'ports' has no valid entry; the standard port layout will be used")
+    elif ports is not None:
         if not isinstance(ports, list):
-            w.append("'ports' must be a list of {edge, type}")
+            w.append("'ports' must be a list of {edge, type} (or a {vertex: type} map)")
         else:
             seen_port_vertices: Set[int] = set()
+            n_valid = 0
             for entry in ports:
+                if isinstance(entry, dict) and "edge" not in entry and "vertex" in entry:
+                    vi, t = _int(entry.get("vertex"), -1), entry.get("type")
+                    if vi not in set(B.COASTAL_VERTICES):
+                        w.append(f"port at vertex {entry.get('vertex')!r} which is not a coastal vertex")
+                    elif vi in seen_port_vertices:
+                        w.append(f"port at vertex {vi} listed twice")
+                    else:
+                        seen_port_vertices.add(vi)
+                        if port_type_from_name(t) is not None:
+                            n_valid += 1
+                    if port_type_from_name(t) is None:
+                        w.append(f"port at vertex {entry.get('vertex')!r}: unknown type {t!r}")
+                    continue
                 if isinstance(entry, dict):
                     e, t = entry.get("edge"), entry.get("type")
                 elif isinstance(entry, (list, tuple)) and len(entry) == 2:
@@ -665,8 +793,12 @@ def validate(parsed: Dict[str, Any]) -> List[str]:
                     w.append(f"port on edge {ei} shares a vertex with another port")
                 else:
                     seen_port_vertices.update(B.EDGE_VERTICES[ei])
+                    if port_type_from_name(t) is not None:
+                        n_valid += 1
                 if port_type_from_name(t) is None:
                     w.append(f"port on edge {e!r}: unknown type {t!r}")
+            if ports and n_valid == 0:
+                w.append("'ports' has no valid entry; the standard port layout will be used")
             if len(ports) != 9:
                 w.append(f"expected 9 ports, got {len(ports)}")
 
@@ -726,8 +858,20 @@ def validate(parsed: Dict[str, Any]) -> List[str]:
             w.append(f"{label}: {len(roads)} roads (max {B.MAX_ROADS})")
         for key in ("vp", "cards", "dev_cards", "knights"):
             val = p.get(key)
-            if val is not None and not isinstance(val, dict) and _int(val, -1) < 0:
+            if val is not None and not isinstance(val, (dict, list, tuple)) and _int(val, -1) < 0:
                 w.append(f"{label}: negative or invalid {key} {val!r}")
+        dev_raw = p.get("dev_cards")
+        if isinstance(dev_raw, dict):
+            unknown_keys = [str(k) for k in dev_raw if dev_type_from_name(k) is None]
+            if unknown_keys:
+                w.append(f"{label}: dev card type(s) {unknown_keys} not recognised "
+                         f"(use {', '.join(B.DEV_NAMES)}){' - all dev cards ignored' if len(unknown_keys) == len(dev_raw) else ''}")
+        res_raw = p.get("resources")
+        cards_raw = p.get("cards")
+        if isinstance(res_raw, (dict, list, tuple)) and cards_raw is not None and not isinstance(cards_raw, bool):
+            total = sum(_resource_counts(res_raw))
+            if _int(cards_raw, -1) >= 0 and _int(cards_raw) != total:
+                w.append(f"{label}: cards {cards_raw} does not match the {total} resources listed")
         per_player.append((sett, cit, roads))
 
     # distance rule
@@ -747,6 +891,17 @@ def validate(parsed: Dict[str, Any]) -> List[str]:
         w.append(f"longest road flagged for several players: {[colors[i] for i in lr_holders]}")
     if len(la_holders) > 1:
         w.append(f"largest army flagged for several players: {[colors[i] for i in la_holders]}")
+    if not lr_holders:
+        for i, (sett, cit, roads) in enumerate(per_player):
+            blocked = [v for j, (s2, c2, _) in enumerate(per_player) if j != i for v in s2 + c2]
+            n = longest_road_length(roads, blocked)
+            if n >= 5:
+                w.append(f"{colors[i] or f'player {i}'}: has a road of length {n} but longest road is not flagged for anyone")
+    if not la_holders:
+        for i, p in enumerate(players):
+            k = _int(p.get("knights"), 0)
+            if k >= 3:
+                w.append(f"{colors[i] or f'player {i}'}: has played {k} knights but largest army is not flagged for anyone")
     for i, (sett, cit, roads) in enumerate(per_player):
         label = colors[i] or f"player {i}"
         buildings = set(sett) | set(cit)
@@ -804,6 +959,31 @@ def validate(parsed: Dict[str, Any]) -> List[str]:
         d = _int(dice, -1)
         if d not in (0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
             w.append(f"dice value {dice!r} is not a possible 2d6 total")
+    rolled = parsed.get("rolled")
+    if rolled is not None and not isinstance(rolled, bool):
+        w.append(f"'rolled' must be true/false, got {rolled!r}")
+
+    # bank / dev deck
+    bank = parsed.get("bank")
+    if isinstance(bank, dict):
+        for k, v in bank.items():
+            r = resource_from_name(k)
+            if r is None or r == B.DESERT:
+                w.append(f"bank: unknown resource {k!r}")
+            elif _int(v, -1) < 0:
+                w.append(f"bank: negative or invalid count for {B.RESOURCE_NAMES[r]}: {v!r}")
+            elif _int(v) > B.BANK_PER_RESOURCE:
+                w.append(f"bank: {v} {B.RESOURCE_NAMES[r]} exceeds the {B.BANK_PER_RESOURCE} cards of the bank")
+    elif isinstance(bank, (list, tuple)):
+        if any(_int(v, -1) < 0 for v in bank):
+            w.append(f"bank: negative or invalid count in {list(bank)!r}")
+    elif bank is not None:
+        w.append("'bank' must be a {resource: count} object")
+    remaining = parsed.get("dev_deck_remaining")
+    if remaining is not None and not isinstance(remaining, bool):
+        r_int = _int(remaining, -1)
+        if not 0 <= r_int <= sum(B.DEV_DECK_COUNTS):
+            w.append(f"dev_deck_remaining {remaining!r} is outside 0..{sum(B.DEV_DECK_COUNTS)} (ignored)")
     return w
 
 

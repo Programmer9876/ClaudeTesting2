@@ -3,19 +3,28 @@
 Pipeline (see docs/DESIGN.md section 7):
 
 1. Sea mask (HSV blue) -> land mask.
-2. Board lattice fit: tile blobs (hexes separated by thin sea gaps) give
-   an initial centre / hex size that is refined by least squares against
-   the 19 known hex centres; if the tiles are not separable a closed land
-   blob + IoU coordinate descent is used instead.
+2. Board lattice fit: number tokens (or eroded tile blobs) give candidate
+   registrations of the 19-hex lattice (least squares against the known
+   hex centres, seeded around the median of the points); among the
+   candidates the one whose lattice overlaps the land mask best is kept, so
+   a board partly hidden under a panel or cropped is not shifted by a row.
+   If neither works a closed land blob + IoU coordinate descent is used and
+   verified.
 3. Tile resource classification from ring colour statistics with a
    constrained (Hungarian) assignment to the standard 4/3/4/4/3/1 multiset.
 4. Number tokens: digit classifier (``catanbot.vision.digits``) on a crop
    around every hex centre, then a constrained assignment to the standard
    multiset of 18 numbers - so a token hidden by the robber still gets the
    only number left.
-5. Robber: dark, unsaturated blob of pawn size near a hex centre.
+5. Robber: pawn-sized box filter over the dark, unsaturated mask inside the
+   board (thin piece outlines touching the pawn do not matter), falling
+   back to a connected-component search.
 6. Buildings at ``board.VERTEX_POS`` and roads along ``board.EDGE_POS`` by
-   player-colour pixel statistics (city vs settlement by blob extent).
+   player-colour pixel statistics against a per-image background palette
+   (measured sea and tile colours); city vs settlement by probe discs that
+   lie inside a city but outside a settlement and the road directions.
+   Colours of the whole calibration are rescaled when the number tokens
+   show a global brightness change.
 7. Ports: beige icons just outside coastal edges, typed by the resource
    square.
 8. UI chrome (best effort): player panel rows (colour, VP, cards, dev,
@@ -80,14 +89,43 @@ class Calibration:
         "brown": (120, 80, 50),
         "pink": (230, 120, 180),
     })
+    dev_card: RGB = (120, 70, 170)    # dev-card icon / card colour in the UI
+    panel: RGB = (30, 40, 56)         # dark UI panel colour (hand bar, bank panel)
     player_max_dist: float = 60.0      # RGB distance to accept a pixel as a player colour
     building_min_fraction: float = 0.22
     road_min_fraction: float = 0.35
-    # Probe offsets (hex sizes, relative to the vertex) that are inside a city but outside a
-    # settlement and at least 30 degrees off every road direction.  "Y" vertices (an edge goes
-    # straight up) use the first list, the others the second.  Re-calibrate for other artwork.
-    city_probes_y: Tuple[Tuple[float, float], ...] = ((0.0, 0.16), (-0.14, -0.17))
-    city_probes_inv: Tuple[Tuple[float, float], ...] = ((0.19, 0.11), (-0.14, -0.24))
+    # Probe offsets (hex sizes, relative to the vertex) that lie >= 0.03 hs inside the city
+    # artwork and >= 0.03 hs away from the settlement and from the three road capsules.  "Y"
+    # vertices (edges up, down-left, down-right; y = 0.5 mod 1.5 hex sizes) use the first
+    # list, inverted-Y vertices the second.  Re-calibrate for other artwork.
+    city_probes_y: Tuple[Tuple[float, float], ...] = ((-0.145, -0.16), (-0.15, -0.04))
+    city_probes_inv: Tuple[Tuple[float, float], ...] = ((0.15, 0.12), (-0.155, 0.12))
+
+
+def _copy_calibration(cal: Calibration) -> Calibration:
+    return Calibration(**{k: (dict(v) if isinstance(v, dict) else v) for k, v in cal.__dict__.items()})
+
+
+def _scale_rgb(c: Sequence[float], ratio: float) -> RGB:
+    return tuple(int(min(255, max(0, round(v * ratio)))) for v in c)  # type: ignore[return-value]
+
+
+def _luma(c: Sequence[float]) -> float:
+    return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+
+
+def scaled_calibration(cal: Calibration, ratio: float, token: Optional[RGB] = None) -> Calibration:
+    """Copy of ``cal`` with every reference colour multiplied by ``ratio`` (a global brightness change)."""
+    new = _copy_calibration(cal)
+    new.sea = _scale_rgb(cal.sea, ratio)
+    new.token = token if token is not None else _scale_rgb(cal.token, ratio)
+    new.port = _scale_rgb(cal.port, ratio)
+    new.robber = _scale_rgb(cal.robber, ratio)
+    new.dev_card = _scale_rgb(cal.dev_card, ratio)
+    new.panel = _scale_rgb(cal.panel, ratio)
+    new.tile = {k: _scale_rgb(v, ratio) for k, v in cal.tile.items()}
+    new.players = {k: _scale_rgb(v, ratio) for k, v in cal.players.items()}
+    return new
 
 
 # ---------------------------------------------------------------------------
@@ -287,8 +325,10 @@ def _hex_inside_mask(shape: Tuple[int, int], geom: Dict[str, float], scale: int 
     return inside
 
 
-def sea_mask(arr: np.ndarray, cal: Calibration) -> np.ndarray:
-    hue, sat, val = rgb_to_hsv(arr)
+def sea_mask(arr: np.ndarray, cal: Calibration, hsv: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
+             ) -> np.ndarray:
+    """Boolean mask of sea pixels (HSV hue band); ``hsv`` may be passed to reuse a conversion."""
+    hue, sat, val = rgb_to_hsv(arr) if hsv is None else hsv
     lo, hi = cal.sea_hue
     m = (hue >= lo) & (hue <= hi) & (sat >= cal.sea_min_sat) & (val >= cal.sea_min_val)
     frac = float(m.mean())
@@ -337,18 +377,23 @@ def _fit_geometry_from_tiles(cents: np.ndarray, hs0: float, cx0: float, cy0: flo
     return geom, resid, matched
 
 
+def _land_iou(land: np.ndarray, geom: Dict[str, float], scale: int = 4, shrink: float = 0.96) -> float:
+    """IoU between the (slightly shrunk) 19-hex lattice under ``geom`` and the land mask."""
+    small = land[::scale, ::scale]
+    m = _hex_inside_mask(land.shape, geom, scale=scale, shrink=shrink)
+    m = m[:small.shape[0], :small.shape[1]]
+    s = small[:m.shape[0], :m.shape[1]]
+    inter = np.logical_and(m, s).sum()
+    union = np.logical_or(m, s).sum()
+    return float(inter / max(1, union))
+
+
 def _iou_refine(land: np.ndarray, geom: Dict[str, float], scale: int = 4) -> Dict[str, float]:
     """Coordinate descent on (cx, cy, hs) maximising IoU between lattice and land mask."""
-    small = land[::scale, ::scale]
     best = dict(geom)
 
     def score(g):
-        m = _hex_inside_mask(land.shape, g, scale=scale, shrink=0.96)
-        m = m[:small.shape[0], :small.shape[1]]
-        s = small[:m.shape[0], :m.shape[1]]
-        inter = np.logical_and(m, s).sum()
-        union = np.logical_or(m, s).sum()
-        return inter / max(1, union)
+        return _land_iou(land, g, scale=scale, shrink=0.96)
 
     best_s = score(best)
     for step in (0.06, 0.03, 0.012, 0.005):
@@ -378,36 +423,69 @@ def _erode(mask: np.ndarray, k: int) -> np.ndarray:
     return sliding_window_view(m, (k, k)).min(axis=(2, 3)).astype(bool)
 
 
-def _fit_from_points(pts: np.ndarray, min_matched: int) -> Optional[Tuple[Dict[str, float], float, int]]:
-    """Lattice fit from candidate hex-centre points (tokens or tile centroids)."""
+def _fit_candidates(pts: np.ndarray, min_matched: int) -> List[Tuple[Dict[str, float], float, int]]:
+    """Every distinct lattice registration consistent with candidate hex-centre points.
+
+    Returns ``[(geometry, residual, matched)]`` for fits with at least
+    ``min_matched`` points matched and a residual below 0.12 hex sizes.
+    Seeds are placed on a +-2 hex-size grid around the *median* of the
+    points (the mean is biased when a whole column of the board is hidden),
+    and fits whose centres agree within 0.2 hex sizes are merged.
+    """
     if len(pts) < min_matched:
-        return None
+        return []
     # nearest-neighbour spacing ~ sqrt(3) * hs
     d = np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=2)
     np.fill_diagonal(d, np.inf)
-    nn = np.sort(d.min(axis=1))
-    spacing = float(np.median(nn[: max(3, len(nn) * 2 // 3)]))
+    nn = d.min(axis=1)
+    spacing = float(np.median(np.sort(nn)[: max(3, len(nn) * 2 // 3)]))
     if not np.isfinite(spacing) or spacing <= 0:
-        return None
+        return []
     hs0 = spacing / SQRT3
-    cx0, cy0 = float(pts[:, 0].mean()), float(pts[:, 1].mean())
-    best = None
-    # the centroid of the detected points is biased when points are missing:
-    # try a few offsets around it and keep the fit with most matches / least residual
-    for ox in (-1.0, -0.5, 0.0, 0.5, 1.0):
-        for oy in (-1.0, -0.5, 0.0, 0.5, 1.0):
+    core_mask = nn < 2.5 * spacing
+    core = pts[core_mask] if int(core_mask.sum()) >= min_matched else pts   # drop isolated blobs
+    cx0, cy0 = float(np.median(core[:, 0])), float(np.median(core[:, 1]))
+    cands: List[Tuple[Dict[str, float], float, int]] = []
+    offs = np.arange(-2.0, 2.01, 0.5)
+    for ox in offs:
+        for oy in offs:
             g, resid, matched = _fit_geometry_from_tiles(pts, hs0, cx0 + ox * hs0, cy0 + oy * hs0, iters=4)
-            if matched < min_matched or g["hex_size"] <= 0:
+            if matched < min_matched or g["hex_size"] <= 0 or resid > 0.12 * g["hex_size"]:
                 continue
-            key = (matched, -resid)
-            if best is None or key > best[0]:
-                best = (key, g, resid, matched)
-    if best is None:
+            dup = next((k for k, (c, _, _) in enumerate(cands)
+                        if abs(g["cx"] - c["cx"]) < 0.2 * hs0 and abs(g["cy"] - c["cy"]) < 0.2 * hs0), -1)
+            if dup >= 0:
+                if (matched, -resid) > (cands[dup][2], -cands[dup][1]):
+                    cands[dup] = (g, resid, matched)
+                continue
+            cands.append((g, resid, matched))
+    return cands
+
+
+def _fit_from_points(pts: np.ndarray, min_matched: int) -> Optional[Tuple[Dict[str, float], float, int]]:
+    """Best lattice fit (most matched points, then least residual) from candidate hex-centre points."""
+    cands = _fit_candidates(pts, min_matched)
+    if not cands:
         return None
-    _, g, resid, matched = best
-    if resid > 0.12 * g["hex_size"]:
-        return None
+    g, resid, matched = max(cands, key=lambda c: (c[2], -c[1]))
     return g, resid, matched
+
+
+def _pick_registration(cands: Sequence[Tuple[Dict[str, float], float, int]], land: np.ndarray
+                       ) -> Tuple[Dict[str, float], float, int, float, List[Tuple[float, int]]]:
+    """Choose among lattice candidates by land-mask overlap.
+
+    Candidates within 3 matches of the best are ranked by the IoU between
+    their lattice and the land mask (ties by matches, then residual); the
+    translated registrations that match a subset of the visible tokens
+    overlap the sea and lose.  Returns ``(geometry, residual, matched, iou,
+    ranking)`` with ``ranking = [(iou, matched), ...]`` for debugging.
+    """
+    best_m = max(m for _, _, m in cands)
+    pool = [(g, r, m) for g, r, m in cands if m >= best_m - 3]
+    scored = sorted(((_land_iou(land, g), m, -r, g) for g, r, m in pool), key=lambda t: (t[0], t[1], t[2]), reverse=True)
+    iou, m, neg_r, g = scored[0]
+    return g, -neg_r, m, iou, [(round(float(s), 3), int(mm)) for s, mm, _, _ in scored[:5]]
 
 
 def _token_points(arr: np.ndarray, cal: Calibration) -> np.ndarray:
@@ -436,20 +514,31 @@ def _token_points(arr: np.ndarray, cal: Calibration) -> np.ndarray:
     return np.array(pts, dtype=np.float64).reshape(-1, 2)
 
 
-def find_board(arr: np.ndarray, cal: Calibration) -> Tuple[Dict[str, float], Dict[str, Any], List[str]]:
-    """Locate the board: returns (geometry, debug, warnings)."""
+def find_board(arr: np.ndarray, cal: Calibration, sea: Optional[np.ndarray] = None
+               ) -> Tuple[Dict[str, float], Dict[str, Any], List[str]]:
+    """Locate the board: returns (geometry, debug, warnings).
+
+    ``sea`` may be a precomputed :func:`sea_mask`.  ``debug`` carries the
+    method (``tokens`` / ``tiles`` / ``blob``), the number of matched points,
+    the land IoU of the chosen registration and ``confidence`` (0..1).
+    """
     h, w = arr.shape[:2]
     warnings: List[str] = []
-    sea = sea_mask(arr, cal)
+    if sea is None:
+        sea = sea_mask(arr, cal)
     land = ~sea
     debug: Dict[str, Any] = {"sea_fraction": float(sea.mean())}
     geom = None
     # 1. number tokens
     pts = _token_points(arr, cal)
-    fit = _fit_from_points(pts, min_matched=8)
-    if fit is not None:
-        geom, resid, matched = fit
-        debug.update({"method": "tokens", "points": int(len(pts)), "matched": matched, "residual": resid})
+    cands = _fit_candidates(pts, min_matched=8)
+    if cands:
+        geom, resid, matched, iou, ranking = _pick_registration(cands, land)
+        debug.update({"method": "tokens", "points": int(len(pts)), "matched": matched, "residual": resid,
+                      "land_iou": iou, "candidates": ranking, "confidence": float(min(1.0, matched / 14.0))})
+        if matched < 12:
+            warnings.append(f"board partially hidden ({matched} of 18 number tokens found); "
+                            "lattice may be mis-registered - check the debug overlay")
     # 2. eroded tiles (bridges removed) at several scales
     if geom is None:
         img_area = h * w
@@ -457,7 +546,7 @@ def find_board(arr: np.ndarray, cal: Calibration) -> Tuple[Dict[str, float], Dic
             k = max(3, int(frac * min(h, w)))
             er = _erode(land, k)
             n, labels, stats, cents = _components(er)
-            cands = []
+            cands_t = []
             for i in range(1, n):
                 x, y, bw, bh, area = stats[i]
                 if area < 0.0003 * img_area or area > 0.06 * img_area:
@@ -467,17 +556,22 @@ def find_board(arr: np.ndarray, cal: Calibration) -> Tuple[Dict[str, float], Dic
                 fill = area / float(bw * bh)
                 aspect = bw / float(bh)
                 if 0.6 <= fill <= 0.88 and 0.75 <= aspect <= 1.2:
-                    cands.append((i, area))
-            if len(cands) < 8:
+                    cands_t.append((i, area))
+            if len(cands_t) < 8:
                 continue
-            areas = np.array([c[1] for c in cands], dtype=np.float64)
+            areas = np.array([c[1] for c in cands_t], dtype=np.float64)
             med = np.median(np.sort(areas)[-19:])
-            good = [c for c in cands if 0.55 * med <= c[1] <= 1.6 * med]
+            good = [c for c in cands_t if 0.55 * med <= c[1] <= 1.6 * med]
             cc = np.array([cents[c[0]] for c in good], dtype=np.float64)
-            fit = _fit_from_points(cc, min_matched=8)
-            if fit is not None:
-                geom, resid, matched = fit
-                debug.update({"method": "tiles", "erode": k, "points": int(len(cc)), "matched": matched, "residual": resid})
+            cands = _fit_candidates(cc, min_matched=8)
+            if cands:
+                geom, resid, matched, iou, ranking = _pick_registration(cands, land)
+                debug.update({"method": "tiles", "erode": k, "points": int(len(cc)), "matched": matched,
+                              "residual": resid, "land_iou": iou, "candidates": ranking,
+                              "confidence": float(min(1.0, matched / 14.0))})
+                if matched < 12:
+                    warnings.append(f"board partially hidden ({matched} of 19 tiles found); "
+                                    "lattice may be mis-registered - check the debug overlay")
                 break
     # 3. closed blob + IoU refinement
     if geom is None:
@@ -502,8 +596,13 @@ def find_board(arr: np.ndarray, cal: Calibration) -> Tuple[Dict[str, float], Dic
         hs0 = math.sqrt(area / (19 * 1.5 * SQRT3))
         geom = {"cx": x + bw / 2.0, "cy": y + bh / 2.0, "hex_size": float(hs0)}
         geom = _iou_refine(land & (labels2 == best_i), geom)
-        warnings.append("board located by blob fallback (tokens/tiles not found); geometry may be approximate")
-        debug["method"] = "blob"
+        iou = float(geom.pop("iou", 0.0))
+        debug.update({"method": "blob", "land_iou": iou, "confidence": float(min(1.0, iou))})
+        if iou < 0.5:
+            warnings.append(f"board not located reliably (blob fallback, land overlap {iou:.2f}); the board below "
+                            "is probably wrong - use --state / --fix or the LLM parser")
+        else:
+            warnings.append("board located by blob fallback (tokens/tiles not found); geometry may be approximate")
     geom["width"] = float(w)
     geom["height"] = float(h)
     debug["geometry"] = dict(geom)

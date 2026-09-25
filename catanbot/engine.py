@@ -733,27 +733,33 @@ def _update_longest_road_after_road(state: GameState, cur: int) -> None:
     holder exists the engine maintains the invariant "holder length >= every
     other length", so a builder who strictly exceeds the holder is the unique
     new maximum; the holder's length is re-derived rather than trusted so that
-    externally constructed states (screenshots) are handled sensibly too.
-    Without a holder ties matter, hence the full recompute.
+    externally constructed states (screenshots, JSON) are handled sensibly
+    too: the shortcut is only taken while the recorded holder's trail is a
+    valid award (>= 5), otherwise the full recompute decides, so the card is
+    never awarded to, or left with, a trail shorter than 5.  Without a holder
+    ties matter, hence the full recompute.
     """
     if len(state.players[cur].roads) < 5:
         return
     length = longest_road_length(state, cur)
     holder = state.longest_road_owner
     if holder == cur:
-        if length > state.longest_road_len:
+        if length >= 5:
+            # adding a road never shortens the builder's trail: re-derive the length
             state.longest_road_len = length
-        return
-    if holder >= 0:
+            return
+    elif holder >= 0:
         hl = longest_road_length(state, holder)
-        if length > hl:
-            state.longest_road_owner = cur
-            state.longest_road_len = length
-        else:
-            state.longest_road_len = hl
+        if hl >= 5:
+            if length > hl:
+                state.longest_road_owner = cur
+                state.longest_road_len = length
+            else:
+                state.longest_road_len = hl
+            return
+    elif length < 5:
         return
-    if length >= 5:
-        _update_longest_road(state)
+    _update_longest_road(state)
 
 
 def _update_largest_army(state: GameState, cur: int) -> None:

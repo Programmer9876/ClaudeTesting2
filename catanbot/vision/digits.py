@@ -10,8 +10,9 @@ Pipeline (:func:`preprocess`)
     -> grayscale + "creamness" map
     -> locate the token (bright, low-saturation blob; whole crop as fallback)
     -> square box, resized to 32x32, per-image standardised
-    -> features = raw pixels (1024) ++ HOG-like orientation histograms (512)
-    -> MLP 1536 -> 256 -> 128 -> 10 (ReLU, softmax)
+    -> features = raw pixels (1024) ++ HOG-like orientation histograms (640:
+       8x8 cells of 4 px and 4x4 cells of 8 px, 8 bins each)
+    -> MLP 1664 -> 256 -> 128 -> 10 (ReLU, softmax)
 
 Colonist draws 6 and 8 in red ink.  :func:`red_score` measures how red the
 digit ink is and :meth:`DigitClassifier.predict_proba` folds it in as a soft
@@ -23,7 +24,11 @@ way Colonist draws it (cream disc, bold black / red digits, probability
 pips, tile-coloured background, rotation, blur, noise, occlusion, JPEG
 artefacts) and :func:`generate_dataset` turns thousands of them into
 feature matrices.  ``scripts/train_digits.py`` trains and writes
-``models/digits.npz``; :meth:`DigitClassifier.load` restores it.
+``models/digits.npz``; :meth:`DigitClassifier.load` restores it.  The model
+file is looked up by :func:`find_model_path` (``CATANBOT_DIGITS_MODEL``
+environment variable, the repository ``models/`` directory, package data
+``catanbot/vision/models/``, or ``./models/``) so an installed package still
+finds it.
 
 Only numpy and Pillow are required.
 """
@@ -47,6 +52,8 @@ __all__ = [
     "NUM_FEATURES",
     "FONT_CANDIDATES",
     "DEFAULT_MODEL_PATH",
+    "MODEL_PATH_ENV",
+    "find_model_path",
     "available_fonts",
     "make_token_image",
     "generate_dataset",
@@ -75,6 +82,39 @@ NUM_FEATURES = IMG_SIZE * IMG_SIZE + NUM_HOG        # 1664
 DEFAULT_MODEL_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models", "digits.npz"
 )
+#: Environment variable that overrides the model location.
+MODEL_PATH_ENV = "CATANBOT_DIGITS_MODEL"
+_PACKAGE_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "digits.npz")
+
+
+def _with_npz(path: str) -> str:
+    return path if path.lower().endswith(".npz") else path + ".npz"
+
+
+def find_model_path(path: Optional[str] = None) -> str:
+    """Resolve the digit-model file.
+
+    ``path`` (or the ``CATANBOT_DIGITS_MODEL`` environment variable) wins when
+    given; otherwise the first existing of :data:`DEFAULT_MODEL_PATH` (the
+    repository checkout), the package-data location
+    ``catanbot/vision/models/digits.npz`` and ``./models/digits.npz`` is
+    used.  A missing ``.npz`` suffix is added.  Raises ``FileNotFoundError``
+    with a hint when no file exists.
+    """
+    explicit = path or os.environ.get(MODEL_PATH_ENV)
+    if explicit:
+        for cand in (explicit, _with_npz(explicit)):
+            if os.path.isfile(cand):
+                return cand
+        raise FileNotFoundError(f"digit classifier model not found at {explicit!r}")
+    candidates = [DEFAULT_MODEL_PATH, _PACKAGE_MODEL_PATH, os.path.join(os.getcwd(), "models", "digits.npz")]
+    for cand in candidates:
+        if os.path.isfile(cand):
+            return cand
+    raise FileNotFoundError(
+        "digit classifier model not found (looked in " + ", ".join(candidates) + "); "
+        f"train it with scripts/train_digits.py or point {MODEL_PATH_ENV} at a digits.npz file"
+    )
 
 #: Fonts we try to use for synthetic tokens (only the ones that exist are used).
 FONT_CANDIDATES: List[str] = [
@@ -813,8 +853,14 @@ class DigitClassifier:
         return float((self.predict_proba_features(X).argmax(axis=1) == np.asarray(y)).mean())
 
     # --- persistence ------------------------------------------------------------
-    def save(self, path: str) -> None:
-        """Save weights, feature statistics and configuration to ``path`` (``.npz``)."""
+    def save(self, path: str) -> str:
+        """Save weights, feature statistics and configuration to ``path``.
+
+        A missing ``.npz`` suffix is added (``numpy.savez`` would add it
+        anyway); the path actually written is returned so that
+        :meth:`load` can be given the same string.
+        """
+        path = _with_npz(path)
         d = os.path.dirname(os.path.abspath(path))
         if d:
             os.makedirs(d, exist_ok=True)
@@ -831,11 +877,16 @@ class DigitClassifier:
             payload[f"W{i}"] = W
             payload[f"b{i}"] = b
         np.savez(path, **payload)
+        return path
 
     @staticmethod
     def load(path: Optional[str] = None) -> "DigitClassifier":
-        """Restore a classifier saved with :meth:`save` (default :data:`DEFAULT_MODEL_PATH`)."""
-        path = DEFAULT_MODEL_PATH if path is None else path
+        """Restore a classifier saved with :meth:`save`.
+
+        Without ``path`` the model is located with :func:`find_model_path`;
+        a path without the ``.npz`` suffix is accepted.
+        """
+        path = find_model_path(path)
         with np.load(path) as z:
             classes = [int(c) for c in z["classes"]]
             if classes != CLASSES:

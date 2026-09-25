@@ -1,9 +1,13 @@
-"""Tests for the catanatron-engine opponents (catanbot.bench.catanatron_players)."""
+"""Tests for the catanatron-engine opponents (catanbot.bench.catanatron_players).
+
+They run on catanatron 3.2.1 (PyPI wheel) and on the 3.3 engine (GitHub checkout).
+"""
 import pytest
 
 catanatron = pytest.importorskip("catanatron")
 
 from catanatron.game import TURNS_LIMIT, Game  # noqa: E402
+from catanatron.models.actions import generate_playable_actions  # noqa: E402
 from catanatron.models.enums import CITY, RESOURCES, SETTLEMENT, ActionPrompt, ActionType  # noqa: E402
 from catanatron.models.player import Color, RandomPlayer  # noqa: E402
 from catanatron.players.weighted_random import WeightedRandomPlayer  # noqa: E402
@@ -11,17 +15,39 @@ from catanatron.state_functions import get_actual_victory_points, player_key  # 
 
 from catanbot.bench.catanatron_players import (  # noqa: E402
     DEFAULT_WEIGHTS,
+    DISCARD_RESOURCE,
     AlphaBetaPlayer,
     ValueFunctionPlayer,
     choose_initial_settlement,
     get_map_tables,
     plan_discard,
     play_game,
+    playable,
     robber_candidates,
     value_function,
 )
 
 COLORS = [Color.RED, Color.BLUE, Color.WHITE, Color.ORANGE]
+
+
+def refresh(game):
+    """Regenerate the playable actions after editing the state by hand."""
+    acts = generate_playable_actions(game.state)
+    game.state.playable_actions = acts
+    if hasattr(game, "playable_actions"):
+        game.playable_actions = acts
+    return acts
+
+
+def records(game):
+    recs = getattr(game.state, "action_records", None)
+    if recs is None:
+        return list(game.state.actions)
+    return [getattr(r, "action", r) for r in recs]
+
+
+def has_rolled(game, color):
+    return game.state.player_state[f"{player_key(game.state, color)}_HAS_ROLLED"]
 
 
 def game_after_setup(seed):
@@ -129,12 +155,15 @@ def test_players_return_playable_actions_in_every_prompt_of_random_games():
         while game.winning_color() is None and decisions < 350:
             state = game.state
             color = state.current_color()
-            actions = state.playable_actions
+            actions = playable(game)
             seen.add(state.current_prompt)
             if len(actions) > 1 or decisions % 20 == 0:
                 for player in (vf[color], ab[color]):
                     chosen = player.decide(game, actions)
                     assert chosen in actions, (player, chosen, state.current_prompt)
+                    if DISCARD_RESOURCE is not None and actions[0].action_type == DISCARD_RESOURCE:
+                        # 3.3: the discard is chosen one card at a time, least valuable first
+                        assert chosen.value == plan_discard(game, color, 1)[0]
             game.play_tick()
             decisions += 1
     assert {ActionPrompt.BUILD_INITIAL_SETTLEMENT, ActionPrompt.BUILD_INITIAL_ROAD,
@@ -146,9 +175,9 @@ def test_players_in_a_full_engine_game_play_legal_actions():
                RandomPlayer(COLORS[2]), WeightedRandomPlayer(COLORS[3])]
     game = Game(players, seed=7)
     ticks = 0
-    while game.winning_color() is None and game.state.num_turns < TURNS_LIMIT and ticks < 3000:
+    while game.winning_color() is None and game.state.num_turns < TURNS_LIMIT and ticks < 4000:
         state = game.state
-        actions = state.playable_actions
+        actions = playable(game)
         chosen = state.current_player().decide(game, actions)
         assert chosen in actions
         game.execute(chosen)  # validated by the engine
@@ -169,12 +198,13 @@ def post_roll_decision(seed, color_index=0, min_actions=4):
     """A post-roll PLAY_TURN state of a random game with at least ``min_actions`` options."""
     game = Game([RandomPlayer(c) for c in COLORS], seed=seed)
     ticks = 0
-    while ticks < 2000:
+    while ticks < 3000:
         state = game.state
-        actions = state.playable_actions
+        actions = playable(game)
+        color = state.current_color()
         if (state.current_prompt == ActionPrompt.PLAY_TURN and not state.is_road_building
-                and state.current_color() == state.colors[color_index]
-                and actions[0].action_type != ActionType.ROLL and len(actions) >= min_actions):
+                and color == state.colors[color_index] and has_rolled(game, color)
+                and len(actions) >= min_actions):
             return game
         game.play_tick()
         ticks += 1
@@ -184,7 +214,7 @@ def post_roll_decision(seed, color_index=0, min_actions=4):
 def test_alphabeta_decides_within_node_budget():
     game = post_roll_decision(21)
     color = game.state.current_color()
-    actions = game.state.playable_actions
+    actions = playable(game)
     for budget in (60, 150, 600):
         player = AlphaBetaPlayer(color, budget=budget)
         chosen = player.decide(game, actions)
@@ -203,13 +233,11 @@ def test_never_ends_turn_with_affordable_settlement_or_city():
     settlements = game.state.buildings_by_color[color][SETTLEMENT]
     assert settlements
     set_hand(game, color, wood=1, brick=1, sheep=1, wheat=3, ore=3)
-    from catanatron.models.actions import generate_playable_actions
-
-    game.state.playable_actions = generate_playable_actions(game.state)
-    actions = game.state.playable_actions
+    actions = refresh(game)
     assert any(a.action_type == ActionType.BUILD_CITY for a in actions)
     for player in (ValueFunctionPlayer(color), AlphaBetaPlayer(color, budget=400)):
         chosen = player.decide(game, actions)
+        assert chosen in actions
         assert chosen.action_type != ActionType.END_TURN
         assert chosen.action_type in (ActionType.BUILD_CITY, ActionType.BUILD_SETTLEMENT,
                                       ActionType.BUILD_ROAD, ActionType.BUY_DEVELOPMENT_CARD,
@@ -220,8 +248,7 @@ def test_never_ends_turn_with_affordable_settlement_or_city():
     # settlement (robber-aware, resource-weighted production, plus a 2:1 port's bonus)
     tables = get_map_tables(game.state.board.map)
     set_hand(game, color, wheat=2, ore=3)
-    game.state.playable_actions = generate_playable_actions(game.state)
-    actions = game.state.playable_actions
+    actions = refresh(game)
     chosen = ValueFunctionPlayer(color).decide(game, actions)
     assert chosen.action_type == ActionType.BUILD_CITY
     robber = game.state.board.robber_coordinate
@@ -248,16 +275,14 @@ def test_robber_never_on_own_tile_and_discard_keeps_next_build():
     # robber prompt: fabricate it from the current state
     state.current_player_index = 0
     state.current_prompt = ActionPrompt.MOVE_ROBBER
-    from catanatron.models.actions import generate_playable_actions
-
-    state.playable_actions = generate_playable_actions(state)
+    actions = refresh(game)
     tables = get_map_tables(state.board.map)
     own_nodes = set(state.buildings_by_color[color][SETTLEMENT])
     for action in robber_candidates(game, color, 4):
         coord = action.value[0]
         assert not (own_nodes & set(tables.tile_nodes[coord]))
-    chosen = ValueFunctionPlayer(color).decide(game, state.playable_actions)
-    assert chosen in state.playable_actions
+    chosen = ValueFunctionPlayer(color).decide(game, actions)
+    assert chosen in actions
     assert not (own_nodes & set(tables.tile_nodes[chosen.value[0]]))
 
     # discard: 10 cards holding a city (2 wheat 3 ore) discards exactly the other five
@@ -277,7 +302,7 @@ def test_opening_book_picks_a_high_production_spot():
     game = Game([RandomPlayer(c) for c in COLORS], seed=9)
     state = game.state
     color = state.current_color()
-    actions = state.playable_actions
+    actions = playable(game)
     chosen = choose_initial_settlement(game, color, actions)
     assert chosen in actions
     tables = get_map_tables(state.board.map)
@@ -293,6 +318,8 @@ def test_play_game_with_smart_discards_completes():
     game = Game(players, seed=13)
     winner = play_game(game, smart_discard=True)
     assert winner is not None
-    discards = [a for a in game.state.actions if a.action_type == ActionType.DISCARD]
-    for a in discards:
-        assert isinstance(a.value, list)
+    for action in records(game):
+        if action.action_type.value == "DISCARD":  # 3.2.1: the chosen cards are logged
+            assert isinstance(action.value, list)
+        elif action.action_type.value == "DISCARD_RESOURCE":  # 3.3: one resource at a time
+            assert action.value in RESOURCES

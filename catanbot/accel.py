@@ -14,10 +14,17 @@
   current ``features.FEATURE_NAMES`` layout.  On a mismatch the extension is
   disabled with a ``RuntimeWarning`` and the Python path is used instead, so a
   stale build can never produce silently wrong features.
+* Unsupported states: the extension raises ``catanbot_core.UnsupportedStateError``
+  (a ``ValueError``) for a state its fixed-size structs cannot hold - more than
+  4 players, lists of the wrong length, ids or integers out of the 32-bit
+  range, more than 64 road entries for one player.  The wrappers below catch it
+  and compute that call with the Python reference instead, so the public
+  functions behave exactly as without the extension (only slower) for them.
 """
 from __future__ import annotations
 
 import os
+import threading
 import warnings
 from typing import List, Optional, Sequence
 
@@ -25,7 +32,8 @@ __all__ = ["AVAILABLE", "extract", "extract_batch", "longest_road_length", "stat
            "heuristic_evaluate", "load_core", "disabled_by_env", "verify"]
 
 # Entry points every usable build provides; an older build missing one is stale and gets disabled by verify().
-_REQUIRED = ("extract_batch", "extract", "longest_road_length", "static_values", "static_value", "heuristic_evaluate")
+_REQUIRED = ("extract_batch", "extract", "longest_road_length", "static_values", "static_value", "heuristic_evaluate",
+             "UnsupportedStateError")
 
 
 def disabled_by_env() -> bool:
@@ -50,6 +58,7 @@ def load_core():
 _core = None if disabled_by_env() else load_core()
 AVAILABLE: bool = _core is not None
 _verified = False
+_fallback_lock = threading.RLock()
 
 
 def verify() -> bool:
@@ -75,52 +84,99 @@ def verify() -> bool:
     return AVAILABLE
 
 
+def _unsupported(exc: BaseException) -> bool:
+    """True when the extension refused the state as one it cannot represent (``UnsupportedStateError``)."""
+    return isinstance(exc, getattr(_core, "UnsupportedStateError", ()))
+
+
+def _python(fn, *args):
+    """Run ``fn`` (a ``features`` / ``heuristic`` entry point) on the pure-Python path.
+
+    Those functions route to the extension whenever ``AVAILABLE`` is true, so the flag is cleared for
+    the duration of the call and restored afterwards (under a lock, so concurrent fallbacks restore it
+    correctly; another thread extracting features meanwhile simply takes the Python path as well).
+    """
+    global AVAILABLE
+    if not AVAILABLE:
+        return fn(*args)
+    with _fallback_lock:
+        prev, AVAILABLE = AVAILABLE, False
+        try:
+            return fn(*args)
+        finally:
+            AVAILABLE = prev
+
+
 def extract_batch(states: Sequence, players: Sequence[int]):
-    """C++ ``features.extract_batch`` (falls back to Python when the extension is unusable)."""
+    """C++ ``features.extract_batch`` (Python for states the extension cannot represent, or when it is unusable)."""
     if AVAILABLE and (_verified or verify()):
-        return _core.extract_batch(states, players)
+        try:
+            return _core.extract_batch(states, players)
+        except ValueError as exc:
+            if not _unsupported(exc):
+                raise
     from . import features as F
-    return F.extract_batch(states, players)
+    return _python(F.extract_batch, states, players)
 
 
 def extract(state, player: int):
-    """C++ ``features.extract`` (falls back to Python when the extension is unusable)."""
+    """C++ ``features.extract`` (Python for states the extension cannot represent, or when it is unusable)."""
     if AVAILABLE and (_verified or verify()):
-        return _core.extract(state, int(player))
+        try:
+            return _core.extract(state, int(player))
+        except ValueError as exc:
+            if not _unsupported(exc):
+                raise
     from . import features as F
-    return F.extract(state, player)
+    return _python(F.extract, state, player)
 
 
 def longest_road_length(state, player: int) -> int:
-    """C++ ``features.longest_road_length`` (falls back to Python when the extension is unusable)."""
+    """C++ ``features.longest_road_length`` (Python for states the extension cannot represent, or when unusable)."""
     if AVAILABLE and (_verified or verify()):
-        return int(_core.longest_road_length(state, int(player)))
+        try:
+            return int(_core.longest_road_length(state, int(player)))
+        except ValueError as exc:
+            if not _unsupported(exc):
+                raise
     from . import features as F
-    return F.longest_road_length(state, player)
+    return F.longest_road_length(state, player)  # pure Python, never routes back here
 
 
 def static_values(state) -> List[float]:
-    """C++ ``heuristic.static_value`` for every player of ``state`` (falls back to Python when unusable)."""
+    """C++ ``heuristic.static_value`` for every player of ``state`` (Python when unsupported / unusable)."""
     if AVAILABLE and (_verified or verify()):
-        return list(_core.static_values(state))
+        try:
+            return list(_core.static_values(state))
+        except ValueError as exc:
+            if not _unsupported(exc):
+                raise
     from . import heuristic as H
-    return [H.static_value(state, i) for i in range(state.num_players)]
+    return [H.static_value(state, i) for i in range(state.num_players)]  # static_value is pure Python
 
 
 def static_value(state, player: int) -> float:
-    """C++ ``heuristic.static_value(state, player)`` (falls back to Python when the extension is unusable)."""
+    """C++ ``heuristic.static_value(state, player)`` (Python when unsupported / unusable)."""
     if AVAILABLE and (_verified or verify()):
-        return float(_core.static_value(state, int(player)))
+        try:
+            return float(_core.static_value(state, int(player)))
+        except ValueError as exc:
+            if not _unsupported(exc):
+                raise
     from . import heuristic as H
     return H.static_value(state, player)
 
 
 def heuristic_evaluate(states: Sequence, players: Sequence[int], temperature: float = 16.0):
-    """C++ ``HeuristicEvaluator.evaluate`` -> float64 array (falls back to Python when the extension is unusable)."""
+    """C++ ``HeuristicEvaluator.evaluate`` -> float64 array (Python when unsupported / unusable)."""
     if AVAILABLE and (_verified or verify()):
-        return _core.heuristic_evaluate(states, players, float(temperature))
-    from . import heuristic as H  # AVAILABLE is False here, so this runs the pure-Python evaluator
-    return H.HeuristicEvaluator(temperature).evaluate(states, players)
+        try:
+            return _core.heuristic_evaluate(states, players, float(temperature))
+        except ValueError as exc:
+            if not _unsupported(exc):
+                raise
+    from . import heuristic as H
+    return _python(H.HeuristicEvaluator(temperature).evaluate, states, players)
 
 
 def core_file() -> Optional[str]:

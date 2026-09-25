@@ -29,6 +29,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .. import board as B
 from ..state import GameState, Player
+from .schema import port_edge_pairs
 
 __all__ = [
     "ColonistStyle",
@@ -395,18 +396,8 @@ def _draw_road(cv: _Canvas, e: int, geom: Geometry, color: RGB, style: ColonistS
 
 
 def _port_entries(ports: Dict[int, int]) -> List[Tuple[int, int]]:
-    """``{vertex: type}`` -> ``[(coastal_edge, type)]``."""
-    out: List[Tuple[int, int]] = []
-    consumed: set = set()
-    for e in B.COASTAL_EDGES:
-        a, b = B.EDGE_VERTICES[e]
-        if a in consumed or b in consumed:
-            continue
-        ta, tb = ports.get(a), ports.get(b)
-        if ta is not None and ta == tb:
-            out.append((e, ta))
-            consumed.update((a, b))
-    return out
+    """``{vertex: type}`` -> ``[(coastal_edge, type)]`` (shared with ``schema.state_to_parsed``)."""
+    return port_edge_pairs(ports)
 
 
 def _draw_port(cv: _Canvas, e: int, ptype: int, geom: Geometry, style: ColonistStyle) -> None:
@@ -514,14 +505,15 @@ def _draw_hand_bar(cv: _Canvas, player: Optional[Player], w: int, h: int, style:
     total = n_cards * card_w + (n_cards - 1) * gap
     x = 0.5 * w - total / 2.0
     cv.rounded_rect(x - gap, y0 - 0.02 * h, x + total + gap, y1 + 0.01 * h, 0.15 * bar_h, style.panel)
-    counts = list(player.resources) if player.hand_known else [0] * 5
+    # an unknown hand is drawn as "?" (never as zeros, which a parser would read as an empty hand)
+    counts = [str(c) for c in player.resources] if player.hand_known else ["?"] * 5
     fs = 0.32 * bar_h
     for r in range(5):
         col = style.tile[r]
         cv.rounded_rect(x, y0, x + card_w, y1, 0.08 * card_w, col, style.outline, 0.02 * card_w)
         cv.text(x + card_w / 2, y0 + 0.3 * bar_h, B.RESOURCE_NAMES[r][:4], 0.18 * bar_h, (255, 255, 255),
                 "mm", style.outline, 0.02 * bar_h)
-        cv.text(x + card_w / 2, y0 + 0.68 * bar_h, str(counts[r]), fs, style.card_text, "mm", style.outline,
+        cv.text(x + card_w / 2, y0 + 0.68 * bar_h, counts[r], fs, style.card_text, "mm", style.outline,
                 0.04 * bar_h)
         x += card_w + gap
     dev = player.total_dev if player.dev_known else player.dev_count

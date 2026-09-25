@@ -12,6 +12,8 @@ Player types (single letters, repeatable in ``--types``):
     R  catanatron RandomPlayer              W  catanatron WeightedRandomPlayer
     V  catanatron VictoryPointPlayer        F  catanbot ValueFunctionPlayer
     A  catanbot AlphaBetaPlayer
+    X  catanatron's own ValueFunctionPlayer (catanatron >= 3.3 only)
+    Y  catanatron's own AlphaBetaPlayer, depth 2 with pruning (catanatron >= 3.3 only)
 
 Every 4-subset of ``--types`` (in order) plays ``--games`` games; the seat
 order rotates with the game index and the engine additionally shuffles the
@@ -46,6 +48,12 @@ from catanbot.bench.catanatron_players import (  # noqa: E402
     play_game,
 )
 
+try:  # catanatron >= 3.3 ships its own value-function / alpha-beta players
+    from catanatron.players.minimax import AlphaBetaPlayer as CatanatronAlphaBetaPlayer
+    from catanatron.players.value import ValueFunctionPlayer as CatanatronValueFunctionPlayer
+except ImportError:  # 3.2.1 wheel
+    CatanatronAlphaBetaPlayer = CatanatronValueFunctionPlayer = None
+
 COLORS = [Color.RED, Color.BLUE, Color.WHITE, Color.ORANGE]
 TYPE_NAMES = {
     "R": "RandomPlayer",
@@ -53,7 +61,22 @@ TYPE_NAMES = {
     "V": "VictoryPointPlayer",
     "F": "ValueFunctionPlayer",
     "A": "AlphaBetaPlayer",
+    "X": "catanatron ValueFunction",
+    "Y": "catanatron AlphaBeta(2)",
 }
+
+
+def engine_version() -> str:
+    """Installed version plus the API generation actually imported (3.3 has DISCARD_RESOURCE)."""
+    from catanatron.models.enums import ActionType
+
+    api = "3.3" if hasattr(ActionType, "DISCARD_RESOURCE") else "3.2"
+    try:
+        from importlib.metadata import version
+
+        return f"{version('catanatron')} (api {api})"
+    except Exception:  # pragma: no cover
+        return f"? (api {api})"
 
 
 def make_player(kind: str, color: Color, opts: dict):
@@ -67,7 +90,15 @@ def make_player(kind: str, color: Color, opts: dict):
         return ValueFunctionPlayer(color)
     if kind == "A":
         return AlphaBetaPlayer(color, budget=opts.get("ab_budget", 2000),
-                               depth=opts.get("ab_depth", 3), beam=opts.get("ab_beam", 5))
+                               depth=opts.get("ab_depth", 3), beam=opts.get("ab_beam", 8))
+    if kind == "X":
+        if CatanatronValueFunctionPlayer is None:
+            raise ValueError("type X needs catanatron >= 3.3 (catanatron.players.value)")
+        return CatanatronValueFunctionPlayer(color)
+    if kind == "Y":
+        if CatanatronAlphaBetaPlayer is None:
+            raise ValueError("type Y needs catanatron >= 3.3 (catanatron.players.minimax)")
+        return CatanatronAlphaBetaPlayer(color, CatanatronAlphaBetaPlayer.Params(depth=2, prunning=True))
     raise ValueError(f"unknown player type {kind!r} (use one of {''.join(TYPE_NAMES)})")
 
 
@@ -148,7 +179,7 @@ def main(argv=None) -> int:
     ap.add_argument("--workers", type=int, default=2, help="worker processes (default 2)")
     ap.add_argument("--ab-budget", type=int, default=2000, help="AlphaBetaPlayer node budget")
     ap.add_argument("--ab-depth", type=int, default=3, help="AlphaBetaPlayer own-action depth")
-    ap.add_argument("--ab-beam", type=int, default=5, help="AlphaBetaPlayer beam width")
+    ap.add_argument("--ab-beam", type=int, default=8, help="AlphaBetaPlayer beam width")
     ap.add_argument("--vps", type=int, default=10, help="victory points to win (default 10)")
     ap.add_argument("--smart-discard", action="store_true",
                     help="let catanbot players choose their discards (play_game loop)")
@@ -170,7 +201,8 @@ def main(argv=None) -> int:
     }
     jobs = build_jobs(types, args.games, args.seed, opts)
     print(f"{len(jobs)} games: types={','.join(types)} games/subset={args.games} seed={args.seed} "
-          f"workers={args.workers} ab_budget={args.ab_budget} smart_discard={args.smart_discard}")
+          f"workers={args.workers} ab_budget={args.ab_budget} smart_discard={args.smart_discard} "
+          f"catanatron={engine_version()}")
     t0 = time.perf_counter()
     if args.workers > 1:
         import multiprocessing as mp
