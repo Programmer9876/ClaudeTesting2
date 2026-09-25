@@ -934,6 +934,9 @@ class AlphaBetaPlayer(ValueFunctionPlayer):
             return self._opponent_node(game, action, alpha)
         total = 0.0
         for p, a in action_outcomes(game, action):
+            if self.nodes >= self.budget:
+                self._exhausted = True
+                return total + p * self._value(game)
             child = self._copy_exec(game, a)
             total += p * self._max_node(child, depth, alpha)
         return total

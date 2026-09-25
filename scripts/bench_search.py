@@ -18,6 +18,9 @@ match (values are bit-identical, so the trees are the same).
 ``--model`` loads a trained ``ValueNet`` (default: a freshly initialised net,
 which costs the same to evaluate).  ``--inprocess`` toggles
 ``catanbot.accel.AVAILABLE`` at run time instead of spawning subprocesses.
+The workers pin BLAS to one thread (``--blas-threads``): the search evaluates
+batches of 10-100 rows, for which OpenBLAS's thread pool is pure overhead and,
+on a shared machine, a large source of timing noise.
 """
 from __future__ import annotations
 
@@ -159,16 +162,25 @@ def _timed(fn, *a) -> float:
 def worker_args(args) -> List[str]:
     out = [sys.executable, os.path.abspath(__file__), "--worker", "--positions", str(args.positions), "--seed",
            str(args.seed), "--repeat", str(args.repeat), "--beam", str(args.beam), "--expand", str(args.expand),
-           "--depths", *[str(d) for d in args.depths], "--evaluators", *args.evaluators]
+           "--blas-threads", str(args.blas_threads), "--depths", *[str(d) for d in args.depths],
+           "--evaluators", *args.evaluators]
     if args.model:
         out += ["--model", args.model]
     return out
+
+
+def pin_blas_threads(n: int, env: Dict[str, str]) -> None:
+    """Limit the BLAS thread pools (must happen before numpy is imported)."""
+    if n > 0:
+        for var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+            env[var] = str(n)
 
 
 def run_subprocess(args, no_accel: bool) -> Dict:
     env = dict(os.environ)
     env["CATANBOT_NO_ACCEL"] = "1" if no_accel else ""
     env["PYTHONPATH"] = ROOT + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    pin_blas_threads(args.blas_threads, env)
     proc = subprocess.run(worker_args(args), env=env, capture_output=True, text=True, cwd=ROOT)
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
@@ -191,7 +203,8 @@ def run_inprocess(args, no_accel: bool) -> Dict:
 
 def print_report(args, py: Dict, cpp: Dict) -> None:
     print(f"Searcher.search on {args.positions} mid-game positions (4 players, turns {py['positions']}), "
-          f"beam={args.beam}, expand={args.expand}, best of {args.repeat}")
+          f"beam={args.beam}, expand={args.expand}, best of {args.repeat}, BLAS threads "
+          f"{args.blas_threads or 'default'}")
     print(f"python : accel.AVAILABLE={py['accel']}")
     print(f"c++    : accel.AVAILABLE={cpp['accel']}  ({cpp['core']})")
     if not cpp["accel"]:
@@ -229,11 +242,15 @@ def main(argv=None) -> int:
     ap.add_argument("--beam", type=int, default=4)
     ap.add_argument("--expand", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--blas-threads", type=int, default=1,
+                    help="BLAS threads for the value net (default 1; 0 = leave numpy's default)")
     ap.add_argument("--verbose", "-v", action="store_true", help="per-position lines")
     ap.add_argument("--inprocess", action="store_true", help="toggle accel.AVAILABLE in this process instead of "
                                                              "spawning CATANBOT_NO_ACCEL subprocesses")
     ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if args.worker or args.inprocess:
+        pin_blas_threads(args.blas_threads, os.environ)  # before catanbot / numpy are imported
     if args.worker:
         print(json.dumps(run_mode(args)))
         return 0
