@@ -198,3 +198,47 @@ any proof game):
   metadata, count as not registered); the opponent must match both as
   preset and as class (on 3.3 the stand-ins `vf` / `ab` have catanatron's
   class names).
+
+## Amendment 2026-09-25 (2): Colonist-level information (claim 3)
+
+Written before any game in the new information mode.  It adds tests and a
+claim; it changes nothing in T1-T6, R1-R2 or claims 1 and 2.
+
+**Why.**  In T1-T6 both sides see every hand and dev card (Catanatron exposes
+the full state, and Catanatron's own bots read it).  That is fair between
+the two sides but it is not the Colonist game.  Claim 3 tests our bot with
+exactly the information a Colonist player has, while Catanatron's bots keep
+the full view (which can only help them).
+
+**Information model for our bot ("counted" mode).**  Always known: board,
+robber, buildings, roads, bank per resource, dev-deck size, every hand size
+and dev-card count, every played dev card, awards, our own hand and dev
+cards.  Public events with content: production per player from each roll,
+builds, bank / port trades, domestic trades, Monopoly takes, Year of Plenty
+picks, Road Building, dev purchases (count only).  Hidden from third parties:
+the resource of a robber steal (known only to thief and victim), the types
+of discarded cards (count public), the type of a dev card until it is
+played.  Opponents' hands are a card-counting belief (exact except for the
+hidden events above); the bot decides on determinizations sampled from that
+belief (default 4 samples per decision).
+
+**Tests.**  1v3, same format and rules as T1-T3, seed 900201, PYTHONHASHSEED
+0, trading off, bot spec as in T1-T3 plus `--info counted` with default
+samples, run from a frozen snapshot of the first commit that contains the
+counted mode and its tests (recorded in docs/PROOF.md):
+
+| test | opponent | format | games |
+|---|---|---|---|
+| T7 | V (catanatron ValueFunctionPlayer) | 1v3 | 1000 |
+| T8 | A (catanatron AlphaBetaPlayer) | 1v3 | 400 |
+| T9 | S (catanatron SameTurnAlphaBetaPlayer) | 1v3 | 400 |
+
+**Claim 3 - "strong under Colonist information".**  T7-T9 each reject the
+null "win rate <= 0.25" (exact one-sided binomial, Holm over T7-T9) at
+family-wise alpha = 5.7e-7; the lower bound of the central 99 %
+Clopper-Pearson interval is >= 0.35 in each; every seat's win rate exceeds
+0.25 (one-sided exact, p < 0.05 per seat) in each; zero adapter errors,
+fallbacks and crashes.
+
+**Readiness for human testing** now requires claim 2 AND claim 3 (a
+stricter bar than before; claim 2's own conditions are unchanged).
