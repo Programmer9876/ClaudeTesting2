@@ -13,7 +13,8 @@ or value net.
 ```bash
 pip install catanatron                     # only needed for this benchmark (pulls networkx)
 python3 scripts/bench_catanatron.py --games 20 --opponent vp \
-    --spec "search:depth=1,evaluator=heuristic" [--workers 2] [--seed 0] [--json out.json] [--verbose]
+    --spec "search:depth=1,evaluator=heuristic" [--workers 2] [--seed 0] [--json out.json] [--verbose] \
+    [--vps-to-win 10] [--discard-limit 7]
 python3 -m pytest tests/test_catanatron_adapter.py -q      # adapter tests (skipped without catanatron)
 ```
 
@@ -146,13 +147,15 @@ h7=t13 (-2,2,0)   h8=t4 (-1,1,0)    h9=t0 (0,0,0)     h10=t1 (1,-1,0)   h11=t7 (
 | `is_road_building` / `free_roads_available` | `free_roads` |
 | prompt `BUILD_INITIAL_SETTLEMENT` / `BUILD_INITIAL_ROAD` | `PHASE_SETUP_SETTLEMENT` / `PHASE_SETUP_ROAD` (+ `setup_round`, `setup_last_settlement`) |
 | prompt `PLAY_TURN`, not rolled / rolled | `PHASE_ROLL` / `PHASE_MAIN` (`dice` from the turn's logged `ROLL`) |
-| prompt `DISCARD` | `PHASE_DISCARD`, `discard_queue` = current discarder + later seats over the limit |
+| prompt `DISCARD` | `PHASE_DISCARD`, `discard_queue` = current discarder + later seats holding > 7 cards (catanatron's hard-coded rule for the later discarders, limitation 12) |
 | prompt `MOVE_ROBBER` | `PHASE_ROBBER` |
 | `ACTUAL_VICTORY_POINTS >= vps_to_win` | `winner`, `PHASE_GAME_OVER` |
 
 `total_vp(i)` of the converted state equals catanatron's
 `ACTUAL_VICTORY_POINTS` and `public_vp(i)` its `VICTORY_POINTS` at every
-tick of a game (tested).  **All hands are exact**: catanatron hands every
+tick of a game (tested).  The Longest Road holder and length are *copied*
+from catanatron, not recomputed, because the two engines count roads
+differently (limitation 11).  **All hands are exact**: catanatron hands every
 `Player` the complete `game.state`, so every seat is converted with
 `hand_known=True` / `dev_known=True` - our "me" and the three opponents alike
 (catanbot's own self-play engine is perfect-information too, so the search
@@ -209,8 +212,12 @@ documented rule differences below.
    replayed on a private *shadow* copy of catanatron's state, converting the
    state before each action and calling `bot.observe(state, action, seat)` -
    the same hook the self-play runner uses - so the opponent model and the
-   political tracker see the whole game (`PLAY_KNIGHT_CARD` + `MOVE_ROBBER`
-   are merged into one `PLAY_KNIGHT` observation).
+   political tracker see the whole game.  `PLAY_KNIGHT_CARD` + `MOVE_ROBBER`
+   are merged into one `PLAY_KNIGHT` observation, delivered with the state
+   the *card* was played in (`PHASE_ROLL` / `PHASE_MAIN`, knight still in
+   hand) rather than the `PHASE_ROBBER` state after it, so that
+   `SearchBot.observe` predicts the decision from the same legal-action set
+   the observed `(PLAY_KNIGHT, hex, victim)` came from (tested).
 
 ## Limitations and rule differences
 
@@ -243,9 +250,48 @@ documented rule differences below.
    catanatron builds some action lists from `set`s of `Color` enums whose
    order depends on Python's per-process hash seed, so game trajectories are
    only reproducible within one process (or with `PYTHONHASHSEED` fixed).
-   The tests therefore loop over seeds rather than pin one trajectory.
+   The tests therefore loop over seeds rather than pin one trajectory
+   (confirmed: the same 30 `WeightedRandomPlayer` seeds gave 18 701, 17 042
+   and 18 646 ticks in three separate processes).
 9. Actions logged before our first decision (setup placements of earlier
    seats) are not replayed through `observe`; single-card Year of Plenty logs
    are skipped (no catanbot equivalent).
 10. `CatanbotPlayer.reset_state()` is not called by catanatron's `Game`
     itself; `play_game` calls it, and a new `game.id` also resets the bot.
+11. **Longest Road: a road ending at an opponent's building does not count
+    in catanatron.**  Its `Board.longest_acyclic_path` refuses to step onto
+    any enemy-owned node, so the last road of a path that *ends* at an
+    opponent's settlement / city is never counted (and `Board.build_road`
+    never adds that node to the road's component, although
+    `buildable_edges` does allow building the road into it).  catanbot's
+    `engine.longest_road_length`, an independent brute-force longest-trail
+    search and the official rules count that road: the opponent's building
+    only stops the path from continuing *through* the vertex.  Over 30
+    `WeightedRandomPlayer` games catanatron's `P{i}_LONGEST_ROAD_LENGTH` was
+    exactly one below catanbot's on 363 of 10 192 ticks on which the award
+    was held (every mismatch was catanatron = catanbot - 1; the brute force
+    agreed with catanbot on every tick), and on 37 ticks in 1 of the 30 games
+    the unique holder under catanbot's counting was a different seat from
+    catanatron's `HAS_ROAD` holder.  This is an engine rule difference, not an
+    adapter bug: the adapter copies catanatron's holder and length, so
+    `total_vp` / `public_vp` always equal `ACTUAL_VICTORY_POINTS` /
+    `VICTORY_POINTS`.  The consequence for play is that the search, whose
+    simulated road building uses catanbot's counting, can expect a Longest
+    Road award (or a takeover) that catanatron will not grant when the
+    decisive road ends at an opponent's building.
+    `test_road_ending_at_enemy_settlement_counts_in_catanbot_but_not_catanatron`
+    reproduces this on a hand-built board (catanbot's engine books +2 VP for
+    the fifth road, catanatron scores the path 4 and awards nothing) and
+    `test_longest_road_lengths_never_differ_by_more_than_one_through_games`
+    checks the `cat in (cb, cb - 1)` invariant through whole games.
+12. **`discard_limit` only governs the first discarder.**  On a 7 catanatron
+    picks the first player to discard with `state.discard_limit` (default 7)
+    but advances to the *later* discarders with a hard-coded `> 7`
+    (`apply_action`'s `DISCARD` branch).  `state_to_catanbot` builds the
+    `discard_queue` with the same `> 7` rule for the later seats so it lists
+    exactly the seats catanatron goes on to prompt; with the default limit
+    the two rules coincide (every benchmark game), with a non-default
+    `--discard-limit` they do not (e.g. limit 9, hands `[10, 8, 6, 9]`:
+    catanatron prompts seats 0, 1 and 3 although only seats 0 and 3 exceed
+    9; limit 5, hands `[6, 6, 8, 3]`: only seats 0 and 2 are prompted).
+    `test_discard_queue_mirrors_catanatron_hard_coded_limit` replays these.

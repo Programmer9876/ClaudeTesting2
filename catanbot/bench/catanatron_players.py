@@ -837,12 +837,26 @@ class ValueFunctionPlayer(Player):
         node_total = tables.node_total
         roads = board.roads
         k_ = self._keys(state)
-        long_race = state.player_state[k_.road_len] >= 3
+        road_len = state.player_state[k_.road_len]
+        long_race = road_len >= 3
+        path_ends = set()
+        if long_race:
+            # ends of the current longest path: a road there lengthens it (Longest Road)
+            paths = board.continuous_roads_by_player(self.color)
+            if paths:
+                path = max(paths, key=len)
+                if len(path) == 1:
+                    path_ends.update(path[0])
+                elif len(path) > 1:
+                    path_ends.update(set(path[0]) - set(path[1]))
+                    path_ends.update(set(path[-1]) - set(path[-2]))
         scored = []
         for a in playable_actions:
             if a.action_type != ActionType.BUILD_ROAD:
                 continue
             score = 0.05 + (0.15 if long_race else 0.0)
+            if path_ends and (a.value[0] in path_ends or a.value[1] in path_ends):
+                score += 1.5 + 0.5 * road_len
             for n in a.value:
                 if n in comp_nodes:
                     continue
@@ -931,12 +945,14 @@ class AlphaBetaPlayer(ValueFunctionPlayer):
         if action.action_type == ActionType.END_TURN:
             return self._opponent_node(game, action, alpha)
         total = 0.0
+        done = 0.0
         for p, a in action_outcomes(game, action):
             if self.nodes >= self.budget:
                 self._exhausted = True
-                return total + p * self._value(game)
+                return total + (1.0 - done) * self._value(game)
             child = self._copy_exec(game, a)
             total += p * self._max_node(child, depth, alpha)
+            done += p
         return total
 
     def _max_node(self, game: Game, depth: int, alpha: float) -> float:
@@ -1154,15 +1170,18 @@ class AlphaBetaPlayer(ValueFunctionPlayer):
             e = enabled_build(new_hand)
             if e > 0:
                 trades.append((e, -len(given), new_hand[RESOURCE_INDEX[given[0]]], a))
-            elif sum(hand) > state.discard_limit:
+            elif len(given) <= 3 or sum(hand) > state.discard_limit:
+                # port trade (2:1 / 3:1), or over the discard limit: the trade that most
+                # advances the next build is worth a look even without completing it
                 gain = max(sum(min(new_hand[i], c[i]) for i in range(5)) / sum(c)
                            for c in (CITY_COST, SETTLEMENT_COST, DEV_COST))
+                gain -= 0.1 * len(given)
                 if fallback is None or gain > fallback[0]:
                     fallback = (gain, a)
         if trades:
             trades.sort(key=lambda t: (-t[0], -t[1], -t[2]))
             out.extend(a for _, _, _, a in trades[:2])
-        elif fallback is not None:
+        if fallback is not None:
             out.append(fallback[1])
 
         out = out[: self.beam]
