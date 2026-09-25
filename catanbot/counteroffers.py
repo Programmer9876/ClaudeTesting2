@@ -312,17 +312,19 @@ def offer_response_report(state: GameState, me: int, evaluator, model=None, poli
         lines.append(f"No counter-offer: {blocked}.")
     elif not any(r["action"][0] == A.COUNTER_TRADE for r in rows):
         lines.append("No counter-offer worth making (none is affordable, safe and better for us than now).")
+    def short(a: Action) -> str:
+        k = a[0]
+        return ("accept" if k == A.ACCEPT_TRADE else "reject" if k == A.REJECT_TRADE
+                else f"counter: give {A._counts_str(a[1])} for {A._counts_str(a[2])}")
+
     best = max(rows, key=lambda r: r["v_turn"]) if rows else None
     best_text = ""
     if best is not None:
-        k = best["action"][0]
-        best_text = ("accept" if k == A.ACCEPT_TRADE else "reject" if k == A.REJECT_TRADE
-                     else f"counter: give {A._counts_str(best['action'][1])} for {A._counts_str(best['action'][2])}")
+        best_text = short(best["action"])
         static_best = max(rows, key=lambda r: r["v_trade"])
         lines.insert(0, f"Best answer after {who}'s turn: {best_text}"
                      + ("" if static_best is best else
-                        f" (valued when the cards change hands it would be "
-                        f"{A.describe(static_best['action'], s0).lower()})"))
+                        f" (judged when the cards change hands: {short(static_best['action'])})"))
     out_rows = [{k: v for k, v in r.items() if k != "ends"} for r in rows]
     for r in out_rows:
         r["action"] = A.to_json(r["action"])
