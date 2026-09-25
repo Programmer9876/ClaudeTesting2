@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
+from . import accel as _accel  # optional C++ extension (catanbot_core); see docs/CPP.md
 from . import actions as A
 from . import board as B
 from .actions import Action
@@ -156,6 +157,8 @@ class HeuristicEvaluator:
         self.temperature = temperature
 
     def evaluate(self, states: Sequence[GameState], players: Sequence[int]) -> np.ndarray:
+        if _accel.AVAILABLE:  # C++ port of static_value + this softmax (bit-identical); the code below is the reference
+            return _accel.heuristic_evaluate(states, players, self.temperature)
         out = np.zeros(len(states), dtype=np.float64)
         cache: Dict[int, List[float]] = {}
         for k, (s, pl) in enumerate(zip(states, players)):

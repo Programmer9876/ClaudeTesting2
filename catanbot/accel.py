@@ -1,8 +1,9 @@
 """Optional C++ acceleration (the ``catanbot_core`` pybind11 extension).
 
-``catanbot.features.extract`` / ``extract_batch`` call into the extension when
-:data:`AVAILABLE` is true; the pure-Python code in ``features.py`` stays the
-reference implementation and the fallback.
+``catanbot.features.extract`` / ``extract_batch`` and
+``catanbot.heuristic.HeuristicEvaluator.evaluate`` call into the extension when
+:data:`AVAILABLE` is true; the pure-Python code in ``features.py`` /
+``heuristic.py`` stays the reference implementation and the fallback.
 
 * Build: ``scripts/build_cpp.sh`` (see ``docs/CPP.md``).  The module is looked
   up as ``catanbot.catanbot_core`` first, then as a top-level ``catanbot_core``.
@@ -18,10 +19,13 @@ from __future__ import annotations
 
 import os
 import warnings
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
-__all__ = ["AVAILABLE", "extract", "extract_batch", "longest_road_length", "load_core", "disabled_by_env",
-           "verify"]
+__all__ = ["AVAILABLE", "extract", "extract_batch", "longest_road_length", "static_values", "static_value",
+           "heuristic_evaluate", "load_core", "disabled_by_env", "verify"]
+
+# Entry points every usable build provides; an older build missing one is stale and gets disabled by verify().
+_REQUIRED = ("extract_batch", "extract", "longest_road_length", "static_values", "static_value", "heuristic_evaluate")
 
 
 def disabled_by_env() -> bool:
@@ -59,13 +63,15 @@ def verify() -> bool:
         return False
     from . import features as F  # lazy: features imports this module at load time
     try:
-        ok = int(_core.num_features()) == F.NUM_FEATURES and list(_core.feature_names()) == list(F.FEATURE_NAMES)
+        ok = (int(_core.num_features()) == F.NUM_FEATURES and list(_core.feature_names()) == list(F.FEATURE_NAMES)
+              and all(hasattr(_core, name) for name in _REQUIRED))
     except Exception:  # pragma: no cover - a broken build
         ok = False
     if not ok:
         AVAILABLE = False
-        warnings.warn("catanbot_core was built for a different feature layout; falling back to the Python "
-                      "implementation.  Rebuild it with scripts/build_cpp.sh.", RuntimeWarning, stacklevel=2)
+        warnings.warn("catanbot_core was built for a different feature layout or is an older build missing entry "
+                      "points; falling back to the Python implementation.  Rebuild it with scripts/build_cpp.sh.",
+                      RuntimeWarning, stacklevel=2)
     return AVAILABLE
 
 
@@ -91,6 +97,30 @@ def longest_road_length(state, player: int) -> int:
         return int(_core.longest_road_length(state, int(player)))
     from . import features as F
     return F.longest_road_length(state, player)
+
+
+def static_values(state) -> List[float]:
+    """C++ ``heuristic.static_value`` for every player of ``state`` (falls back to Python when unusable)."""
+    if AVAILABLE and (_verified or verify()):
+        return list(_core.static_values(state))
+    from . import heuristic as H
+    return [H.static_value(state, i) for i in range(state.num_players)]
+
+
+def static_value(state, player: int) -> float:
+    """C++ ``heuristic.static_value(state, player)`` (falls back to Python when the extension is unusable)."""
+    if AVAILABLE and (_verified or verify()):
+        return float(_core.static_value(state, int(player)))
+    from . import heuristic as H
+    return H.static_value(state, player)
+
+
+def heuristic_evaluate(states: Sequence, players: Sequence[int], temperature: float = 16.0):
+    """C++ ``HeuristicEvaluator.evaluate`` -> float64 array (falls back to Python when the extension is unusable)."""
+    if AVAILABLE and (_verified or verify()):
+        return _core.heuristic_evaluate(states, players, float(temperature))
+    from . import heuristic as H  # AVAILABLE is False here, so this runs the pure-Python evaluator
+    return H.HeuristicEvaluator(temperature).evaluate(states, players)
 
 
 def core_file() -> Optional[str]:

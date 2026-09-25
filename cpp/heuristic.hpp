@@ -64,7 +64,9 @@ double static_value(const GameStateC& s, int player);
 void static_values(const GameStateC& s, double* out);
 
 // HeuristicEvaluator.evaluate for one (state, player) pair given that state's static values:
-// softmax over the players at `temperature`, overridden by 1 / 0 when the game is over with a winner.
+// heuristic_softmax is the softmax over the n players' values at `temperature`;
+// heuristic_win_probability adds the terminal override (1 / 0 when the game is over with a winner).
+double heuristic_softmax(const double* values, int n, int player, double temperature);
 double heuristic_win_probability(const GameStateC& s, const double* values, int player, double temperature);
 
 }  // namespace catanbot

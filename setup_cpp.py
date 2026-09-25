@@ -28,9 +28,10 @@ if os.environ.get("CATANBOT_CPP_PORTABLE"):  # build without -march=native
 
 ext = Pybind11Extension(
     "catanbot.catanbot_core",
-    sources=[os.path.join("cpp", "module.cpp"), os.path.join("cpp", "features.cpp")],
+    sources=[os.path.join("cpp", "module.cpp"), os.path.join("cpp", "features.cpp"), os.path.join("cpp", "heuristic.cpp")],
     include_dirs=[CPP],
-    depends=[os.path.join(CPP, f) for f in ("state.hpp", "features.hpp", "board_tables.hpp", "feature_layout.hpp")],
+    depends=[os.path.join(CPP, f) for f in ("state.hpp", "features.hpp", "heuristic.hpp", "board_tables.hpp",
+                                             "feature_layout.hpp")],
     cxx_std=17,
     extra_compile_args=EXTRA_FLAGS,
 )

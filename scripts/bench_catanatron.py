@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Benchmark catanbot against the players shipped with the ``catanatron`` engine.
+
+Usage::
+
+    python3 scripts/bench_catanatron.py --games 20 --opponent vp \\
+        --spec "search:depth=1,evaluator=heuristic" [--seed 0] [--workers 1] [--json out.json]
+
+Every game seats one :class:`catanbot.bench.catanatron_adapter.CatanbotPlayer`
+(built from ``--spec``, see ``catanbot.selfplay.make_bot``) against three
+copies of the chosen catanatron opponent:
+
+* ``vp``       - ``VictoryPointPlayer`` (greedy one-ply VP maximiser, catanatron's
+  strongest built-in player)
+* ``weighted`` - ``WeightedRandomPlayer`` (random, biased to cities > settlements > dev cards)
+* ``random``   - ``RandomPlayer`` (uniform random)
+
+Seats rotate (game ``g`` puts catanbot in seat ``g % 4``), boards / dev decks
+/ dice come from catanatron seeded per game, so a run is reproducible.  The
+script prints the win rate (a random seat would win 25 %), average victory
+points, per-seat results, turn counts and adapter statistics, plus a Markdown
+table row ready for ``docs/BENCHMARKS.md``.  ``--workers`` plays games in
+parallel processes.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import multiprocessing as mp
+import os
+import sys
+import time
+from typing import Dict, List
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from catanatron.game import TURNS_LIMIT  # noqa: E402
+from catanatron.models.player import RandomPlayer  # noqa: E402
+from catanatron.players.search import VictoryPointPlayer  # noqa: E402
+from catanatron.players.weighted_random import WeightedRandomPlayer  # noqa: E402
+
+from catanbot.bench.catanatron_adapter import COLORS, DEFAULT_SPEC, CatanbotPlayer, play_game  # noqa: E402
+
+OPPONENTS = {
+    "vp": VictoryPointPlayer,
+    "weighted": WeightedRandomPlayer,
+    "random": RandomPlayer,
+}
+
+
+def game_seed(base_seed: int, g: int) -> int:
+    """Non-zero per-game seed (catanatron treats seed 0 as 'random')."""
+    return base_seed * 100003 + g + 1
+
+
+def run_one(job: tuple) -> Dict[str, object]:
+    """Play game ``g`` of a batch; returns the summary dict plus adapter stats."""
+    g, base_seed, spec, opponent, vps_to_win = job
+    seat = g % len(COLORS)
+    seed = game_seed(base_seed, g)
+    opp_cls = OPPONENTS[opponent]
+    players = []
+    me = None
+    for i, color in enumerate(COLORS):
+        if i == seat:
+            me = CatanbotPlayer(color, spec=spec, seed=seed)
+            players.append(me)
+        else:
+            players.append(opp_cls(color))
+    res = play_game(players, seed=seed, vps_to_win=vps_to_win)
+    assert me is not None
+    res["game"] = g
+    res["seat"] = seat
+    res["our_vp"] = res["vps"][seat]
+    res["opp_vps"] = [v for i, v in enumerate(res["vps"]) if i != seat]
+    res["won"] = res["winner_seat"] == seat
+    res["stats"] = dict(me.stats)
+    res["unmapped_kinds"] = dict(me.unmapped_kinds)
+    return res
+
+
+def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: int) -> Dict[str, object]:
+    n = len(results)
+    wins = sum(1 for r in results if r["won"])
+    seats = len(COLORS)
+    by_seat = {s: [0, 0] for s in range(seats)}
+    for r in results:
+        by_seat[r["seat"]][1] += 1
+        if r["won"]:
+            by_seat[r["seat"]][0] += 1
+    opp_avg = [sum(r["opp_vps"]) / len(r["opp_vps"]) for r in results]
+    opp_best = [max(r["opp_vps"]) for r in results]
+    stat_keys = ["decisions", "searched", "trivial", "pending_robber", "unmapped_top", "fallback", "errors",
+                 "observe_errors", "observed", "search_time"]
+    stats = {k: sum(r["stats"].get(k, 0) for r in results) for k in stat_keys}
+    truncated = sum(1 for r in results if r["winner"] is None)
+    unmapped: Dict[str, int] = {}
+    for r in results:
+        for k, v in r.get("unmapped_kinds", {}).items():
+            unmapped[k] = unmapped.get(k, 0) + v
+    return {
+        "spec": spec,
+        "opponent": opponent,
+        "opponent_class": OPPONENTS[opponent].__name__,
+        "seed": seed,
+        "games": n,
+        "wins": wins,
+        "win_rate": wins / n if n else 0.0,
+        "avg_vp": sum(r["our_vp"] for r in results) / n if n else 0.0,
+        "avg_opp_vp": sum(opp_avg) / n if n else 0.0,
+        "avg_best_opp_vp": sum(opp_best) / n if n else 0.0,
+        "avg_turns": sum(r["turns"] for r in results) / n if n else 0.0,
+        "avg_duration": sum(r["duration"] for r in results) / n if n else 0.0,
+        "truncated": truncated,
+        "by_seat": {s: {"wins": w, "games": g} for s, (w, g) in by_seat.items()},
+        "stats": stats,
+        "unmapped_kinds": unmapped,
+        "results": results,
+    }
+
+
+def print_summary(s: Dict[str, object], wall: float) -> None:
+    n = max(1, int(s["games"]))
+    st = s["stats"]
+    print(f'catanbot "{s["spec"]}" vs 3 x {s["opponent_class"]}: {s["games"]} games, seat rotation, seed {s["seed"]}')
+    print(f'  wins        : {s["wins"]}/{s["games"]} = {100.0 * s["win_rate"]:.1f}%   (a random seat wins 25%)')
+    print(f'  avg VP      : catanbot {s["avg_vp"]:.2f} | opponents {s["avg_opp_vp"]:.2f} (best opponent {s["avg_best_opp_vp"]:.2f})')
+    seats = ", ".join(f'seat{k} {v["wins"]}/{v["games"]}' for k, v in s["by_seat"].items())
+    print(f"  by seat     : {seats}")
+    print(f'  turns/game  : {s["avg_turns"]:.1f} (catanatron num_turns; {s["truncated"]} game(s) hit the {TURNS_LIMIT}-turn cap)')
+    print(f'  time/game   : {s["avg_duration"]:.2f} s ({st["search_time"] / n:.2f} s in search, '
+          f'{st["searched"] / n:.1f} searched + {st["trivial"] / n:.1f} trivial decisions per game); wall {wall:.1f} s')
+    print(f'  adapter     : {int(st["errors"])} errors, {int(st["fallback"])} fallbacks, '
+          f'{int(st["unmapped_top"])} unmapped top actions, {int(st["observe_errors"])} observe errors, '
+          f'{st["observed"] / n:.0f} observed actions/game'
+          + (f'; unmapped top actions: {s["unmapped_kinds"]}' if s["unmapped_kinds"] else ""))
+    print("  markdown    : | `%s` | %s | %d | %d | %.0f%% | %.2f | %.2f | %.1f | %.2f |" % (
+        s["spec"], s["opponent_class"], s["games"], s["wins"], 100.0 * s["win_rate"], s["avg_vp"],
+        s["avg_opp_vp"], s["avg_turns"], s["avg_duration"]))
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--games", type=int, default=20, help="number of games (default 20)")
+    ap.add_argument("--opponent", choices=sorted(OPPONENTS), default="vp", help="catanatron opponent (default vp)")
+    ap.add_argument("--spec", default=DEFAULT_SPEC, help=f'catanbot bot spec (default "{DEFAULT_SPEC}")')
+    ap.add_argument("--seed", type=int, default=0, help="base seed (default 0)")
+    ap.add_argument("--workers", type=int, default=1, help="parallel processes (default 1)")
+    ap.add_argument("--vps-to-win", type=int, default=10, help="victory points needed (default 10)")
+    ap.add_argument("--json", default=None, help="write the full results to this JSON file")
+    ap.add_argument("--verbose", action="store_true", help="print one line per game")
+    args = ap.parse_args(argv)
+
+    jobs = [(g, args.seed, args.spec, args.opponent, args.vps_to_win) for g in range(args.games)]
+    results: List[Dict[str, object]] = []
+    t0 = time.perf_counter()
+
+    def report(r: Dict[str, object]) -> None:
+        results.append(r)
+        if args.verbose:
+            print(f'  game {r["game"]:3d} seat {r["seat"]} seed {r["seed"]}: '
+                  f'{"WIN " if r["won"] else "loss"} vp={r["vps"]} turns={r["turns"]} {r["duration"]:.1f}s',
+                  flush=True)
+
+    if args.workers > 1 and len(jobs) > 1:
+        ctx = mp.get_context("fork")
+        with ctx.Pool(processes=args.workers) as pool:
+            for r in pool.imap_unordered(run_one, jobs):
+                report(r)
+    else:
+        for job in jobs:
+            report(run_one(job))
+    results.sort(key=lambda r: r["game"])
+    wall = time.perf_counter() - t0
+    summary = summarize(results, args.spec, args.opponent, args.seed)
+    summary["wall_time"] = wall
+    print_summary(summary, wall)
+    if args.json:
+        with open(args.json, "w") as fh:
+            json.dump(summary, fh, indent=1, default=str)
+        print(f"  json        : {args.json}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
