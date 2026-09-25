@@ -4,6 +4,35 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 17:45 UTC - Catanatron test harness built; three facts that shape the proof
+
+* **Catanatron's bots cannot trade.**  Its ValueFunction player rejects every
+  offer (accepting moves no card in its own evaluation, so the tie keeps
+  REJECT), and its AlphaBeta / SameTurn players crash on every offer
+  (RuntimeError on REJECT_TRADE).  Trade-driven strategy terms can only be
+  tested against Catanatron with our own opponent response rule (a seat
+  accepts if its Catanatron value function improves), which is labelled as
+  such; the pre-registered proof plays with trading off, as the protocol
+  prescribes.
+* **Compute is not in our favour against the strong bots.**  Our bot spends
+  8-12 ms per decision (0.6-1.0 s per game); Catanatron's AlphaBeta spends
+  about 105 ms per decision (8 s per seat per game), SameTurn 7 s, and our
+  AlphaBeta stand-in 2.2 s.  Only Catanatron's ValueFunction thinks less
+  (0.23 s).  The ~63-66 % results against AlphaBeta / SameTurn are with ~10x
+  less thinking time.
+* **Games are now reproducible.**  The benchmarks pin PYTHONHASHSEED; the same
+  seed gives the same game in any process, so paired comparisons and exact
+  replays are possible (earlier results were unpinned).
+
+Also found: our bot keeps proposing trades to players who never accept (about
+59 offers per game against Catanatron with native trading, all rejected) and
+cancels about a quarter of accepted offers: an opponent-model calibration
+issue, recorded for later.
+
+Proof tooling (2v2 mixed tables, replayable action logs, exact-test analysis
+with the protocol's verdicts, chunked runner) is being built and verified;
+the proof games run right after.
+
 ## 2026-09-25 17:10 UTC - boards now fully random (port types were fixed)
 
 Our engine shuffled tiles and number tokens per game but always put the
