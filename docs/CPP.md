@@ -68,9 +68,14 @@ core.NUM_FEATURES, core.PLAYER_BLOCK, core.GLOBAL_BLOCK, core.MAX_PLAYERS
 `states` are ordinary `catanbot.state.GameState` objects.  Each *distinct
 consecutive* state object is converted and analysed once (like the Python
 `extract_batch`), so `extract_batch([s] * n, range(n))` costs one analysis.
-Errors mirror Python: `ValueError` for length mismatch or malformed states
-(wrong list lengths, ids out of range, more than 4 players), `IndexError`
-for a player index outside the state.
+Errors mirror Python: `ValueError` for a length mismatch, `IndexError`
+for a player index outside the state.  A state the fixed-size C++ structs
+cannot hold (more than 4 players, lists of the wrong length, ids or integers
+outside the 32-bit fields, more than 64 road entries for one player) raises
+`core.UnsupportedStateError`, a `ValueError` subclass; the `accel` wrappers
+catch it and compute that call with the Python reference, so
+`features.extract*` / `HeuristicEvaluator.evaluate` behave exactly as without
+the extension for such states (only slower).
 
 ### The switch (`catanbot/accel.py`)
 
@@ -163,10 +168,14 @@ engine port) rather than from the feature code itself.
 * Feature extraction and the heuristic evaluator only; the engine, the move
   ordering (`action_priors`) and the search are still Python (they can reuse
   `state.hpp` and `board_tables.hpp`).
-* At most 4 players (the feature layout pads to 3 opponents anyway).
-  Malformed states (resource lists that are not length 5, ids out of
-  range, > 64 roads for one player) raise `ValueError` instead of the
-  assorted Python errors.  Port types outside `0..5` are ignored.
+* At most 4 players (the feature layout pads to 3 opponents anyway) and
+  32-bit integer fields.  Calling `core.*` directly on such a state (or on
+  resource lists that are not length 5, ids out of range, > 64 road entries
+  for one player) raises `core.UnsupportedStateError` (a `ValueError`); the
+  `accel` wrappers fall back to the Python reference for it.  Other malformed
+  input raises the usual Python errors (`TypeError` for a non-numeric hex
+  number, ...); the desert's number is ignored like in Python.  Port types
+  outside `0..5` are ignored.
 * `-march=native` binaries are not portable between CPUs; rebuild on each
   machine (or use `CATANBOT_CPP_PORTABLE=1`).
 * The extension must be rebuilt after changing `board.py` or the feature
@@ -322,10 +331,11 @@ of 0.5-1.7 s in pure Python).  Set `OPENBLAS_NUM_THREADS=1` (and
 
 ### Limitations / notes
 
-* Same state limits as the features: at most 4 players, <= 64 roads per
-  player, ids in range; otherwise `ValueError` (Python `static_value`
-  would still run).  Hex numbers outside 2..12 (other than 0) count as 0
-  pips where Python raises `KeyError`; port types outside 0..5 are ignored
+* Same state limits as the features: at most 4 players, 32-bit integers,
+  ids in range; otherwise `core.UnsupportedStateError` from `core.*`, while
+  `accel.static_value*` / `HeuristicEvaluator.evaluate` fall back to the
+  Python `static_value`.  Hex numbers outside 2..12 (other than 0) count as
+  0 pips where Python raises `KeyError`; port types outside 0..5 are ignored
   where Python would raise or index oddly.
 * `temperature=0` gives `inf` / `nan` instead of Python's
   `ZeroDivisionError`; a negative player index raises `IndexError` where

@@ -2,11 +2,14 @@
 
     analyze IMAGE      parse a Colonist.io screenshot and recommend a move
     recommend          recommend a move from a JSON state (GameState or parsed-screenshot format)
+    watch              live advisor: capture the screen periodically and print advice
     play               simulate a game between bots
     eval               tournament between bot specs
     train              self-play training of the value net
     render             render a JSON state as a synthetic screenshot
     profiles           show a saved opponent-profile file
+    outcome            record the winner of a logged game
+    calibrate          score logged win estimates against outcomes / self-play calibration
 """
 from __future__ import annotations
 
@@ -14,23 +17,32 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
 import time
+from dataclasses import replace as _dc_replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import actions as A
 from . import board as B
 from . import engine as E
-from .state import (GameState, PHASE_MAIN, PHASE_ROLL, PHASE_TRADE_RESPONSE, PLAYER_COLORS, TradeOffer)
+from .state import (GameState, PHASE_GAME_OVER, PHASE_MAIN, PHASE_ROLL, PHASE_TRADE_RESPONSE, PLAYER_COLORS,
+                    TradeOffer)
 
 DEFAULT_MODEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "value_net.npz")
+
+_COASTAL_EDGES = frozenset(B.COASTAL_EDGES)
+_TRUE_WORDS = ("1", "true", "yes", "y", "on")
+_FALSE_WORDS = ("0", "false", "no", "n", "off")
+BOT_SPEC_HELP = ("bot specs: random[:end=0.3], heuristic[:temp=0.3,eps=0.05], "
+                 "search[:depth=1,beam=4,expand=8,model=PATH|evaluator=heuristic,eps=0.05,temp=0.3,rolls=11,trades=3]")
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 class UsageError(Exception):
-    pass
+    """A problem with the user's input; ``main`` prints it as one line and exits with 2."""
 
 
 def _res_index(name: str) -> int:
@@ -38,6 +50,41 @@ def _res_index(name: str) -> int:
     if r is None or r == B.DESERT:
         raise UsageError(f"unknown resource '{name}'")
     return r
+
+
+def _parse_int(text: Any, what: str, lo: Optional[int] = None, hi: Optional[int] = None) -> int:
+    """``int(text)`` with a readable UsageError ('hex index must be 0..18, got 99')."""
+    rng = f" {lo}..{hi}" if lo is not None and hi is not None else (f" >= {lo}" if lo is not None else "")
+    try:
+        v = int(str(text).strip())
+    except (TypeError, ValueError):
+        raise UsageError(f"{what} must be a whole number{rng}, got '{text}'")
+    if (lo is not None and v < lo) or (hi is not None and v > hi):
+        raise UsageError(f"{what} must be{rng}, got {v}")
+    return v
+
+
+def _parse_bool(text: str, what: str) -> bool:
+    t = text.strip().lower()
+    if t in _TRUE_WORDS:
+        return True
+    if t in _FALSE_WORDS:
+        return False
+    raise UsageError(f"{what} must be 1/0, true/false or yes/no, got '{text}'")
+
+
+def _parse_edge(text: str, what: str) -> int:
+    """An edge id ('12') or a vertex pair ('3-7') -> edge id."""
+    t = text.strip()
+    if "-" in t:
+        a_s, b_s = t.split("-", 1)
+        a = _parse_int(a_s, f"{what} vertex", 0, B.NUM_VERTICES - 1)
+        b = _parse_int(b_s, f"{what} vertex", 0, B.NUM_VERTICES - 1)
+        try:
+            return B.edge_between(a, b)
+        except KeyError:
+            raise UsageError(f"vertices {a} and {b} are not joined by an edge (see --ids)")
+    return _parse_int(t, f"{what} edge id", 0, B.NUM_EDGES - 1)
 
 
 def _counts_from_text(text: str) -> List[int]:
@@ -56,68 +103,107 @@ def _counts_from_text(text: str) -> List[int]:
     return out
 
 
-def _player_entry(parsed: dict, color: str) -> dict:
-    color = color.lower()
+def _player_colors(parsed: dict) -> List[str]:
+    return [str(p.get("color", "")).lower() for p in parsed.get("players", []) if isinstance(p, dict)]
+
+
+def _player_entry(parsed: dict, color: str, create: bool = False) -> dict:
+    """The parsed player with this colour (or name).  Only ``players=`` may create new players."""
+    color = color.strip().lower()
     for p in parsed.get("players", []):
         if p.get("color", "").lower() == color or (p.get("name") or "").lower() == color:
             return p
+    if not create:
+        raise UsageError(f"unknown player '{color}' (players: {_player_colors(parsed)}; "
+                         "add missing players first with --fix 'players=red,blue,...')")
     if color not in PLAYER_COLORS:
-        raise UsageError(f"unknown player '{color}' (players: {[p['color'] for p in parsed.get('players', [])]})")
+        raise UsageError(f"unknown player colour '{color}' (known colours: {PLAYER_COLORS})")
     p = {"color": color, "name": color, "vp": 0, "cards": 0, "dev_cards": 0, "knights": 0,
          "longest_road": False, "largest_army": False, "settlements": [], "cities": [], "roads": []}
     parsed.setdefault("players", []).append(p)
     return p
 
 
+def _resolve_color(state: GameState, color: Any, what: str = "player") -> int:
+    """Seat index of a colour or name (case-insensitive); UsageError listing the players otherwise."""
+    key = str(color).strip().lower()
+    for i, p in enumerate(state.players):
+        if p.color.lower() == key or (p.name or "").lower() == key:
+            return i
+    raise UsageError(f"unknown {what} '{color}'; players in this game: {[p.color for p in state.players]}")
+
+
 def apply_fix(parsed: dict, fix: str) -> None:
-    """Apply one ``--fix`` correction to a parsed-screenshot dict (see docs/USAGE.md)."""
+    """Apply one ``--fix`` correction to a parsed-screenshot dict (see docs/USAGE.md).
+
+    Raises :class:`UsageError` for anything that cannot be honoured (unknown player,
+    impossible number token, id out of range, ...) instead of producing a broken state.
+    """
     text = fix.strip()
     if "=" not in text:
-        raise UsageError(f"fix '{fix}' must contain '='")
+        raise UsageError(f"fix '{fix}' must look like KEY=VALUE (see docs/USAGE.md)")
     key, value = [t.strip() for t in text.split("=", 1)]
     kl = key.lower()
     vl = value.lower()
     if kl.startswith("hex "):
-        h = int(kl.split()[1])
+        h = _parse_int(kl.split(None, 1)[1], "hex index", 0, B.NUM_HEXES - 1)
         parts = vl.split()
+        if not parts:
+            raise UsageError(f"hex {h}: expected 'hex {h}=RESOURCE NUMBER' or 'hex {h}=desert'")
+        hexes = parsed.setdefault("hexes", [])
+        while len(hexes) < B.NUM_HEXES:
+            hexes.append({"resource": "desert", "number": None})
         res = parts[0]
-        if _res_index(res) if res != "desert" else True:
-            pass
-        num = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
         if res == "desert":
-            parsed["hexes"][h] = {"resource": "desert", "number": None}
+            if len(parts) > 1:
+                raise UsageError(f"hex {h}: the desert has no number token")
+            hexes[h] = {"resource": "desert", "number": None}
+            return
+        rname = B.RESOURCE_NAMES[_res_index(res)]
+        if len(parts) > 1:
+            num = _parse_int(parts[1], f"hex {h} number token", 2, 12)
+            if num == 7:
+                raise UsageError(f"hex {h}: 7 is not a number token (use 2-6 or 8-12)")
         else:
-            parsed["hexes"][h] = {"resource": B.RESOURCE_NAMES[_res_index(res)], "number": num}
+            old = hexes[h].get("number") if isinstance(hexes[h], dict) else None
+            num = int(old) if isinstance(old, int) and not isinstance(old, bool) and old in B.PIPS else 0
+            if not num:
+                raise UsageError(f"hex {h}: a {rname} hex needs a number token, e.g. 'hex {h}={rname} 8'")
+        hexes[h] = {"resource": rname, "number": num}
         return
     if kl == "robber":
-        parsed["robber"] = int(vl)
+        parsed["robber"] = _parse_int(vl, "robber hex", 0, B.NUM_HEXES - 1)
         return
-    if kl == "me":
-        parsed["me"] = vl
-        return
-    if kl == "current":
-        parsed["current_player"] = vl
+    if kl in ("me", "current", "current_player"):
+        if parsed.get("players"):
+            vl = _player_entry(parsed, vl)["color"]
+        parsed["me" if kl == "me" else "current_player"] = vl
         return
     if kl == "dice":
-        parsed["dice"] = int(vl)
+        d = _parse_int(vl, "dice", 0, 12)
+        if d == 1:
+            raise UsageError("dice must be 2..12 (or 0 for 'not rolled yet')")
+        parsed["dice"] = d
         return
     if kl in ("deck", "dev_deck", "dev_deck_remaining"):
-        parsed["dev_deck_remaining"] = int(vl)
+        parsed["dev_deck_remaining"] = _parse_int(vl, "dev deck size", 0, sum(B.DEV_DECK_COUNTS))
         return
     if kl == "players":
         for c in vl.replace(",", " ").split():
-            _player_entry(parsed, c)
+            _player_entry(parsed, c, create=True)
         return
     if kl.startswith("port "):
-        e = int(kl.split()[1])
+        e = _parse_edge(kl.split(None, 1)[1], "port")
+        if e not in _COASTAL_EDGES:
+            raise UsageError(f"edge {e} is not a coastal edge, so it cannot hold a port (see --ids for the numbering)")
         ports = [p for p in (parsed.get("ports") or []) if int(p["edge"]) != e]
-        if vl not in ("none", "remove", ""):
+        if vl not in ("none", "remove", "", "-"):
             ports.append({"edge": e, "type": "3:1" if vl in ("3:1", "generic", "any") else B.RESOURCE_NAMES[_res_index(vl)]})
         parsed["ports"] = sorted(ports, key=lambda p: p["edge"])
         return
     if kl.startswith("bank."):
-        parsed.setdefault("bank", {B.RESOURCE_NAMES[r]: 19 for r in range(5)})
-        parsed["bank"][B.RESOURCE_NAMES[_res_index(kl[5:])]] = int(vl)
+        parsed.setdefault("bank", {B.RESOURCE_NAMES[r]: B.BANK_PER_RESOURCE for r in range(5)})
+        parsed["bank"][B.RESOURCE_NAMES[_res_index(kl[5:])]] = _parse_int(vl, "bank stock", 0, B.BANK_PER_RESOURCE)
         return
     if "." in kl:
         color, attr = kl.split(".", 1)
@@ -128,10 +214,10 @@ def apply_fix(parsed: dict, fix: str) -> None:
             p["cards"] = sum(counts)
             return
         if attr == "cards":
-            p["cards"] = int(vl)
+            p["cards"] = _parse_int(vl, f"{color} card count", 0)
             return
         if attr in ("dev", "dev_cards"):
-            p["dev_cards"] = int(vl)
+            p["dev_cards"] = _parse_int(vl, f"{color} dev card count", 0, sum(B.DEV_DECK_COUNTS))
             return
         if attr in ("devs", "dev_types"):
             # exact dev card types, e.g. 'red.devs=knight:1,vp:1,monopoly:1'
@@ -155,57 +241,111 @@ def apply_fix(parsed: dict, fix: str) -> None:
             p["dev_cards"] = counts
             return
         if attr == "knights":
-            p["knights"] = int(vl)
+            p["knights"] = _parse_int(vl, f"{color} knights", 0, B.DEV_DECK_COUNTS[0])
             return
         if attr == "vp":
-            p["vp"] = int(vl)
+            p["vp"] = _parse_int(vl, f"{color} VP", 0, 15)
             return
         if attr in ("lr", "longest_road"):
-            p["longest_road"] = vl in ("1", "true", "yes")
+            p["longest_road"] = _parse_bool(vl, f"{color} longest road flag")
             return
         if attr in ("la", "largest_army"):
-            p["largest_army"] = vl in ("1", "true", "yes")
+            p["largest_army"] = _parse_bool(vl, f"{color} largest army flag")
             return
         if attr in ("settlements", "cities", "roads"):
+            is_road = attr == "roads"
+            what = f"{color} {attr[:-1]} " + ("edge" if is_road else "vertex") + " id"
+            hi = (B.NUM_EDGES if is_road else B.NUM_VERTICES) - 1
+            other = None if is_road else ("cities" if attr == "settlements" else "settlements")
             cur = list(p.get(attr, []))
             for tok in value.replace(",", " ").split():
                 if tok.startswith("-"):
-                    cur = [x for x in cur if x != int(tok[1:])]
+                    x = _parse_int(tok[1:], what, 0, hi)
+                    cur = [c for c in cur if c != x]
                 else:
-                    x = int(tok.lstrip("+"))
+                    x = _parse_int(tok.lstrip("+"), what, 0, hi)
                     if x not in cur:
                         cur.append(x)
+                    if other:   # a city replaces the settlement on that vertex (and vice versa)
+                        p[other] = [c for c in p.get(other, []) if c != x]
             p[attr] = sorted(cur)
             return
         raise UsageError(f"unknown player attribute '{attr}' in fix '{fix}'")
     raise UsageError(f"unrecognised fix '{fix}'")
 
 
+def apply_fixes(parsed: dict, fixes: Optional[Sequence[str]]) -> None:
+    """Apply every ``--fix`` in order; any problem becomes a UsageError naming the fix."""
+    for fx in fixes or []:
+        try:
+            apply_fix(parsed, fx)
+        except UsageError as ex:
+            raise UsageError(f"bad --fix '{fx}': {ex}")
+        except (ValueError, IndexError, KeyError, TypeError) as ex:
+            raise UsageError(f"bad --fix '{fx}': {ex}")
+
+
+def _load_json(path: str, what: str) -> Any:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (UnicodeDecodeError, json.JSONDecodeError) as ex:
+        raise UsageError(f"{path} is not a JSON {what}: {ex}")
+
+
 def load_state_file(path: str) -> Tuple[GameState, Optional[dict]]:
     """Load either a GameState JSON or a parsed-screenshot JSON. Returns (state, parsed_or_None)."""
-    with open(path) as f:
-        d = json.load(f)
-    if "parsed" in d and isinstance(d["parsed"], dict):
+    d = _load_json(path, "state file")
+    if isinstance(d, dict) and isinstance(d.get("parsed"), dict):
         d = d["parsed"]
+    if not isinstance(d, dict):
+        raise UsageError(f"{path}: expected a JSON object (a GameState or a parsed screenshot), "
+                         f"got a JSON {type(d).__name__}")
     if "phase" in d or "version" in d:
-        return GameState.from_dict(d), None
+        try:
+            state = GameState.from_dict(d)
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError) as ex:
+            raise UsageError(f"{path}: not a valid GameState JSON ({type(ex).__name__}: {ex})")
+        if not state.players:
+            raise UsageError(f"{path}: the game state has no players")
+        return state, None
+    if not isinstance(d.get("hexes"), list) or not isinstance(d.get("players"), list):
+        raise UsageError(f"{path}: not a game state - a GameState JSON has 'phase' and 'players', "
+                         "a parsed screenshot has 'hexes' and 'players' (see catanbot/vision/schema.py)")
     from .vision.schema import parsed_to_state
-    return parsed_to_state(d), d
+    state = parsed_to_state(d)
+    if not state.players:
+        raise UsageError(f"{path}: the parsed screenshot lists no players")
+    return state, d
 
 
 def load_evaluator(model_path: Optional[str]) -> Tuple[Any, str]:
+    """The value net at ``model_path`` (or the default one), else the heuristic evaluator.
+
+    An explicitly given path that does not exist or cannot be loaded is an error; only the
+    implicit default silently falls back to the heuristic evaluator (and says so in its name).
+    """
     if model_path and model_path.lower() in ("heuristic", "none"):
         from .heuristic import HeuristicEvaluator
         return HeuristicEvaluator(), "heuristic evaluator"
+    explicit = bool(model_path)
     path = model_path or DEFAULT_MODEL
     if os.path.exists(path):
         try:
             from .model import ValueNet
             return ValueNet.load(path), f"value net {path}"
-        except Exception as ex:  # pragma: no cover
+        except Exception as ex:
+            if explicit:
+                raise UsageError(f"could not load value net {path}: {ex} (use --model heuristic for the heuristic evaluator)")
             print(f"could not load value net {path}: {ex}; using the heuristic evaluator", file=sys.stderr)
+    elif explicit:
+        raise UsageError(f"value net not found: {path} (use --model heuristic for the heuristic evaluator)")
     from .heuristic import HeuristicEvaluator
     return HeuristicEvaluator(), "heuristic evaluator (no trained value net found)"
+
+
+def _is_profiles_dict(d: Any) -> bool:
+    return isinstance(d, dict) and isinstance(d.get("profiles"), dict)
 
 
 def load_profiles(path: Optional[str], state: GameState):
@@ -214,8 +354,10 @@ def load_profiles(path: Optional[str], state: GameState):
     model = OpponentModel(state)
     politics = PoliticalState(state.num_players)
     if path and os.path.exists(path):
-        with open(path) as f:
-            d = json.load(f)
+        d = _load_json(path, "profiles file")
+        if not _is_profiles_dict(d):
+            raise UsageError(f"{path} is not a profiles file (expected a JSON object with a 'profiles' key, "
+                             "as written by --profiles FILE); refusing to overwrite it")
         model = OpponentModel.from_dict(d)
         model.attach(state)
         if d.get("politics"):
@@ -230,10 +372,59 @@ def save_profiles(path: str, model, politics, state: GameState) -> None:
         json.dump(d, f, indent=1)
 
 
+def split_bot_specs(text: str) -> List[str]:
+    """Split a ``--bots`` list into specs.
+
+    Specs are separated by ',', ';' or whitespace; a comma-separated token that is a
+    ``key=value`` pair belongs to the previous spec, so
+    ``"search:depth=1,model=x.npz,heuristic,random"`` is three bots.
+    """
+    specs: List[str] = []
+    for chunk in re.split(r"[;\s]+", text.strip()):
+        for tok in chunk.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            if "=" in tok.split(":", 1)[0] and specs:
+                specs[-1] += "," + tok
+            else:
+                specs.append(tok)
+    return specs
+
+
+def _make_bots(specs: Sequence[str]) -> list:
+    from .selfplay import make_bot
+    if not specs:
+        raise UsageError(f"--bots must name at least one bot ({BOT_SPEC_HELP})")
+    bots = []
+    for s in specs:
+        try:
+            bots.append(make_bot(s))
+        except (ValueError, KeyError, TypeError, OSError) as ex:
+            raise UsageError(f"bad bot spec '{s}': {ex} ({BOT_SPEC_HELP})")
+    return bots
+
+
 # ---------------------------------------------------------------------------
 # printing
 # ---------------------------------------------------------------------------
 _RES_ABBR = {B.WOOD: "WO", B.BRICK: "BR", B.SHEEP: "SH", B.WHEAT: "WH", B.ORE: "OR", B.DESERT: "DE"}
+
+
+def _port_edges(state: GameState) -> List[Tuple[Optional[int], int, Tuple[int, ...]]]:
+    """``state.ports`` ({vertex: type}) as ``[(edge or None, type, vertices)]``."""
+    out: List[Tuple[Optional[int], int, Tuple[int, ...]]] = []
+    used: set = set()
+    for e in B.COASTAL_EDGES:
+        a, b = B.EDGE_VERTICES[e]
+        t = state.ports.get(a)
+        if t is not None and state.ports.get(b) == t and a not in used and b not in used:
+            out.append((e, t, (a, b)))
+            used.update((a, b))
+    for v, t in sorted(state.ports.items()):
+        if v not in used:
+            out.append((None, t, (v,)))
+    return out
 
 
 def board_ascii(state: GameState) -> str:
@@ -255,12 +446,58 @@ def board_ascii(state: GameState) -> str:
                  + f"; dev deck {sum(state.dev_deck)} left"
                  + (" (" + ", ".join(f"{state.dev_deck[t]} {B.DEV_NAMES[t]}" for t in range(5) if state.dev_deck[t]) + ")"
                     if sum(state.dev_deck) else ""))
-    ports = {}
-    for v, t in state.ports.items():
-        ports.setdefault(B.PORT_NAMES[t], []).append(v)
-    if ports:
-        lines.append("Ports: " + "; ".join(f"{t} at vertices {sorted(vs)}" for t, vs in sorted(ports.items())))
+    if state.ports:
+        by_type: Dict[str, List[str]] = {}
+        for e, t, vs in _port_edges(state):
+            by_type.setdefault(B.PORT_NAMES[t], []).append(
+                f"edge {e} (vertices {vs[0]}-{vs[1]})" if e is not None else f"vertex {vs[0]}")
+        lines.append("Ports: " + "; ".join(f"{t} at " + ", ".join(items) for t, items in sorted(by_type.items())))
+        lines.append("(fix ports with --fix 'port EDGE=TYPE' or 'port V1-V2=TYPE'; --ids prints the vertex / edge numbering)")
     return "\n".join(lines)
+
+
+def ids_ascii(state: Optional[GameState] = None) -> str:
+    """Reference table of the fixed vertex (0..53) and edge (0..71) ids, hex by hex."""
+    lines = ["Vertex / edge ids per hex (corners from the top clockwise; edge k joins corners k and k+1):",
+             " hex        corners (vertex ids)     edges (edge ids)"]
+    for h in range(B.NUM_HEXES):
+        label = f"{h:2d}"
+        if state is not None:
+            res, num = state.hexes[h]
+            label += f":{_RES_ABBR[res]}{num or ''}"
+        lines.append(f" {label:<10} {' '.join(f'{v:2d}' for v in B.HEX_VERTICES[h]):<24} "
+                     f"{' '.join(f'{e:2d}' for e in B.HEX_EDGES[h])}")
+    lines.append("Coastal edges (where ports sit): " + " ".join(str(e) for e in B.COASTAL_EDGES))
+    lines.append("Use these with --fix 'red.settlements=+V', 'red.cities=+V', 'red.roads=+E', 'port E=TYPE' "
+                 "(or 'port V1-V2=TYPE'); --debug OUT.png draws them on the screenshot.")
+    return "\n".join(lines)
+
+
+def draw_ids(img, geometry: Optional[Dict[str, float]]):
+    """Write vertex ids (v0..v53) and edge ids (e0..e71) onto a debug overlay in place."""
+    if not geometry or img is None:
+        return img
+    from PIL import ImageDraw, ImageFont
+    cx, cy, hs = float(geometry["cx"]), float(geometry["cy"]), float(geometry["hex_size"])
+    draw = ImageDraw.Draw(img)
+    try:
+        from .vision.colonist import DEFAULT_FONT_PATH
+        font = ImageFont.truetype(DEFAULT_FONT_PATH, max(9, int(0.15 * hs)))
+    except Exception:
+        font = ImageFont.load_default()
+
+    def put(x: float, y: float, text: str, fill) -> None:
+        try:
+            draw.rectangle(draw.textbbox((x, y), text, font=font), fill=(0, 0, 0))
+        except Exception:
+            pass
+        draw.text((x, y), text, fill=fill, font=font)
+
+    for v, (px, py) in enumerate(B.VERTEX_POS):
+        put(cx + px * hs + 0.06 * hs, cy + py * hs + 0.04 * hs, f"v{v}", (255, 255, 255))
+    for e, (px, py) in enumerate(B.EDGE_POS):
+        put(cx + px * hs - 0.16 * hs, cy + py * hs - 0.22 * hs, f"e{e}", (120, 255, 120))
+    return img
 
 
 def players_table(state: GameState, me: int) -> str:
@@ -286,19 +523,115 @@ def _section(title: str) -> str:
 # ---------------------------------------------------------------------------
 # core: recommend
 # ---------------------------------------------------------------------------
+def parse_offer(state: GameState, me: int, text: str) -> Tuple[int, List[int], List[int]]:
+    """``'blue:give=wood:1;get=ore:1'`` -> (proposer, give, get).
+
+    ``give`` is what the proposer hands over (you receive it), ``get`` what they want
+    from you.  Both sides must be non-empty and disjoint, and known hands must cover them.
+    """
+    fmt = "expected --offer 'COLOR:give=RES:N,...;get=RES:N,...' (give = what they hand you, get = what they want)"
+    if ":" not in text:
+        raise UsageError(f"bad --offer '{text}': {fmt}")
+    color, spec = text.split(":", 1)
+    proposer = _resolve_color(state, color, "offer proposer")
+    if proposer == me:
+        raise UsageError(f"bad --offer '{text}': the proposer must be an opponent, not you ({state.players[me].color})")
+    give: Optional[List[int]] = None
+    get: Optional[List[int]] = None
+    for part in spec.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise UsageError(f"bad --offer '{text}': {fmt}")
+        k, v = part.split("=", 1)
+        k = k.strip().lower()
+        if k == "give":
+            give = _counts_from_text(v)
+        elif k == "get":
+            get = _counts_from_text(v)
+        else:
+            raise UsageError(f"bad --offer '{text}': unknown part '{k}'; {fmt}")
+    if give is None or get is None or sum(give) == 0 or sum(get) == 0:
+        raise UsageError(f"bad --offer '{text}': both 'give' and 'get' must be non-empty; {fmt}")
+    if any(give[r] and get[r] for r in range(5)):
+        raise UsageError(f"bad --offer '{text}': the same resource cannot be on both sides")
+    mep = state.players[me]
+    if mep.hand_known and any(mep.resources[r] < get[r] for r in range(5)):
+        raise UsageError(f"bad --offer '{text}': you cannot pay {A._counts_str(get)} (your hand: "
+                         f"{A._counts_str(mep.resources)}); correct it with --fix '{mep.color}.hand=...'")
+    pp = state.players[proposer]
+    if pp.hand_known and any(pp.resources[r] < give[r] for r in range(5)):
+        raise UsageError(f"bad --offer '{text}': {pp.color} does not hold {A._counts_str(give)} "
+                         f"(their hand: {A._counts_str(pp.resources)})")
+    return proposer, give, get
+
+
+def run_search(state: GameState, me: int, evaluator, cfg, args, model=None, politics=None, rng=None):
+    """Search ``state`` for ``me``.  Hidden hands are averaged over ``args.samples``
+    determinizations that share one ``--time`` budget: the remaining time is split over
+    the samples still to run and no new sample starts once the budget is spent.
+
+    Returns ``(ranked ScoredActions, info)`` with ``info = {seconds, samples, samples_done,
+    time_limit, budget_hit}``.
+    """
+    from .inference import is_fully_known, sample_states
+    from .search import ScoredAction, Searcher
+    rng = rng or random.Random(0)
+    time_limit = getattr(args, "time", None) or None
+    n = max(1, int(getattr(args, "samples", 1) or 1))
+    t0 = time.time()
+    info: Dict[str, Any] = {"samples": 1, "samples_done": 1, "time_limit": time_limit, "budget_hit": False}
+    if state.phase == PHASE_GAME_OVER:
+        results: List[Any] = []
+    elif is_fully_known(state):
+        results = Searcher(evaluator, _dc_replace(cfg, time_limit=time_limit), model, None, politics).search(state, me, rng)
+    else:
+        states = sample_states(state, me, n, rng)
+        agg: Dict[Any, List[float]] = {}
+        expl: Dict[Any, str] = {}
+        lines: Dict[Any, List[Any]] = {}
+        done = 0
+        for k, s in enumerate(states):
+            cfg_k = cfg
+            if time_limit:
+                remaining = time_limit - (time.time() - t0)
+                if k > 0 and remaining <= 0:
+                    break
+                cfg_k = _dc_replace(cfg, time_limit=max(0.02, remaining / (len(states) - k)))
+            for r in Searcher(evaluator, cfg_k, model, None, politics).search(s, me, rng):
+                agg.setdefault(r.action, []).append(r.value)
+                expl.setdefault(r.action, r.explanation)
+                lines.setdefault(r.action, r.line)
+            done += 1
+        results = [ScoredAction(a, sum(v) / len(v), expl[a], lines[a], sum(v) / len(v)) for a, v in agg.items()]
+        results.sort(key=lambda r: -r.value)
+        info["samples"], info["samples_done"] = len(states), done
+    info["seconds"] = round(time.time() - t0, 2)
+    if time_limit:
+        info["budget_hit"] = info["samples_done"] < info["samples"] or info["seconds"] > time_limit + 0.1
+    return results, info
+
+
 def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] = None) -> Dict[str, Any]:
-    """Run the search + advice modules; returns a JSON-able report dict."""
+    """Run the search + advice modules; returns a JSON-able report dict.
+
+    ``state`` is not modified: the decision context (an incoming offer, "not my turn")
+    is set up on a copy, and ``report["state"]`` is the state as given while
+    ``report["decision"]`` says which situation was searched.
+    """
     from .devcards import dev_card_advice
     from .discard import explain_seven_risk
-    from .inference import is_fully_known
     from .politics import political_trade_options, runway_advice
     from .robber import best_robber_move, should_play_knight
-    from .search import SearchConfig, Searcher, search_determinized
+    from .search import SearchConfig
     from .trading import trade_advice
 
     report: Dict[str, Any] = {"warnings": [], "notes": []}
     evaluator, ev_name = load_evaluator(getattr(args, "model", None))
     report["evaluator"] = ev_name
+    original = state
+    state = state.copy()
     model, politics = load_profiles(getattr(args, "profiles", None), state)
     for ev in getattr(args, "event", None) or []:
         err = model.observe_event(state, ev)
@@ -307,21 +640,20 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
             report["warnings"].append(f"event '{ev}': {err}")
     # Which decision are we making?
     offer = getattr(args, "offer", None)
-    if offer:
-        proposer_color, spec = offer.split(":", 1)
-        give = get = [0] * 5
-        for part in spec.split(";"):
-            k, v = part.split("=", 1)
-            if k.strip().lower() == "give":
-                give = _counts_from_text(v)
-            elif k.strip().lower() == "get":
-                get = _counts_from_text(v)
-        state.pending_trade = TradeOffer(state.player_index(proposer_color.strip().lower()), give, get)
-        state.current = state.pending_trade.proposer
+    if state.phase == PHASE_GAME_OVER:
+        w = state.winner
+        report["notes"].append("The game is over" + (f" ({state.players[w].name or state.players[w].color} won)"
+                                                     if 0 <= w < state.num_players else "")
+                               + "; there are no actions to recommend.")
+    elif offer:
+        proposer, give, get = parse_offer(state, me, offer)
+        state.pending_trade = TradeOffer(proposer, give, get)
+        state.current = proposer
         state.phase = PHASE_TRADE_RESPONSE
         state.trade_responder = me
         state.dice = state.dice or 8
-        report["notes"].append(f"Evaluating the offer from {proposer_color}: you receive "
+        state.discard_queue = []
+        report["notes"].append(f"Evaluating the offer from {state.players[proposer].color}: you receive "
                                f"{A._counts_str(give)} and pay {A._counts_str(get)}.")
     elif state.current != me:
         report["notes"].append(f"It is {state.players[state.current].name or state.players[state.current].color}'s turn; "
@@ -333,21 +665,25 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
         state.discard_queue = []
     elif state.phase == PHASE_MAIN and not state.dice:
         state.phase = PHASE_ROLL
-    if getattr(args, "phase", None):
+    if getattr(args, "phase", None) and not offer and state.phase != PHASE_GAME_OVER:
         state.phase = args.phase
         if args.phase == PHASE_MAIN and not state.dice:
             state.dice = 8
     cfg = SearchConfig(depth=args.depth, beam=args.beam, expand=max(6, args.beam + 4),
                        time_limit=getattr(args, "time", None), opp_roll_samples=4)
     rng = random.Random(getattr(args, "seed", 0) or 0)
-    t0 = time.time()
-    if is_fully_known(state):
-        results = Searcher(evaluator, cfg, model, None, politics).search(state, me, rng)
-    else:
-        results = search_determinized(state, me, evaluator, cfg, samples=max(1, args.samples), rng=rng,
-                                      model=model, politics=politics)
-    report["search_seconds"] = round(time.time() - t0, 2)
+    results, sinfo = run_search(state, me, evaluator, cfg, args, model, politics, rng)
+    report["search_seconds"] = sinfo["seconds"]
+    report["search"] = sinfo
+    if sinfo["budget_hit"]:
+        if sinfo["samples_done"] < sinfo["samples"]:
+            report["notes"].append(f"--time {sinfo['time_limit']}s ran out: {sinfo['samples_done']} of "
+                                   f"{sinfo['samples']} determinizations of the hidden hands were searched.")
+        else:
+            report["notes"].append(f"The search used {sinfo['seconds']}s, over the --time {sinfo['time_limit']}s budget "
+                                   "(the deadline is checked between search levels; lower --depth / --beam / --samples).")
     report["actions"] = [r.to_dict(state) for r in results[:8]]
+    report["decision"] = {"current": state.players[state.current].color, "phase": state.phase, "dice": state.dice}
     if any(r.action[0] == A.BUY_DEV for r in results[:5]):
         report["notes"].append("Dev cards bought this turn cannot be played until next turn (VP cards count immediately).")
     mep = state.players[me]
@@ -380,6 +716,9 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
                         f"Best robber target: {A.describe((A.MOVE_ROBBER, h, victim), state)} - {reason}"]
     advice["dev_cards"] = dev_card_advice(state, me)
     advice["opponents"] = model.summary(state, me=me)
+    # the per-opponent profile lines belong to the Opponents section only
+    dup = {"Opponent " + l for l in advice["opponents"]}
+    advice["trading"] = [l for l in advice["trading"] if l not in dup]
     pol = runway_advice(state, me, politics)
     try:
         for opt in political_trade_options(state, me, evaluator, politics, model=model)[:2]:
@@ -389,7 +728,7 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
     advice["politics"] = pol
     report["advice"] = advice
     report["me"] = me
-    report["state"] = state.to_dict()
+    report["state"] = original.to_dict()
     if parsed is not None:
         report["parsed"] = parsed
     log_path = getattr(args, "log", None)
@@ -439,6 +778,9 @@ def print_report(state: GameState, me: int, report: Dict[str, Any], parse_warnin
     for w in report.get("warnings", []):
         print("WARNING: " + w)
     print(_section(f"Recommended actions ({report['evaluator']}, {report['search_seconds']}s)"))
+    if not report["actions"]:
+        phase = (report.get("decision") or {}).get("phase", state.phase)
+        print("  (no legal actions" + (": the game is over" if phase == PHASE_GAME_OVER else f" in phase {phase}") + ")")
     for k, a in enumerate(report["actions"][:5]):
         line = " -> ".join(a["line"][:4])
         print(f"{k + 1}. [{a['value']:.3f}] {a['text']}")
@@ -455,6 +797,17 @@ def print_report(state: GameState, me: int, report: Dict[str, Any], parse_warnin
         print(_section(title))
         for l in lines:
             print(l if l.startswith("  ") else " " + l)
+
+
+def _emit(state: GameState, me: int, report: Dict[str, Any], args, parse_warnings: Sequence[str] = (),
+          confidence: Optional[Dict[str, float]] = None) -> None:
+    if args.json:
+        print(json.dumps(report, indent=1, default=float))
+        return
+    print_report(state, me, report, parse_warnings, confidence)
+    if getattr(args, "ids", False):
+        print(_section("Vertex / edge ids"))
+        print(ids_ascii(state))
 
 
 # ---------------------------------------------------------------------------
@@ -483,27 +836,38 @@ def cmd_analyze(args) -> int:
         except ImportError as ex:
             print(f"computer-vision parser needs opencv-python-headless / pillow: {ex}", file=sys.stderr)
             return 2
-        result = parse_image(args.image, me=args.me, read_ui=not args.no_ui)
-    parsed = result.parsed
-    for fx in args.fix or []:
         try:
-            apply_fix(parsed, fx)
-        except (UsageError, ValueError, IndexError, KeyError) as ex:
-            print(f"bad --fix '{fx}': {ex}", file=sys.stderr)
-            return 2
+            result = parse_image(args.image, me=args.me, read_ui=not args.no_ui)
+        except FileNotFoundError:
+            raise
+        except (ValueError, IndexError, OSError) as ex:
+            raise UsageError(f"could not parse {args.image}: {ex}. Screenshot the whole game window (board with "
+                             "number tokens, player panel, hand bar), try --parser llm, or enter the position "
+                             "by hand: recommend --state STATE.json with --fix corrections.")
+    parsed = result.parsed
+    apply_fixes(parsed, args.fix)
     from .vision.schema import parsed_to_state, validate
     warnings = list(result.warnings)
     if args.fix:
         warnings = [w for w in warnings if not w.startswith("expected")] + validate(parsed)
+    if args.no_ui:
+        warnings.append("--no-ui: the player panel and hand bar were not read, so seat order, hands, VP, dev cards, "
+                        "dice and whose turn it is are guesses; supply them with --fix 'players=red,blue,...', "
+                        "--fix 'red.hand=wood:2,ore:1', --fix 'current=blue', --fix 'dice=8'")
     state = parsed_to_state(parsed)
+    if not state.players:
+        raise UsageError("no players were detected in the screenshot; add them with --fix 'players=red,blue,...' "
+                         "and their pieces with --fix 'red.settlements=+V' etc. (see --ids), or use --parser llm")
     if parsed.get("dice"):
         state.phase = PHASE_MAIN
         state.dice = int(parsed["dice"])
-    me = state.player_index(parsed.get("me") or state.players[0].color)
+    me = _resolve_color(state, args.me or parsed.get("me") or state.players[0].color, "player (--me)")
     if args.debug:
         try:
             from .vision.colonist import draw_debug
-            draw_debug(args.image, result).save(args.debug)
+            img = draw_debug(args.image, result)
+            draw_ids(img, (result.debug or {}).get("geometry"))
+            img.save(args.debug)
             print(f"debug overlay written to {args.debug}", file=sys.stderr)
         except Exception as ex:  # pragma: no cover
             print(f"could not write debug overlay: {ex}", file=sys.stderr)
@@ -514,48 +878,49 @@ def cmd_analyze(args) -> int:
     report["parse_warnings"] = warnings
     report["confidence"] = {k: float(v) for k, v in result.confidence.items()}
     report["parser"] = parser_kind
-    if args.json:
-        print(json.dumps(report, indent=1, default=float))
-    else:
+    if not args.json:
         print(f"parser: {parser_kind}")
-        print_report(state, me, report, warnings, result.confidence)
+    _emit(state, me, report, args, warnings, result.confidence)
     return 0
 
 
 def cmd_recommend(args) -> int:
     state, parsed = load_state_file(args.state)
-    if parsed is not None and args.fix:
-        for fx in args.fix:
-            apply_fix(parsed, fx)
+    if args.fix:
+        if parsed is None:
+            raise UsageError("--fix only applies to parsed-screenshot JSON (the format analyze --save-state writes); "
+                             f"{args.state} is a full GameState, so edit that JSON directly")
+        apply_fixes(parsed, args.fix)
         from .vision.schema import parsed_to_state
         state = parsed_to_state(parsed)
+        if not state.players:
+            raise UsageError("the state has no players after the fixes")
         if parsed.get("dice"):
             state.phase = PHASE_MAIN
             state.dice = int(parsed["dice"])
     if args.me:
-        me = state.player_index(args.me.lower())
+        me = _resolve_color(state, args.me, "player (--me)")
     elif parsed is not None and parsed.get("me"):
-        me = state.player_index(parsed["me"])
+        me = _resolve_color(state, parsed["me"], "player ('me' in the state file)")
     else:
-        me = E.acting_player(state) if state.phase != "game_over" else 0
+        me = E.acting_player(state) if state.phase != PHASE_GAME_OVER else 0
     report = recommend_for_state(state, me, args, parsed)
-    if args.json:
-        print(json.dumps(report, indent=1, default=float))
-    else:
-        print_report(state, me, report)
+    _emit(state, me, report, args)
     return 0
 
 
 def cmd_play(args) -> int:
-    from .selfplay import make_bot, play_game
-    specs = [s.strip() for s in args.bots.split(",") if s.strip()]
-    n = args.players or len(specs)
+    from .selfplay import play_game
+    specs = split_bot_specs(args.bots)
+    n = args.players or min(4, max(3, len(specs)))
+    if len(specs) > n:
+        raise UsageError(f"{len(specs)} bot specs given but the game has {n} players (3-4)")
     while len(specs) < n:
         specs.append(specs[-1] if specs else "heuristic")
-    specs = specs[:n]
+    _make_bots(specs)   # validate every spec before the first game
     rng = random.Random(args.seed)
     for g in range(args.games):
-        bots = [make_bot(s) for s in specs]
+        bots = _make_bots(specs)
 
         def on_action(state, action, player):
             if args.verbose:
@@ -573,7 +938,8 @@ def cmd_play(args) -> int:
 
 def cmd_eval(args) -> int:
     from .selfplay import tournament
-    specs = [s.strip() for s in args.bots.split(",") if s.strip()]
+    specs = split_bot_specs(args.bots)
+    _make_bots(specs)   # validate the specs here rather than inside a worker process
     res = tournament(specs, games=args.games, workers=args.workers, seed=args.seed, num_players=args.players,
                      max_turns=args.max_turns)
     print(f"{args.games} games, avg {res['avg_turns']:.0f} turns")
@@ -586,20 +952,25 @@ def cmd_eval(args) -> int:
 def cmd_render(args) -> int:
     from .vision.synth import render_to_file
     state, parsed = load_state_file(args.state)
-    w, h = [int(x) for x in args.size.lower().split("x")]
-    render_to_file(state, args.out, size=(w, h), seed=args.seed, me=args.me or 0, jitter=False)
+    m = re.fullmatch(r"\s*(\d+)\s*[xX]\s*(\d+)\s*", args.size or "")
+    if not m or int(m.group(1)) < 1 or int(m.group(2)) < 1:
+        raise UsageError(f"--size must be WIDTHxHEIGHT in pixels, e.g. 1280x800 (got '{args.size}')")
+    w, h = int(m.group(1)), int(m.group(2))
+    me = _resolve_color(state, args.me, "player (--me)") if args.me else 0
+    render_to_file(state, args.out, size=(w, h), seed=args.seed, me=me, jitter=False)
     print(f"wrote {args.out}")
     return 0
 
 
 def cmd_profiles(args) -> int:
     from .opponent_model import OpponentModel
-    if not os.path.exists(args.file):
-        print(f"no such file: {args.file}")
-        return 2
-    with open(args.file) as f:
-        d = json.load(f)
+    d = _load_json(args.file, "profiles file")
+    if not _is_profiles_dict(d):
+        raise UsageError(f"{args.file} is not a profiles file (expected a JSON object with a 'profiles' key, "
+                         "as written by --profiles FILE)")
     model = OpponentModel.from_dict(d)
+    if not model.profiles:
+        print("no opponent profiles recorded yet")
     for name, prof in model.profiles.items():
         print(f"{name}: {prof.style_summary()} (observations {prof.observations})")
     pol = d.get("politics")
@@ -609,7 +980,35 @@ def cmd_profiles(args) -> int:
         print("           " + " ".join(f"{c[:6]:>6}" for c in cols))
         for i, c in enumerate(cols):
             print(f"{c[:10]:<10} " + " ".join(f"{pol['capital'][i][j]:6.2f}" for j in range(len(cols))))
+        events = pol.get("events") or []
+        if events:
+            print("recent political events: " + "; ".join(str(e) for e in events[-5:]))
+        try:
+            from .politics import PoliticalState
+            from .state import new_game
+            placeholder = new_game(len(cols), colors=list(cols))
+            ps = PoliticalState.from_named_dict(pol, placeholder)
+            for line in ps.coalitions.summary(placeholder, me=-1):
+                print(line)
+        except Exception as ex:  # pragma: no cover
+            print(f"(coalition summary unavailable: {ex})")
     return 0
+
+
+def _read_jsonl(path: str) -> List[dict]:
+    rows: List[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for k, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as ex:
+                raise UsageError(f"{path} line {k} is not JSON: {ex}")
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
 
 
 def _reliability(pairs: List[Tuple[float, float]]) -> List[str]:
@@ -632,27 +1031,36 @@ def _reliability(pairs: List[Tuple[float, float]]) -> List[str]:
 
 def cmd_outcome(args) -> int:
     """Record who won a logged game: catanbot outcome LOG --game ID --winner COLOR."""
+    rows = _read_jsonl(args.log)
+    recs = [r for r in rows if r.get("game") == args.game and "win_prob" in r]
+    if not recs:
+        games = sorted({str(r.get("game")) for r in rows if "win_prob" in r and r.get("game") is not None})
+        raise UsageError(f"no logged positions for game '{args.game}' in {args.log}"
+                         + (f" (logged games: {games})" if games else " (log positions first with analyze/recommend --log)"))
+    winner = args.winner.strip().lower()
+    players = [str(c).lower() for c in (recs[-1].get("players") or [])]
+    if players and winner not in players:
+        raise UsageError(f"'{args.winner}' is not a player of game {args.game} (players: {players})")
     with open(args.log, "a") as f:
-        f.write(json.dumps({"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "game": args.game, "outcome": args.winner.lower()}) + "\n")
-    print(f"recorded: game {args.game} won by {args.winner}")
+        f.write(json.dumps({"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "game": args.game, "outcome": winner}) + "\n")
+    print(f"recorded: game {args.game} won by {winner}")
     return 0
 
 
 def cmd_calibrate(args) -> int:
     """Score logged win estimates against recorded outcomes, or run a self-play calibration check."""
+    if not args.log and not args.selfplay:
+        raise UsageError("calibrate needs --log FILE (a JSONL written by analyze/recommend --log) and/or --selfplay N")
     pairs: List[Tuple[float, float]] = []
     if args.log:
-        rows = []
-        with open(args.log) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    rows.append(json.loads(line))
+        rows = _read_jsonl(args.log)
         outcomes = {r["game"]: r["outcome"] for r in rows if "outcome" in r}
         by_game: Dict[str, List[dict]] = {}
         for r in rows:
             if "win_prob" in r and r.get("win_prob") is not None:
                 by_game.setdefault(r["game"], []).append(r)
+        if not by_game:
+            print(f"no logged positions in {args.log}")
         for g, recs in by_game.items():
             if g not in outcomes:
                 print(f"game {g}: {len(recs)} positions, no outcome recorded yet (catanbot outcome {args.log} --game {g} --winner COLOR)")
@@ -692,8 +1100,6 @@ def cmd_watch(args) -> int:
     import hashlib
     from .vision.colonist import parse_image
     from .vision.schema import parsed_to_state
-    from .inference import is_fully_known
-    from .search import SearchConfig, Searcher, search_determinized
     evaluator, ev_name = load_evaluator(args.model)
     print(f"watch mode ({ev_name}); every {args.interval}s; Ctrl-C to stop", flush=True)
     frames: List[Any] = []
@@ -736,11 +1142,10 @@ def cmd_watch(args) -> int:
                 time.sleep(args.interval)
             continue
         parsed = result.parsed
-        for fx in args.fix or []:
-            try:
-                apply_fix(parsed, fx)
-            except Exception:
-                pass
+        try:
+            apply_fixes(parsed, args.fix)
+        except UsageError as ex:
+            print(f"[{time.strftime('%H:%M:%S')}] {ex}")
         sig = hashlib.md5(json.dumps({k: parsed.get(k) for k in ("hexes", "robber", "players", "dice", "current_player")},
                                      sort_keys=True, default=str).encode()).hexdigest()
         if sig == last_sig:
@@ -752,8 +1157,16 @@ def cmd_watch(args) -> int:
         if parsed.get("dice"):
             state.phase = PHASE_MAIN
             state.dice = int(parsed["dice"])
-        me = state.player_index(parsed.get("me") or state.players[0].color)
-        report = recommend_for_state(state, me, args, parsed)
+        try:
+            if not state.players:
+                raise UsageError("no players detected")
+            me = _resolve_color(state, args.me or parsed.get("me") or state.players[0].color, "player (--me)")
+            report = recommend_for_state(state, me, args, parsed)
+        except UsageError as ex:
+            print(f"[{time.strftime('%H:%M:%S')}] {ex}")
+            if not args.from_dir:
+                time.sleep(args.interval)
+            continue
         top = report["actions"][:3]
         cur = state.players[state.current].name or state.players[state.current].color
         print(f"[{time.strftime('%H:%M:%S')}] turn of {cur}; you {state.total_vp(me)} VP; hand "
@@ -772,20 +1185,44 @@ def cmd_watch(args) -> int:
 # ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
+def _int_range(lo: int, hi: Optional[int] = None):
+    """argparse type: a whole number in ``lo..hi``."""
+    def conv(text: str) -> int:
+        try:
+            v = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"expected a whole number, got '{text}'")
+        if v < lo or (hi is not None and v > hi):
+            raise argparse.ArgumentTypeError(f"must be {lo}..{hi}" if hi is not None else f"must be >= {lo}")
+        return v
+    return conv
+
+
+def _positive_float(text: str) -> float:
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number of seconds, got '{text}'")
+    if v <= 0:
+        raise argparse.ArgumentTypeError("must be > 0 seconds")
+    return v
+
+
 def _add_recommend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--me", help="your colour (default: from the screenshot / state)")
-    p.add_argument("--depth", type=int, default=2, help="search depth in turns (1-3)")
-    p.add_argument("--beam", type=int, default=6)
-    p.add_argument("--samples", type=int, default=4, help="determinizations of hidden hands")
-    p.add_argument("--model", help="value net path, or 'heuristic'")
+    p.add_argument("--depth", type=_int_range(1, 3), default=2, help="search depth in turns (1-3)")
+    p.add_argument("--beam", type=_int_range(1), default=6, help="candidate sequences kept per search level (>= 1)")
+    p.add_argument("--samples", type=_int_range(1), default=4, help="determinizations of hidden hands (>= 1)")
+    p.add_argument("--model", help="value net path, or 'heuristic' (default: models/value_net.npz if present, else heuristic)")
     p.add_argument("--profiles", help="JSON file with opponent profiles + political capital (read and updated)")
     p.add_argument("--event", action="append", help="observed event, e.g. 'blue accepted give ore get wood' or 'blue robbed red'")
     p.add_argument("--fix", action="append", help="correct the parse, e.g. 'hex 4=wheat 8', 'red.hand=wood:2,ore:1'")
     p.add_argument("--offer", help="evaluate an incoming offer: 'blue:give=wood:1;get=ore:1' (blue gives you wood for your ore)")
     p.add_argument("--phase", choices=[PHASE_ROLL, PHASE_MAIN], help="force the decision phase")
-    p.add_argument("--time", type=float, help="search time limit in seconds")
-    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--time", type=_positive_float, help="search time budget in seconds (shared by all --samples)")
+    p.add_argument("--seed", type=int, default=0, help="random seed for the hidden-hand samples")
     p.add_argument("--json", action="store_true", help="machine readable output")
+    p.add_argument("--ids", action="store_true", help="also print the vertex / edge id numbering (for --fix pieces and ports)")
     p.add_argument("--log", help="append this position's win estimate to a JSONL log (for `calibrate`)")
     p.add_argument("--game", help="game id used with --log / outcome")
 
@@ -798,32 +1235,33 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("image")
     a.add_argument("--parser", choices=["auto", "cv", "llm"], default="auto")
     a.add_argument("--save-state", help="write the parsed state JSON here")
-    a.add_argument("--debug", help="write a debug overlay PNG here")
-    a.add_argument("--no-ui", action="store_true", help="skip reading the player panel / hand bar")
+    a.add_argument("--debug", help="write a debug overlay PNG here (detected elements + vertex / edge ids)")
+    a.add_argument("--no-ui", action="store_true",
+                   help="skip reading the player panel / hand bar (hands, VP, seat order and dice then need --fix)")
     _add_recommend_args(a)
     a.set_defaults(func=cmd_analyze)
 
     r = sub.add_parser("recommend", help="recommend a move from a JSON state")
-    r.add_argument("--state", required=True)
+    r.add_argument("--state", required=True, help="GameState JSON or parsed-screenshot JSON (analyze --save-state)")
     _add_recommend_args(r)
     r.set_defaults(func=cmd_recommend)
 
     g = sub.add_parser("play", help="simulate a game")
-    g.add_argument("--players", type=int, default=0)
-    g.add_argument("--bots", default="search,heuristic,heuristic,heuristic")
+    g.add_argument("--players", type=_int_range(3, 4), default=0, help="3 or 4 (default: number of bot specs)")
+    g.add_argument("--bots", default="search,heuristic,heuristic,heuristic", help=BOT_SPEC_HELP)
     g.add_argument("--seed", type=int, default=0)
-    g.add_argument("--max-turns", type=int, default=400)
-    g.add_argument("--games", type=int, default=1)
+    g.add_argument("--max-turns", type=_int_range(1), default=400)
+    g.add_argument("--games", type=_int_range(1), default=1)
     g.add_argument("--verbose", action="store_true")
     g.set_defaults(func=cmd_play)
 
     ev = sub.add_parser("eval", help="tournament between bot specs")
-    ev.add_argument("--bots", default="search,heuristic,random")
-    ev.add_argument("--games", type=int, default=20)
-    ev.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
-    ev.add_argument("--players", type=int, default=4)
+    ev.add_argument("--bots", default="search,heuristic,random", help=BOT_SPEC_HELP)
+    ev.add_argument("--games", type=_int_range(1), default=20)
+    ev.add_argument("--workers", type=_int_range(1), default=max(1, (os.cpu_count() or 2) - 1))
+    ev.add_argument("--players", type=_int_range(3, 4), default=4)
     ev.add_argument("--seed", type=int, default=0)
-    ev.add_argument("--max-turns", type=int, default=400)
+    ev.add_argument("--max-turns", type=_int_range(1), default=400)
     ev.set_defaults(func=cmd_eval)
 
     from .train import build_parser as build_train_parser, train as train_fn
@@ -833,9 +1271,9 @@ def build_parser() -> argparse.ArgumentParser:
     rd = sub.add_parser("render", help="render a JSON state as a synthetic screenshot")
     rd.add_argument("state")
     rd.add_argument("out")
-    rd.add_argument("--size", default="1280x800")
+    rd.add_argument("--size", default="1280x800", help="WIDTHxHEIGHT in pixels")
     rd.add_argument("--seed", type=int, default=0)
-    rd.add_argument("--me")
+    rd.add_argument("--me", help="colour whose hand is drawn (default: seat 0)")
     rd.set_defaults(func=cmd_render)
 
     pr = sub.add_parser("profiles", help="show a saved opponent profile file")
@@ -874,6 +1312,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"error: {ex}", file=sys.stderr)
         return 2
     except FileNotFoundError as ex:
+        print(f"error: {ex}", file=sys.stderr)
+        return 2
+    except OSError as ex:   # unreadable / directory / permission problems with a user-given path
         print(f"error: {ex}", file=sys.stderr)
         return 2
 

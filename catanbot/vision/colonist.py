@@ -915,55 +915,98 @@ def _classify_pixels(px: np.ndarray, pal: np.ndarray, bg: np.ndarray, max_dist: 
     return np.where(ok, j, -1)
 
 
+def _piece_palettes(cals: Sequence[Calibration], extra_bg: Sequence[Sequence[float]] = ()
+                    ) -> Tuple[List[str], np.ndarray, np.ndarray]:
+    """``(names, player_palette, background_palette)`` for piece / panel classification.
+
+    Several calibrations (e.g. the reference one and a brightness-scaled
+    copy) are concatenated, so ``names`` may repeat; ``extra_bg`` are
+    per-image background colours (the measured sea and tile medians) that
+    keep a differently shaded sea or tile from passing as a player colour.
+    """
+    names: List[str] = []
+    pals: List[np.ndarray] = []
+    bgs: List[np.ndarray] = []
+    for c in cals:
+        n, p = _player_palette(c)
+        names.extend(n)
+        pals.append(p)
+        bgs.append(_background_palette(c))
+    if len(extra_bg):
+        bgs.append(np.asarray(extra_bg, dtype=np.float32).reshape(-1, 3))
+    return names, np.concatenate(pals, axis=0), np.concatenate(bgs, axis=0)
+
+
+def _is_y_vertex(v: int) -> bool:
+    """"Y" vertex (edges up, down-left, down-right) iff its y is 0.5 mod 1.5 hex sizes."""
+    return abs((B.VERTEX_POS[v][1] % 1.5) - 0.5) < 0.1
+
+
 def detect_pieces(arr: np.ndarray, geom: Dict[str, float], cal: Calibration,
-                  known_colors: Optional[Sequence[str]] = None):
+                  known_colors: Optional[Sequence[str]] = None,
+                  palette: Optional[Tuple[List[str], np.ndarray, np.ndarray]] = None,
+                  details: Optional[Dict[str, Any]] = None):
     """Buildings per vertex and roads per edge.
 
     Returns ``(buildings, roads, conf)`` with ``buildings = {vertex: (colour, is_city, fraction)}``
-    and ``roads = {edge: (colour, fraction)}``.
+    and ``roads = {edge: (colour, fraction)}``.  ``known_colors`` restricts the
+    player colours (normally left ``None``: a panel row that was missed must
+    not delete a player's pieces), ``palette`` is a precomputed
+    :func:`_piece_palettes` result, and ``details`` (a dict) receives
+    ``city_hits`` = per-vertex maximum probe hit (the city evidence).
     """
     hs = geom["hex_size"]
-    names, pal = _player_palette(cal)
-    bg = _background_palette(cal)
+    if palette is None:
+        names, pal, bg = _piece_palettes([cal])
+    else:
+        names, pal, bg = palette
+        names = list(names)
     if known_colors:
         keep = [i for i, nme in enumerate(names) if nme in known_colors]
         if keep:
             names = [names[i] for i in keep]
             pal = pal[keep]
+    uniq = list(dict.fromkeys(names))
+    uidx = np.array([uniq.index(n) for n in names], dtype=np.int64)
+
+    def colour_counts(cls: np.ndarray) -> np.ndarray:
+        c = cls[cls >= 0]
+        if len(c) == 0:
+            return np.zeros(len(uniq), dtype=np.int64)
+        return np.bincount(uidx[c], minlength=len(uniq))
+
     h, w = arr.shape[:2]
     buildings: Dict[int, Tuple[str, bool, float]] = {}
     roads: Dict[int, Tuple[str, float]] = {}
+    city_hits: Dict[int, float] = {}
     fracs = []
-    for v, (vx, vy) in enumerate(_lattice_pixels(geom, "vertex")):
+    vpix = _lattice_pixels(geom, "vertex")
+    for v, (vx, vy) in enumerate(vpix):
         px = _ring_pixels(arr, vx, vy, 0.0, 0.16 * hs)
         cls = _classify_pixels(px, pal, bg, cal.player_max_dist)
         if len(cls) == 0:
             continue
-        counts = np.bincount(cls[cls >= 0], minlength=len(names))
-        frac = counts.max() / len(cls) if len(cls) else 0.0
+        counts = colour_counts(cls)
+        frac = counts.max() / len(cls)
         if frac < cal.building_min_fraction:
             continue
         c = int(counts.argmax())
-        # City vs settlement: a city is ~0.46 hs wide, a settlement ~0.30 hs.  Roads leave the
-        # vertex along the edge directions (never horizontally on a pointy-top board), so probe
-        # small discs left and right of the vertex at 0.21 hs: coloured for a city only.
-        # City vs settlement: a city has a tower on its upper-left, so the disc at
-        # ``cal.city_probe`` (hex-size units, relative to the vertex) is coloured for a
-        # city only; it lies >= 30 degrees off every road direction for both vertex
-        # orientations.  "Y" vertices (edge straight up) get a second, lower tower probe.
-        up_edge = any(abs(B.VERTEX_POS[n][0] - B.VERTEX_POS[v][0]) < 0.1 and B.VERTEX_POS[n][1] < B.VERTEX_POS[v][1]
-                      for n in B.VERTEX_NEIGHBORS[v])
-        probes = cal.city_probes_y if up_edge else cal.city_probes_inv
+        # City vs settlement: probe small discs that lie inside the city artwork but outside a
+        # settlement and off the three road directions; coloured for a city only.  The probe
+        # set depends on the vertex orientation (Y / inverted Y).
+        probes = cal.city_probes_y if _is_y_vertex(v) else cal.city_probes_inv
         hits = []
         for ox, oy in probes:
             px2 = _ring_pixels(arr, vx + ox * hs, vy + oy * hs, 0.0, 0.03 * hs)
             cls2 = _classify_pixels(px2, pal, bg, cal.player_max_dist)
-            hits.append(float((cls2 == c).mean()) if len(cls2) else 0.0)
-        is_city = any(hit >= 0.6 for hit in hits)
-        buildings[v] = (names[c], bool(is_city), float(frac))
+            hits.append(float((uidx[cls2[cls2 >= 0]] == c).sum() / len(cls2)) if len(cls2) else 0.0)
+        best_hit = max(hits) if hits else 0.0
+        is_city = best_hit >= 0.6
+        buildings[v] = (uniq[c], bool(is_city), float(frac))
+        city_hits[v] = float(best_hit)
         fracs.append(frac)
     for e, (a, b) in enumerate(B.EDGE_VERTICES):
-        (x1, y1), (x2, y2) = _lattice_pixels(geom, "vertex")[[a, b]]
+        (x1, y1), (x2, y2) = vpix[[a, b]]
         # sample the middle 50 % of the edge, half-width 0.05 hs
         ts = np.linspace(0.3, 0.7, 9)
         dx, dy = x2 - x1, y2 - y1
@@ -974,16 +1017,22 @@ def detect_pieces(arr: np.ndarray, geom: Dict[str, float], cal: Calibration,
             for s in (-0.05 * hs, 0.0, 0.05 * hs):
                 pts.append((x1 + dx * t + nx * s, y1 + dy * t + ny * s))
         pts = np.array(pts)
-        xs = np.clip(np.round(pts[:, 0]).astype(int), 0, w - 1)
-        ys = np.clip(np.round(pts[:, 1]).astype(int), 0, h - 1)
+        # samples outside the image are skipped (clamping them to the border would read the UI)
+        ok = (pts[:, 0] >= 0) & (pts[:, 0] < w) & (pts[:, 1] >= 0) & (pts[:, 1] < h)
+        if ok.sum() < len(pts) // 2:
+            continue
+        xs = np.round(pts[ok, 0]).astype(int)
+        ys = np.round(pts[ok, 1]).astype(int)
         px = arr[ys, xs]
         cls = _classify_pixels(px, pal, bg, cal.player_max_dist)
-        counts = np.bincount(cls[cls >= 0], minlength=len(names))
+        counts = colour_counts(cls)
         frac = counts.max() / len(cls)
         if frac >= cal.road_min_fraction:
-            roads[e] = (names[int(counts.argmax())], float(frac))
+            roads[e] = (uniq[int(counts.argmax())], float(frac))
             fracs.append(frac)
     conf = float(np.mean([min(1.0, (f - 0.2) / 0.5) for f in fracs])) if fracs else 1.0
+    if details is not None:
+        details["city_hits"] = city_hits
     return buildings, roads, conf
 
 
@@ -1130,17 +1179,29 @@ def _match_digit(mask: np.ndarray) -> Tuple[int, float]:
 
 
 def read_number_in_region(arr: np.ndarray, x0: int, y0: int, x1: int, y1: int, light_text: bool = True,
-                          min_h: int = 6) -> Tuple[Optional[int], float]:
-    """OCR a (possibly multi-digit) number made of light (or dark) glyphs inside a region."""
+                          min_h: int = 6, bg_rgb: Optional[Sequence[float]] = None) -> Tuple[Optional[int], float]:
+    """OCR a (possibly multi-digit) number made of light (or dark) glyphs inside a region.
+
+    With ``bg_rgb`` (the colour behind the text) the glyph mask is *relative*:
+    a pixel is text when it is much closer to white (black) than to the
+    background, gated by a loose absolute level.  JPEG chroma bleeding and
+    blur pull the glyph edges towards the background (e.g. orange), which
+    fragments an absolute ``min(RGB) > 205`` mask into wrong digits.
+    """
     h, w = arr.shape[:2]
     x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
     if x1 <= x0 or y1 <= y0:
         return None, 0.0
     sub = arr[y0:y1, x0:x1].astype(np.int16)
-    if light_text:
-        mask = sub.min(axis=2) > 205
+    if bg_rgb is None:
+        mask = sub.min(axis=2) > 205 if light_text else sub.max(axis=2) < 70
     else:
-        mask = sub.max(axis=2) < 70
+        bgc = np.asarray(bg_rgb, dtype=np.int16).reshape(3)
+        target = np.array([255, 255, 255] if light_text else [0, 0, 0], np.int16)
+        d_t = np.abs(sub - target).sum(axis=2)
+        d_b = np.abs(sub - bgc).sum(axis=2)
+        gate = (sub.min(axis=2) > 140) if light_text else (sub.max(axis=2) < 110)   # keeps icons (yellow star) out
+        mask = (d_t < 0.6 * d_b) & (d_t < 300) & gate
     n, labels, stats, cents = _components(mask)
     glyphs = []
     for i in range(1, n):
@@ -1181,43 +1242,68 @@ def read_number_in_region(arr: np.ndarray, x0: int, y0: int, x1: int, y1: int, l
 # ---------------------------------------------------------------------------
 # UI chrome
 # ---------------------------------------------------------------------------
-def read_player_panel(arr: np.ndarray, cal: Calibration) -> Tuple[List[Dict[str, Any]], float, List[str]]:
-    """Rows of the player panel (left side): colour, VP, cards, dev, knights, badges, current."""
+def read_player_panel(arr: np.ndarray, cal: Calibration,
+                      palette: Optional[Tuple[List[str], np.ndarray, np.ndarray]] = None
+                      ) -> Tuple[List[Dict[str, Any]], float, List[str]]:
+    """Rows of the player panel (left side): colour, VP, cards, dev, knights, badges, current.
+
+    Rows are located on a downsampled copy of the left third of the image
+    (they are large solid rectangles; this keeps memory flat at 4K) and the
+    numbers are read at full resolution with a text mask relative to the
+    measured row colour.  Rows must share the panel's x position and width
+    (a row merged with adjacent pieces on the board is dropped).
+    """
     h, w = arr.shape[:2]
     warnings: List[str] = []
-    names, pal = _player_palette(cal)
-    bg = _background_palette(cal)
+    if palette is None:
+        names, pal, bg = _piece_palettes([cal])
+    else:
+        names, pal, bg = palette
+        names = list(names)
     region = arr[:, : int(0.34 * w)]
-    cls = _classify_pixels(region.reshape(-1, 3), pal, bg, 40.0).reshape(region.shape[:2])
+    f = max(1, int(round(region.shape[1] / 320.0)))
+    small = region[::f, ::f]
+    cls = _classify_pixels(small.reshape(-1, 3), pal, bg, 40.0).reshape(small.shape[:2])
     rows: List[Dict[str, Any]] = []
-    for c, nme in enumerate(names):
-        m = cls == c
-        if m.sum() < 0.002 * h * w:
+    for nme in dict.fromkeys(names):
+        idx = [i for i, n in enumerate(names) if n == nme]
+        m = np.isin(cls, idx)
+        if m.sum() * f * f < 0.002 * h * w:
             continue
         n, labels, stats, cents = _components(m)
         for i in range(1, n):
-            x, y, bw, bh, area = stats[i]
+            x, y, bw, bh = [int(v) * f for v in stats[i][:4]]
+            area = int(stats[i][4]) * f * f
             fill = area / float(bw * bh)
-            if area < 0.002 * h * w or bw < 0.08 * w or bh < 0.03 * h or fill < 0.55 or bw < 1.5 * bh:
+            if area < 0.002 * h * w or bw < 0.08 * w or bh < 0.03 * h or fill < 0.55 or bw < 1.1 * bh:
                 continue
-            rows.append({"color": nme, "x": int(x), "y": int(y), "w": int(bw), "h": int(bh), "area": int(area)})
+            rows.append({"color": nme, "x": x, "y": y, "w": bw, "h": bh, "area": area})
     # keep one row per colour (largest), sort top to bottom
     best: Dict[str, Dict[str, Any]] = {}
     for r in rows:
         if r["color"] not in best or r["area"] > best[r["color"]]["area"]:
             best[r["color"]] = r
     rows = sorted(best.values(), key=lambda r: r["y"])
+    if len(rows) >= 2:
+        # the panel's rows share their x position and width; a "row" that does not is a piece / merged blob
+        mx = float(np.median([r["x"] for r in rows]))
+        mw = float(np.median([r["w"] for r in rows]))
+        rows = [r for r in rows if abs(r["x"] - mx) <= 0.15 * mw and abs(r["w"] - mw) <= 0.15 * mw]
     confs = []
     for r in rows:
         x, y, bw, bh = r["x"], r["y"], r["w"], r["h"]
         light = r["color"] != "white"
+        # measured row colour (text-free strip below the name) for the relative text mask
+        strip = arr[y + int(0.1 * bh):max(y + int(0.1 * bh) + 1, y + int(0.25 * bh)),
+                    x + int(0.6 * bw):max(x + int(0.6 * bw) + 1, x + int(0.9 * bw))]
+        row_rgb = np.median(strip.reshape(-1, 3), axis=0) if strip.size else np.array(cal.players.get(r["color"], (0, 0, 0)))
         sy0, sy1 = y + int(0.52 * bh), y + int(0.92 * bh)
         # stat columns as drawn: vp at 6 % .. 30 %, cards 30 % .. 50 %, dev 50 % .. 70 %, knights 70 % .. 95 %
         cols = [(0.05, 0.30), (0.29, 0.50), (0.49, 0.70), (0.69, 0.96)]
         vals = []
         for a, b in cols:
             v, cf = read_number_in_region(arr, x + int(a * bw), sy0, x + int(b * bw), sy1, light_text=light,
-                                          min_h=max(5, int(0.12 * bh)))
+                                          min_h=max(5, int(0.12 * bh)), bg_rgb=row_rgb)
             vals.append(v)
             confs.append(cf if v is not None else 0.0)
         r["vp"], r["cards"], r["dev_cards"], r["knights"] = vals
@@ -1256,49 +1342,82 @@ def read_player_panel(arr: np.ndarray, cal: Calibration) -> Tuple[List[Dict[str,
 
 
 def read_hand_bar(arr: np.ndarray, cal: Calibration) -> Tuple[Optional[List[int]], Optional[int], float]:
-    """My hand from the bottom card bar: 5 resource counts and the dev-card count."""
+    """My hand from the bottom card bar: 5 resource counts and the dev-card count.
+
+    The six cards must form a co-aligned group (same y and height, similar
+    width, solid fill) so that board tiles reaching into the bottom of the
+    image are never mistaken for cards.  ``(None, None, 0.0)`` when the bar
+    or any resource count cannot be read (the hand is then unknown rather
+    than a silent zero).
+    """
     h, w = arr.shape[:2]
     y0 = int(0.80 * h)
     region = arr[y0:, :]
-    tile_refs = np.array([cal.tile[r] for r in range(5)] + [(120, 70, 170)], dtype=np.float32)
-    bg = np.array([cal.sea, (30, 40, 56), (255, 255, 255), (35, 35, 35)], dtype=np.float32)
-    cls = _classify_pixels(region.reshape(-1, 3), tile_refs, bg, 45.0).reshape(region.shape[:2])
-    cards: Dict[int, Tuple[int, int, int, int]] = {}
+    tile_refs = np.array([cal.tile[r] for r in range(5)] + [cal.dev_card], dtype=np.float32)
+    bg = np.array([cal.sea, cal.panel, (255, 255, 255), (35, 35, 35)], dtype=np.float32)
+    f = max(1, int(round(w / 640.0)))
+    small = region[::f, ::f]
+    cls = _classify_pixels(small.reshape(-1, 3), tile_refs, bg, 45.0).reshape(small.shape[:2])
+    cands: List[Tuple[int, int, int, int, int, int]] = []   # (class, x, y, w, h, area) in full-res pixels
     for c in range(6):
-        m = cls == c
-        n, labels, stats, cents = _components(m)
-        best = None
+        n, labels, stats, cents = _components(cls == c)
         for i in range(1, n):
-            x, y, bw, bh, area = stats[i]
-            if area < 0.0008 * h * w or bh < bw * 0.9:
+            x, y, bw, bh = [int(v) * f for v in stats[i][:4]]
+            area = int(stats[i][4]) * f * f
+            if area < 0.0008 * h * w or bh < bw * 0.9 or area / float(bw * bh) < 0.7:
                 continue
-            if best is None or area > best[4]:
-                best = (x, y, bw, bh, area)
-        if best is not None:
-            cards[c] = best[:4]
-    if len(cards) < 5:
+            cands.append((c, x, y, bw, bh, area))
+    best: Optional[Dict[int, Tuple[int, int, int, int, int, int]]] = None
+    for c0 in cands:   # the six cards are aligned and equally sized
+        group: Dict[int, Tuple[int, int, int, int, int, int]] = {}
+        for c1 in cands:
+            if (abs(c1[2] - c0[2]) < 0.2 * c0[4] and abs(c1[4] - c0[4]) < 0.2 * c0[4]
+                    and abs(c1[3] - c0[3]) < 0.3 * c0[3]):
+                if c1[0] not in group or c1[5] > group[c1[0]][5]:
+                    group[c1[0]] = c1
+        if best is None or len(group) > len(best):
+            best = group
+    if best is None or any(c not in best for c in range(5)):
         return None, None, 0.0
-    counts = [0] * 5
+    counts: List[Optional[int]] = [None] * 5
     confs = []
     dev = None
-    for c, (x, y, bw, bh) in cards.items():
+    for c, (_, x, y, bw, bh, _) in best.items():
+        card = arr[y0 + y:y0 + y + bh, x:x + bw]
+        card_rgb = np.median(card.reshape(-1, 3), axis=0) if card.size else tile_refs[c]
         v, cf = read_number_in_region(arr, x, y0 + y + int(0.45 * bh), x + bw, y0 + y + bh, light_text=True,
-                                      min_h=max(5, int(0.15 * bh)))
+                                      min_h=max(5, int(0.15 * bh)), bg_rgb=card_rgb)
         confs.append(cf if v is not None else 0.0)
         if c < 5:
-            counts[c] = v if v is not None else 0
+            counts[c] = v
         else:
             dev = v
-    return counts, dev, float(np.mean(confs)) if confs else 0.0
+    if any(v is None for v in counts):
+        return None, dev, 0.0
+    return [int(v) for v in counts], dev, float(np.mean(confs)) if confs else 0.0   # type: ignore[arg-type]
+
+
+def _count_pips(face: np.ndarray, bw: int, bh: int) -> int:
+    dark = face.max(axis=2) < 80
+    nn, ll, ss, cc = _components(dark)
+    pips = [k for k in range(1, nn) if 0.002 * bw * bh < ss[k][4] < 0.08 * bw * bh
+            and abs(ss[k][2] - ss[k][3]) <= max(2, 0.4 * max(ss[k][2], ss[k][3]))
+            and ss[k][4] / float(ss[k][2] * ss[k][3]) > 0.55]
+    return len(pips)
 
 
 def read_dice(arr: np.ndarray) -> Tuple[int, float]:
-    """Sum of the pips on the two dice in the bottom-right corner (0 if not found)."""
+    """Sum of the pips on the two dice in the bottom-right corner (0 if not found).
+
+    The dice are two equal white squares next to each other, each showing
+    1-6 pips; any other pair of white blobs (a white player's pieces, text)
+    is rejected.
+    """
     h, w = arr.shape[:2]
     region = arr[int(0.8 * h):, int(0.7 * w):].astype(np.int16)
     white = region.min(axis=2) > 225
     n, labels, stats, cents = _components(white)
-    dice = []
+    squares = []
     for i in range(1, n):
         x, y, bw, bh, area = stats[i]
         if area < 0.0005 * h * w or abs(bw - bh) > 0.3 * max(bw, bh):
@@ -1306,28 +1425,39 @@ def read_dice(arr: np.ndarray) -> Tuple[int, float]:
         fill = area / float(bw * bh)
         if fill < 0.5:
             continue
-        dice.append((x, y, bw, bh))
-    if len(dice) != 2:
+        squares.append((int(x), int(y), int(bw), int(bh)))
+    pairs = []
+    for a in range(len(squares)):
+        for b in range(a + 1, len(squares)):
+            xa, ya, wa, ha = squares[a]
+            xb, yb, wb, hb = squares[b]
+            size = max(wa, wb)
+            if abs(wa - wb) > 0.25 * size or abs(ha - hb) > 0.25 * size:
+                continue
+            if abs(ya - yb) > 0.5 * size or abs(xa - xb) > 2.5 * size:
+                continue
+            pairs.append((wa * ha + wb * hb, a, b))
+    if not pairs:
         return 0, 0.0
+    _, a, b = max(pairs)
     total = 0
-    for x, y, bw, bh in dice:
+    for x, y, bw, bh in (squares[a], squares[b]):
         mx, my = int(0.1 * bw), int(0.1 * bh)
         face = region[y + my:y + bh - my, x + mx:x + bw - mx]
-        dark = face.max(axis=2) < 80
-        nn, ll, ss, cc = _components(dark)
-        pips = [k for k in range(1, nn) if 0.002 * bw * bh < ss[k][4] < 0.08 * bw * bh
-                and abs(ss[k][2] - ss[k][3]) <= max(2, 0.4 * max(ss[k][2], ss[k][3]))
-                and ss[k][4] / float(ss[k][2] * ss[k][3]) > 0.55]
-        total += len(pips)
+        pips = _count_pips(face, bw, bh)
+        if not 1 <= pips <= 6:
+            return 0, 0.0
+        total += pips
     if 2 <= total <= 12:
         return total, 0.9
     return 0, 0.0
 
 
 def read_bank_panel(arr: np.ndarray, cal: Calibration) -> Tuple[Optional[Dict[str, int]], Optional[int]]:
+    """Bank stock per resource and the dev-deck size from the panel top-right (best effort)."""
     h, w = arr.shape[:2]
     region = arr[: int(0.15 * h), int(0.6 * w):].astype(np.int16)
-    navy = np.array([30, 40, 56], dtype=np.int16)
+    navy = np.array(cal.panel, dtype=np.int16)
     m = np.abs(region - navy).sum(axis=2) < 60
     n, labels, stats, cents = _components(m)
     best = None
@@ -1343,7 +1473,7 @@ def read_bank_panel(arr: np.ndarray, cal: Calibration) -> Tuple[Optional[Dict[st
     vals = []
     for k in range(6):
         v, cf = read_number_in_region(arr, ox + x + int(k * cell), y + int(0.55 * bh), ox + x + int((k + 1) * cell),
-                                      y + bh, light_text=True, min_h=max(5, int(0.15 * bh)))
+                                      y + bh, light_text=True, min_h=max(5, int(0.15 * bh)), bg_rgb=cal.panel)
         vals.append(v)
     if any(v is None for v in vals[:5]):
         return None, vals[5]
