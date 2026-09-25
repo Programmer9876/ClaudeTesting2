@@ -239,6 +239,54 @@ class PoliticalState:
                 self.adjust(actor, prev, -0.08 * sw, f"{_pname(state, actor)} took {label} from {_pname(state, prev)}")
             setattr(self, attr, cur)
 
+    def observe_event(self, state: GameState, text: str) -> Optional[str]:
+        """Apply a human-typed event: ``"blue robbed red"``, ``"blue traded red"``,
+        ``"blue rejected red"``, ``"blue blocked red"``, ``"blue monopolized red"``,
+        ``"blue helped red"``.  Returns an error message or None."""
+        toks = text.strip().lower().replace(",", " ").split()
+        if len(toks) < 3:
+            return "expected '<actor> <verb> <victim>'"
+
+        def idx(name: str) -> int:
+            for i in range(state.num_players):
+                if _pname(state, i).lower() == name or state.players[i].color.lower() == name:
+                    return i
+            return -1
+
+        a, verb, b = idx(toks[0]), toks[1], idx(toks[2])
+        if a < 0 or b < 0 or a == b:
+            return f"unknown players in '{text}'"
+        sw = stage_weight(state)
+        table = {"robbed": -0.15, "monopolized": -0.12, "monopolised": -0.12, "blocked": -0.08,
+                 "rejected": -0.03, "traded": 0.06, "helped": 0.10, "accepted": 0.03}
+        if verb not in table:
+            return f"unknown verb '{verb}'"
+        self.adjust(a, b, table[verb] * sw, f"{_pname(state, a)} {verb} {_pname(state, b)}")
+        if verb == "traded":
+            self.adjust(b, a, table[verb] * sw)
+        return None
+
+    def to_named_dict(self, state: GameState) -> dict:
+        """Persist keyed by player colour so it survives seat re-ordering."""
+        d = self.to_dict()
+        d["colors"] = [state.players[i].color for i in range(min(self.n, state.num_players))]
+        return d
+
+    @staticmethod
+    def from_named_dict(d: dict, state: GameState) -> "PoliticalState":
+        """Restore for ``state``: capital of colours present is copied, others get the baseline."""
+        p = PoliticalState(state.num_players, float(d.get("baseline", BASELINE)))
+        colors = d.get("colors") or []
+        cap = d.get("capital") or []
+        pos = {c: k for k, c in enumerate(colors)}
+        for i in range(state.num_players):
+            for j in range(state.num_players):
+                ci, cj = state.players[i].color, state.players[j].color
+                if ci in pos and cj in pos and pos[ci] < len(cap) and pos[cj] < len(cap[pos[ci]]):
+                    p.capital[i][j] = float(cap[pos[ci]][pos[cj]])
+        p.events = list(d.get("events", []))
+        return p
+
     # --- queries -----------------------------------------------------------------
     def grudge(self, actor: int, victim: int) -> float:
         """How much ``actor`` wants to hurt ``victim`` because of past actions (>= 0)."""
