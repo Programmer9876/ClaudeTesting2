@@ -44,6 +44,8 @@ from ..state import PHASE_MAIN, PHASE_ROLL, PLAYER_COLORS, GameState, Player
 
 __all__ = [
     "PARSE_SCHEMA",
+    "LOG_EVENT_KINDS",
+    "LOG_ENTRY_SCHEMA",
     "EXAMPLE_PARSED",
     "PORT_ALIASES",
     "parsed_to_state",
@@ -74,6 +76,54 @@ def _id_list_schema(maximum: int, what: str) -> Dict[str, Any]:
         "uniqueItems": True,
         "description": what,
     }
+
+
+#: Kinds of a game-log entry (``PARSE_SCHEMA["properties"]["log"]``; see :mod:`catanbot.colonist_log`).
+LOG_EVENT_KINDS: Tuple[str, ...] = (
+    "roll", "gain", "build", "buy_dev", "play_dev", "monopoly", "year_of_plenty", "bank_trade",
+    "player_trade", "offer", "counter", "steal", "discard", "robber", "turn", "other",
+)
+
+_LOG_CARDS_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "description": "Cards by resource name (wood, brick, sheep, wheat, ore), e.g. {\"wood\": 2, \"ore\": 1}; "
+                   "\"unknown\" counts face-down cards.",
+    "additionalProperties": {"type": "integer", "minimum": 0},
+}
+
+#: One game-log entry (an element of the parsed screenshot's optional ``log`` list).
+LOG_ENTRY_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "required": ["kind"],
+    "properties": {
+        "kind": {
+            "type": "string", "enum": list(LOG_EVENT_KINDS),
+            "description": "roll (dice), gain (cards received from the bank: production or starting resources), "
+                           "build (road / settlement / city), buy_dev (bought a development card), play_dev (used a "
+                           "development card), monopoly (the Monopoly take), year_of_plenty (the cards taken from the "
+                           "bank), bank_trade (bank or port trade), player_trade (completed trade between players), "
+                           "offer (a trade offer), counter (a counter-offer), steal (robber steal), discard (7 "
+                           "discard), robber (robber moved), turn (turn change), other (no card information).",
+        },
+        "player": {"type": "string", "description": "Colour of the acting player (the name as written if unsure)."},
+        "other": {"type": "string", "description": "Colour of the other player: trade partner, steal victim."},
+        "cards": dict(_LOG_CARDS_SCHEMA, description="Cards received / paid / given / offered / discarded / stolen / "
+                                                     "taken. " + _LOG_CARDS_SCHEMA["description"]),
+        "get": dict(_LOG_CARDS_SCHEMA, description="Trades and offers: the cards the acting player receives / asks "
+                                                   "for. " + _LOG_CARDS_SCHEMA["description"]),
+        "count": {"type": "integer", "minimum": 0,
+                  "description": "Number of cards when their types are not shown (a discard) or the Monopoly total."},
+        "value": {"type": "integer", "minimum": 2, "maximum": 12, "description": "Dice total of a roll."},
+        "item": {"type": "string",
+                 "enum": ["road", "settlement", "city", "knight", "victory_point", "road_building",
+                          "year_of_plenty", "monopoly"],
+                 "description": "build: the piece; play_dev: the development card."},
+        "resource": {"type": "string", "description": "Monopoly: the resource taken."},
+        "free": {"type": "boolean", "description": "build: a free piece (setup placement, Road Building)."},
+        "setup": {"type": "boolean", "description": "gain: the starting resources of the second settlement."},
+        "text": {"type": "string", "description": "The log line as displayed (icons as resource words)."},
+    },
+}
 
 PARSE_SCHEMA: Dict[str, Any] = {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -173,6 +223,13 @@ PARSE_SCHEMA: Dict[str, Any] = {
         "dev_deck_remaining": {"type": ["integer", "null"], "minimum": 0, "maximum": 25,
                                "description": "Optional. Dev cards left in the deck if visible."},
         "turn": {"type": "integer", "minimum": 0, "description": "Optional. Turn counter if visible."},
+        "log": {
+            "type": "array",
+            "description": "Optional. The visible game-log entries, oldest first, one object per log line "
+                           "(card counting, catanbot.colonist_log). Only requested from the Claude-vision parser "
+                           "when a card-counting session is active; ignored by parsed_to_state.",
+            "items": LOG_ENTRY_SCHEMA,
+        },
     },
 }
 
