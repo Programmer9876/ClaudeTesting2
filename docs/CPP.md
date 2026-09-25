@@ -8,8 +8,8 @@ implementation and the fallback: with the extension missing (or disabled)
 everything works exactly as before, only slower.
 
 The output is bit-identical to the numpy reference (the differential test
-compares 4000+ game states from every phase at `atol=1e-6` and they match
-exactly), and about **35-40x faster** on realistic states.
+compares 4000+ game states from every phase at `atol=1e-6`; they match
+exactly), and about **40x faster** on realistic states.
 
 ## Build
 
@@ -94,8 +94,8 @@ the pure-Python reference in the same process).
 * **Conversion, not serialisation.**  `state_from_python` reads the
   `GameState` attributes with the raw CPython API (interned attribute
   names, `PySequence_Fast`, `PyLong_AsLong`) and never calls `to_dict()`.
-  Converting a 4-player state costs ~2 µs; the whole analysis is ~5 µs per
-  state.  The GIL is held (the work is too small to be worth releasing it).
+  Converting a 4-player state costs ~4 µs; the analysis itself ~1 µs, so
+  ~5 µs per state in total.  The GIL is held (the work is too small to be worth releasing it).
 * **`GameStateC`** is POD-like (fixed arrays, ~1.3 KB, `memcpy`-able):
   `hex_res/hex_num[19]`, `robber`, `ports[54]` (-1 = none), up to 4
   `PlayerC` (resources / dev cards / new dev cards `[5]`, knights, ordered
@@ -144,12 +144,14 @@ running), `extract_batch` over 500 distinct mid-game states:
 
 | | per call | per state |
 | --- | --- | --- |
-| Python (`features.py`) | ~120 ms | ~240 µs |
-| C++ (`catanbot_core`) | ~3.2 ms | ~5 µs |
-| speedup | **~38x** | |
+| Python (`features.py`) | ~115-120 ms | ~240 µs |
+| C++ (`catanbot_core`) | ~2.5-3.2 ms | ~5 µs |
+| speedup | **38-47x** (varies with the shared-core load) | |
 
-The remaining C++ time is roughly 40 % Python-object conversion and 60 %
-analysis (longest-road DFS dominates on road-heavy positions).
+Of the ~5 µs per state about 4 µs is reading the Python `GameState`
+(roughly 200 attribute / list-item reads) and ~1 µs is the actual analysis,
+so a further speed-up would have to come from keeping states in C++ (an
+engine port) rather than from the feature code itself.
 
 ## Limitations / notes
 
