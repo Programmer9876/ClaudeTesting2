@@ -8,21 +8,29 @@ Each iteration:
    heuristic bots with temperature, and older nets.  Player count is 3 or 4
    per game.  Every decision state is recorded from every player's
    perspective and labelled with the eventual winner.
-2. **Fit** a new net on the replay buffer (warm-started from the best net).
-   By default the net is *hand-blind*: its own resources / hand size /
-   can-afford features are masked (``--mask-features``, see
-   :data:`catanbot.model.HAND_BLIND_FEATURES`; ``--no-mask`` disables it).
-   Self-play labels come from a policy that spends every affordable build at
-   once, so an unmasked net learns that cards in hand are worth the builds
-   they will become and, as a search evaluator, holds the cards instead of
-   building; the heuristic half of the blend keeps affordability visible.
+2. **Fit** a new net on the replay buffer (warm-started from the best net):
+   binary cross-entropy on the Monte-Carlo outcome labels plus a **pairwise
+   ranking term** on *sibling afterstates* (``--rank-weight``, default on).
+   The self-play labels come from a policy that spends every affordable
+   build at once, so they hold no counterfactual for holding the cards, and
+   a net fitted on them alone ranks "hold" level with "build" and drifts the
+   search into passive lines (the 0.11-vs-0.39 rejection).  At a share
+   ``--rank-rate`` of the main-phase decisions of the generated games the
+   afterstate of every legal action is recorded with the heuristic
+   evaluator's value; pairs whose heuristic values differ by at least
+   ``--rank-gap`` (build vs END_TURN first) are fitted with
+   ``softplus(margin - (z_better - z_worse))`` so the net orders siblings
+   like the heuristic (whose directions are right and only its magnitudes
+   exaggerated) while the BCE keeps its absolute values calibrated.
+   ``--mask-features`` can additionally hide features from the net (e.g. the
+   own-hand block, ``catanbot.model.HAND_BLIND_FEATURES``); off by default.
 3. **Evaluate** the candidate against the current best in a tournament and
    promote it if it wins more.
 
 Usage::
 
     python -m catanbot train --iters 4 --games 200 --workers 4
-    # fit one net on an existing buffer, no games / tournament:
+    # fit one net on an existing buffer (siblings from --rank-games fresh heuristic games), no tournament:
     python -m catanbot train --fit-only --replay models/value_net_replay.npz --out /tmp/net.npz
 """
 from __future__ import annotations
@@ -34,15 +42,15 @@ import random
 import shutil
 import sys
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .model import HAND_BLIND_FEATURES
-from .selfplay import generate_dataset, tournament
+from .selfplay import generate_dataset, sibling_arrays, tournament
 
 BASE_SEARCH = "search:depth={depth},beam={beam},expand={expand}"
-DEFAULT_MASK = ",".join(HAND_BLIND_FEATURES)   # --mask-features default: hand-blind net
+DEFAULT_MASK = ""   # --mask-features default: none (catanbot.model.HAND_BLIND_FEATURES hides the own hand)
+SIBLING_KEYS = ("Xs", "sn", "sh", "sk")   # replay-buffer keys of the sibling afterstates (optional, additive)
 
 
 def _log(msg: str, fh=None) -> None:
@@ -103,8 +111,57 @@ def _bias_of(results) -> np.ndarray:
     return np.concatenate(parts) if parts else np.zeros(0, np.float32)
 
 
+def _val_split(ids: np.ndarray, seed: int) -> np.ndarray:
+    """Deterministic 10 % validation mask by id (a game / node is always validation or always training)."""
+    return ((ids.astype(np.uint64) * np.uint64(2654435761) + np.uint64(seed)) >> np.uint64(7)) % np.uint64(10) == 0
+
+
+def build_pairs(node: np.ndarray, h: np.ndarray, kind: np.ndarray, gap: float = 0.02, per_node: int = 6,
+                seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+    """Training pairs ``(better_idx, worse_idx)`` from sibling afterstates.
+
+    Rows sharing a ``node`` id are the afterstates of one decision; ``h`` is
+    the heuristic evaluator's value and ``kind`` the action kind
+    (``selfplay.SIBLING_KINDS``, 0 = END_TURN).  A pair is formed only when
+    the heuristic values differ by at least ``gap``.  Per node: the top
+    afterstate vs END_TURN first (the build-vs-hold counterfactual), then up
+    to ``per_node`` pairs involving the top afterstate or END_TURN, then
+    other pairs.
+    """
+    rng = random.Random(seed)
+    node = np.asarray(node)
+    order = np.argsort(node, kind="stable")
+    bounds = np.flatnonzero(np.diff(node[order])) + 1
+    pos: List[int] = []
+    neg: List[int] = []
+    for grp in np.split(order, bounds):
+        if len(grp) < 2:
+            continue
+        hv = h[grp]
+        t = int(np.argmax(hv))
+        ends = np.flatnonzero(kind[grp] == 0)
+        e = int(ends[0]) if len(ends) else -1
+        chosen: List[Tuple[int, int]] = []
+        if e >= 0 and t != e and hv[t] - hv[e] >= gap:
+            chosen.append((t, e))
+        first: List[Tuple[int, int]] = []
+        rest: List[Tuple[int, int]] = []
+        for i in range(len(grp)):
+            for j in range(len(grp)):
+                if i == j or hv[i] - hv[j] < gap or (i, j) in chosen:
+                    continue
+                (first if (i == t or j == t or i == e or j == e) else rest).append((i, j))
+        rng.shuffle(first)
+        rng.shuffle(rest)
+        chosen += (first + rest)[:max(0, per_node - len(chosen))]
+        for i, j in chosen:
+            pos.append(int(grp[i]))
+            neg.append(int(grp[j]))
+    return np.asarray(pos, np.int64), np.asarray(neg, np.int64)
+
+
 def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: argparse.Namespace,
-               warm_from: Optional[str] = None, seed: int = 0, log=None):
+               warm_from: Optional[str] = None, seed: int = 0, log=None, siblings=None):
     """Fit a net on the replay buffer; returns ``(net, history, n_train, n_val)``.
 
     Validation is 10 % of whole games (deterministic hash of the game id, so a
@@ -112,12 +169,16 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
     from a saved net (its normalisation is kept); otherwise a fresh net with
     ``args.hidden`` is built.  ``args.mask_features`` (glob patterns over
     feature names, empty = none) is applied to the net in both cases.
+    ``siblings = (Xs, node, h, kind)`` (see ``selfplay.sibling_arrays``) adds
+    the pairwise ranking term with ``args.rank_weight`` / ``rank_margin`` /
+    ``rank_gap`` / ``rank_pairs`` (validation pairs come from 10 % of the
+    nodes); ``history["n_pairs"]`` / ``["n_val_pairs"]`` count them.
     """
     from .features import NUM_FEATURES
     from .model import ValueNet, feature_mask
 
     n = len(y_buf)
-    is_val = ((g_buf.astype(np.uint64) * np.uint64(2654435761) + np.uint64(args.seed)) >> np.uint64(7)) % np.uint64(10) == 0
+    is_val = _val_split(g_buf, args.seed)
     if not is_val.any():
         is_val[:max(1, n // 10)] = True
     val_idx, tr_idx = np.nonzero(is_val)[0], np.nonzero(~is_val)[0]
@@ -130,13 +191,41 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
     else:
         net = ValueNet(n_in=NUM_FEATURES, hidden=tuple(args.hidden), seed=seed)
     net.input_mask = mask
-    if log:
-        log(f"  input mask: {len(net.masked_features())} features hidden" +
-            (f" ({', '.join(net.masked_features())})" if net.masked_features() else ""))
+    if log and net.masked_features():
+        log(f"  input mask: {len(net.masked_features())} features hidden ({', '.join(net.masked_features())})")
+    pairs = val_pairs = None
+    n_pairs = n_val_pairs = 0
+    rank_weight = float(getattr(args, "rank_weight", 0.0) or 0.0)
+    if siblings is not None and rank_weight > 0 and len(siblings[0]) > 0:
+        Xs, sn, sh, sk = siblings
+        sval = _val_split(np.asarray(sn), args.seed)
+        pos, neg = build_pairs(sn, sh, sk, gap=args.rank_gap, per_node=args.rank_pairs, seed=seed)
+        if len(pos):
+            v = sval[pos]
+            pairs = (Xs[pos[~v]], Xs[neg[~v]])
+            val_pairs = (Xs[pos[v]], Xs[neg[v]])
+            n_pairs, n_val_pairs = int((~v).sum()), int(v.sum())
+        if log:
+            log(f"  ranking pairs: {n_pairs} train / {n_val_pairs} val from {len(np.unique(sn))} nodes "
+                f"({len(sn)} afterstates); weight {rank_weight}, margin {args.rank_margin}, gap {args.rank_gap}")
     hist = net.fit(Xtr, ytr, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
                    weight_decay=args.weight_decay, X_val=Xva, y_val=yva, patience=args.patience,
-                   input_noise=args.noise, refit_norm=not warm_from, log=log)
+                   input_noise=args.noise, refit_norm=not warm_from, log=log,
+                   pairs=pairs, val_pairs=val_pairs, pair_weight=rank_weight,
+                   pair_margin=getattr(args, "rank_margin", 0.5), pair_batch=getattr(args, "rank_batch", 256))
+    hist["n_pairs"] = n_pairs
+    hist["n_val_pairs"] = n_val_pairs
     return net, hist, len(tr_idx), len(val_idx)
+
+
+def _cap_siblings(Xs, sn, sh, sk, max_rows: int):
+    """Keep the last ``max_rows`` sibling rows without splitting the first kept node."""
+    if len(sn) <= max_rows:
+        return Xs, sn, sh, sk
+    start = len(sn) - max_rows
+    while start < len(sn) and start > 0 and sn[start] == sn[start - 1]:
+        start += 1
+    return Xs[start:], sn[start:], sh[start:], sk[start:]
 
 
 def train(args: argparse.Namespace) -> Dict[str, object]:
@@ -161,6 +250,11 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
     y_buf = np.zeros(0, np.float32)
     g_buf = np.zeros(0, np.int32)          # game id of every sample (validation is split by game)
     b_buf = np.zeros(0, np.float32)        # acceptance bias of the sample's bot (trading-style metadata)
+    # sibling afterstates for the ranking term (selfplay.sibling_arrays): features, node id, heuristic value, kind
+    Xs_buf = np.zeros((0, NUM_FEATURES), np.float16)
+    sn_buf = np.zeros(0, np.int64)
+    sh_buf = np.zeros(0, np.float32)
+    sk_buf = np.zeros(0, np.int8)
     buffer_path = os.path.splitext(args.out)[0] + "_replay.npz"
     load_path = getattr(args, "replay", None) or buffer_path
     if (args.resume or getattr(args, "replay", None) or getattr(args, "fit_only", False)) and os.path.exists(load_path):
@@ -169,9 +263,15 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
             X_buf, y_buf = d["X"], d["y"]
             g_buf = d["g"] if "g" in d else np.arange(len(y_buf), dtype=np.int32)
             b_buf = d["bias"] if "bias" in d else np.zeros(len(y_buf), np.float32)
-            _log(f"loaded replay buffer {load_path} with {len(y_buf)} samples", fh)
+            if all(k in d for k in SIBLING_KEYS):
+                Xs_buf, sn_buf, sh_buf, sk_buf = (d[k] for k in SIBLING_KEYS)
+            _log(f"loaded replay buffer {load_path} with {len(y_buf)} samples and {len(sn_buf)} sibling rows", fh)
         except Exception:
             pass
+    if getattr(args, "siblings", None):
+        d = np.load(args.siblings)
+        Xs_buf, sn_buf, sh_buf, sk_buf = (d[k] for k in SIBLING_KEYS)
+        _log(f"loaded {len(sn_buf)} sibling rows ({len(np.unique(sn_buf))} nodes) from {args.siblings}", fh)
     _log(f"training: iters={args.iters} games={args.games} workers={args.workers} depth={args.depth} "
          f"features={NUM_FEATURES} best={best_path} mask={args.mask_features!r}", fh)
 
@@ -180,10 +280,24 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
         if len(y_buf) == 0:
             fh.close()
             raise SystemExit(f"--fit-only: no replay buffer at {load_path}")
+        if args.rank_weight > 0 and len(sn_buf) == 0 and args.rank_games > 0 and args.rank_rate > 0:
+            # the buffer predates sibling recording: sample nodes from cheap fresh heuristic games
+            t_s = time.time()
+            _, _, _, rs = generate_dataset(HEURISTIC_POOL, args.rank_games, workers=args.workers,
+                                           seed=args.seed * 1000 + 900,
+                                           num_players_choices=(3, 4) if args.mixed_players else (4,),
+                                           max_turns=args.max_turns, sample_every=args.sample_every,
+                                           sibling_rate=args.rank_rate)
+            Xs_buf, sn_buf, sh_buf, sk_buf = sibling_arrays(rs)
+            sib_path = os.path.splitext(args.out)[0] + "_siblings.npz"
+            np.savez_compressed(sib_path, Xs=Xs_buf, sn=sn_buf, sh=sh_buf, sk=sk_buf)
+            _log(f"  {len(sn_buf)} sibling rows ({len(np.unique(sn_buf))} nodes) from {len(rs)} heuristic games "
+                 f"in {time.time() - t_s:.0f}s -> {sib_path} (reuse with --siblings)", fh)
         t_fit = time.time()
         net, hist, n_tr, n_va = fit_replay(X_buf, y_buf, g_buf, args,
                                            warm_from=best_path if args.warm_start else None,
-                                           seed=args.seed, log=lambda m: _log(m, fh))
+                                           seed=args.seed, log=lambda m: _log(m, fh),
+                                           siblings=(Xs_buf, sn_buf, sh_buf, sk_buf))
         last = _fit_summary(hist)
         _log(f"  fit on {n_tr} samples ({n_va} validation) in {time.time() - t_fit:.0f}s: {json.dumps(last)}", fh)
         net.save(args.out)
@@ -203,7 +317,7 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
         X, y, vpf, results = generate_dataset(pool, args.games, workers=args.workers, seed=args.seed * 1000 + it,
                                               num_players_choices=(3, 4) if args.mixed_players else (4,),
                                               max_turns=args.max_turns, sample_every=args.sample_every,
-                                              progress=progress)
+                                              progress=progress, sibling_rate=args.rank_rate)
         if args.heur_games > 0:
             # Cheap, diverse extra games from heuristic bots: memorisation of game identity is the
             # main failure mode of the value net, and more distinct games is the best cure.
@@ -211,7 +325,8 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
             Xh, yh, vh, rh = generate_dataset(HEURISTIC_POOL, args.heur_games, workers=args.workers,
                                               seed=args.seed * 1000 + it + 500,
                                               num_players_choices=(3, 4) if args.mixed_players else (4,),
-                                              max_turns=args.max_turns, sample_every=args.sample_every)
+                                              max_turns=args.max_turns, sample_every=args.sample_every,
+                                              sibling_rate=args.rank_rate)
             _log(f"  +{len(yh)} samples from {len(rh)} heuristic games in {time.time() - t_h:.0f}s", fh)
             X = np.concatenate([X, Xh]) if len(y) else Xh
             y = np.concatenate([y, yh]) if len(y) else yh
@@ -233,7 +348,14 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
         y_buf = np.concatenate([y_buf, y])[-args.buffer:]
         g_buf = np.concatenate([g_buf, gids])[-args.buffer:]
         b_buf = np.concatenate([b_buf, bias])[-args.buffer:]
-        np.savez_compressed(buffer_path, X=X_buf, y=y_buf, g=g_buf, bias=b_buf)
+        if args.rank_rate > 0:
+            Xs, sn, sh, sk = sibling_arrays(results, base_id=it * 10_000_000)
+            Xs_buf, sn_buf, sh_buf, sk_buf = _cap_siblings(
+                np.concatenate([Xs_buf, Xs]), np.concatenate([sn_buf, sn]), np.concatenate([sh_buf, sh]),
+                np.concatenate([sk_buf, sk]), args.rank_buffer)
+            _log(f"  +{len(sn)} sibling afterstates ({len(np.unique(sn))} nodes); buffer {len(sn_buf)} rows", fh)
+        np.savez_compressed(buffer_path, X=X_buf, y=y_buf, g=g_buf, bias=b_buf,
+                            Xs=Xs_buf, sn=sn_buf, sh=sh_buf, sk=sk_buf)
         if len(bias):
             _log(f"  trading styles: {float((bias != 0).mean()):.0%} of samples from biased traders, "
                  f"mean |bias| {float(np.abs(bias).mean()):.3f}", fh)
@@ -243,7 +365,8 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
         t_fit = time.time()
         net, hist, n_tr, _ = fit_replay(X_buf, y_buf, g_buf, args,
                                         warm_from=best_path if (best_path and args.warm_start) else None,
-                                        seed=args.seed + it)
+                                        seed=args.seed + it, log=lambda m: _log(m, fh),
+                                        siblings=(Xs_buf, sn_buf, sh_buf, sk_buf))
         last = _fit_summary(hist)
         _log(f"  fit on {n_tr} samples in {time.time() - t_fit:.0f}s: {json.dumps(last)}", fh)
         cand_path = os.path.splitext(args.out)[0] + f"_candidate.npz"
@@ -301,6 +424,20 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
                         "default: the own-hand block (resources, hand size, 7-risk, can-afford flags)")
     p.add_argument("--no-mask", dest="mask_features", action="store_const", const="",
                    help="train on all features (the pre-mask behaviour)")
+    p.add_argument("--rank-weight", type=float, default=1.0,
+                   help="weight of the pairwise sibling-ranking term (0 = plain BCE, the pre-ranking behaviour)")
+    p.add_argument("--rank-rate", type=float, default=0.03,
+                   help="share of main-phase decisions of the generated games whose sibling afterstates are recorded")
+    p.add_argument("--rank-margin", type=float, default=0.5, help="logit margin of the ranking term")
+    p.add_argument("--rank-gap", type=float, default=0.02,
+                   help="minimum heuristic win-probability gap between two siblings to form a pair")
+    p.add_argument("--rank-pairs", type=int, default=6, help="pairs per decision node")
+    p.add_argument("--rank-batch", type=int, default=256, help="pairs per mini-batch step")
+    p.add_argument("--rank-buffer", type=int, default=400000, help="max sibling rows kept in the replay buffer")
+    p.add_argument("--rank-games", type=int, default=300,
+                   help="--fit-only on a buffer without siblings: heuristic games to sample siblings from")
+    p.add_argument("--siblings", default=None, metavar="PATH",
+                   help="sibling afterstates (npz with Xs, sn, sh, sk) to use instead of the buffer's / fresh games")
     p.add_argument("--replay", default=None, metavar="PATH",
                    help="replay buffer to load instead of <out>_replay.npz (read only)")
     p.add_argument("--fit-only", action="store_true",

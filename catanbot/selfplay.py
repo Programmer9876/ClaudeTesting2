@@ -18,6 +18,14 @@ Trading-style keys (heuristic and search bots, DESIGN section 11):
 record training samples (feature vectors from every player's perspective at
 every decision, labelled with the eventual winner); ``GameResult.bias``
 keeps the acceptance bias of each sample's bot as metadata.
+
+With ``sibling_rate > 0`` ``play_game`` also records **sibling afterstates**
+at a random share of the current player's main-phase decisions: one concrete
+afterstate per legal action (one sampled chance outcome, as the search sees
+it) with its heuristic value and action kind.  The value net is trained to
+*order* these siblings like the heuristic (``ValueNet.fit(pairs=...)``):
+the Monte-Carlo labels alone never say that holding an affordable build is
+worse than making it, because the behaviour policy never holds.
 """
 from __future__ import annotations
 
@@ -38,7 +46,7 @@ from .agents.random_bot import RandomBot
 from .agents.search_bot import SearchBot
 from .heuristic import HeuristicEvaluator
 from .search import SearchConfig
-from .state import GameState, PHASE_GAME_OVER, PHASE_ROLL, new_game
+from .state import GameState, PHASE_GAME_OVER, PHASE_MAIN, PHASE_ROLL, new_game
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +162,91 @@ def _valid_extra_action(state: GameState, a, legal) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Sibling afterstates (training targets for the net's action ordering)
+# ---------------------------------------------------------------------------
+SIBLING_KINDS: List[str] = [A.END_TURN, A.BUILD_ROAD, A.BUILD_SETTLEMENT, A.BUILD_CITY, A.BUY_DEV, A.BANK_TRADE,
+                            A.PROPOSE_TRADE, A.PLAY_KNIGHT, A.PLAY_ROAD_BUILDING, A.PLAY_YEAR_OF_PLENTY,
+                            A.PLAY_MONOPOLY]
+_SIBLING_KIND_ID = {k: i for i, k in enumerate(SIBLING_KINDS)}
+SIBLING_KIND_OTHER = len(SIBLING_KINDS)
+
+
+def sibling_kind_id(action) -> int:
+    """Small integer code of an action kind (``SIBLING_KINDS`` index, or ``SIBLING_KIND_OTHER``)."""
+    return _SIBLING_KIND_ID.get(action[0], SIBLING_KIND_OTHER)
+
+
+class _SiblingRecorder:
+    """Collects one concrete afterstate per legal action at sampled main-phase decisions."""
+
+    def __init__(self, rate: float, seed: int, max_proposals: int = 6):
+        from .search import Searcher
+        self.rate = float(rate)
+        self.rng = random.Random(seed * 7 + 12345)
+        self.max_proposals = int(max_proposals)
+        self.heuristic = HeuristicEvaluator()
+        self.searcher = Searcher(self.heuristic, SearchConfig(depth=1, beam=4, expand=8))
+        self.searcher._rng = random.Random(seed * 11 + 777)
+        self.states: List[GameState] = []
+        self.players: List[int] = []
+        self.node: List[int] = []
+        self.kind: List[int] = []
+        self.n_nodes = 0
+
+    def maybe_record(self, state: GameState, legal, me: int) -> None:
+        if state.phase != PHASE_MAIN or state.current != me or len(legal) < 3 or (A.END_TURN,) not in legal:
+            return
+        # nodes with a settlement / city affordable (the decisive build-vs-hold counterfactual) are rarer
+        # than ordinary road / trade / dev decisions and are oversampled
+        rate = self.rate
+        if any(a[0] in (A.BUILD_SETTLEMENT, A.BUILD_CITY) for a in legal):
+            rate = min(1.0, 6.0 * rate)
+        if self.rng.random() >= rate:
+            return
+        n_prop = 0
+        rows = []
+        for a in legal:
+            if a[0] == A.PROPOSE_TRADE:
+                n_prop += 1
+                if n_prop > self.max_proposals:
+                    continue
+            try:
+                outs = self.searcher._outcomes(state, a, me)
+            except E.IllegalActionError:
+                continue
+            if not outs:
+                continue
+            # one sampled chance outcome (dev card drawn, card stolen, offer answered): a concrete
+            # afterstate, ordered by the heuristic's value of exactly that state
+            r = self.rng.random()
+            acc = 0.0
+            chosen = outs[-1][1]
+            for p, s2 in outs:
+                acc += p
+                if r < acc:
+                    chosen = s2
+                    break
+            rows.append((chosen, sibling_kind_id(a)))
+        if len(rows) < 2:
+            return
+        for s2, k in rows:
+            self.states.append(s2)
+            self.players.append(me)
+            self.node.append(self.n_nodes)
+            self.kind.append(k)
+        self.n_nodes += 1
+
+    def arrays(self):
+        """``(Xs float16, node int32, h float32, kind int8)`` or ``None`` when nothing was recorded."""
+        if not self.states:
+            return None
+        from .features import extract_batch
+        X = extract_batch(self.states, self.players).astype(np.float16)
+        h = np.asarray(self.heuristic.evaluate(self.states, self.players), dtype=np.float32)
+        return X, np.asarray(self.node, np.int32), h, np.asarray(self.kind, np.int8)
+
+
+# ---------------------------------------------------------------------------
 # One game
 # ---------------------------------------------------------------------------
 @dataclass
@@ -171,13 +264,24 @@ class GameResult:
     y: Optional[np.ndarray] = None       # (N,) 1.0 if that player won
     vp_frac: Optional[np.ndarray] = None  # (N,) final VP / 10 of that player (auxiliary)
     bias: Optional[np.ndarray] = None    # (N,) per-game acceptance bias of that player's bot (trading-style metadata)
+    # sibling afterstates (``sibling_rate > 0``): one row per legal action of a sampled decision node
+    Xs: Optional[np.ndarray] = None      # (M, NUM_FEATURES) float16, from the acting player's perspective
+    s_node: Optional[np.ndarray] = None  # (M,) node id within this game
+    s_h: Optional[np.ndarray] = None     # (M,) heuristic evaluator's win probability of the afterstate
+    s_kind: Optional[np.ndarray] = None  # (M,) int8 action kind (``SIBLING_KINDS`` index)
 
 
 def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optional[random.Random] = None,
               record: bool = False, max_turns: int = 400, num_players: Optional[int] = None,
               sample_every: int = 1, seed: int = 0, specs: Optional[List[str]] = None,
-              on_action: Optional[Callable[[GameState, A.Action, int], None]] = None) -> GameResult:
-    """Play one full game.  ``bots[i]`` controls seat ``i``."""
+              on_action: Optional[Callable[[GameState, A.Action, int], None]] = None,
+              sibling_rate: float = 0.0) -> GameResult:
+    """Play one full game.  ``bots[i]`` controls seat ``i``.
+
+    ``sibling_rate`` (with ``record``) is the share of the current player's
+    main-phase decisions at which the afterstates of every legal action are
+    recorded (``GameResult.Xs`` / ``s_node`` / ``s_h`` / ``s_kind``).
+    """
     rng = rng or random.Random(seed)
     n = num_players or len(bots)
     if n > len(bots):
@@ -192,9 +296,12 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
     t0 = time.time()
     n_actions = 0
     extract = None
+    siblings: Optional[_SiblingRecorder] = None
     if record:
         from .features import extract_batch
         extract = extract_batch
+        if sibling_rate > 0:
+            siblings = _SiblingRecorder(sibling_rate, seed)
     while state.phase != PHASE_GAME_OVER:
         i = E.acting_player(state)
         legal = E.legal_actions(state)
@@ -206,6 +313,8 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
             X = extract([state] * n, list(range(n)))
             feats.append(X.astype(np.float16))
             who.extend(range(n))
+        if siblings is not None:
+            siblings.maybe_record(state, legal, i)
         a = bots[i].decide(state, legal, rng)
         if a not in legal and not _valid_extra_action(state, a, legal):
             a = legal[0]
@@ -233,6 +342,10 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
         res.vp_frac = np.array([min(1.0, vps[p] / 10.0) for p in res.players], dtype=np.float32)
         seat_bias = [float(getattr(b, "trade_bias", 0.0) or 0.0) for b in bots[:n]]
         res.bias = np.array([seat_bias[p] for p in res.players], dtype=np.float32)
+    if siblings is not None:
+        arrs = siblings.arrays()
+        if arrs is not None:
+            res.Xs, res.s_node, res.s_h, res.s_kind = arrs
     return res
 
 
@@ -240,17 +353,19 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
 # Parallel games
 # ---------------------------------------------------------------------------
 def _worker(args) -> GameResult:
-    specs, seed, record, max_turns, sample_every = args
+    specs, seed, record, max_turns, sample_every = args[:5]
+    sibling_rate = args[5] if len(args) > 5 else 0.0
     bots = [make_bot(s) for s in specs]
     rng = random.Random(seed)
     return play_game(bots, rng=rng, record=record, max_turns=max_turns, sample_every=sample_every,
-                     seed=seed, specs=list(specs))
+                     seed=seed, specs=list(specs), sibling_rate=sibling_rate)
 
 
 def run_games(jobs: Sequence[Tuple[List[str], int]], workers: int = 1, record: bool = False, max_turns: int = 400,
-              sample_every: int = 1, progress: Optional[Callable[[int, int, GameResult], None]] = None) -> List[GameResult]:
+              sample_every: int = 1, progress: Optional[Callable[[int, int, GameResult], None]] = None,
+              sibling_rate: float = 0.0) -> List[GameResult]:
     """Run ``jobs`` = [(specs_per_seat, seed), ...] possibly in parallel."""
-    args = [(list(specs), seed, record, max_turns, sample_every) for specs, seed in jobs]
+    args = [(list(specs), seed, record, max_turns, sample_every, sibling_rate) for specs, seed in jobs]
     results: List[GameResult] = []
     if workers <= 1 or len(args) <= 1:
         for k, a in enumerate(args):
@@ -303,9 +418,14 @@ def tournament(specs: Sequence[str], games: int = 20, workers: int = 1, seed: in
 
 def generate_dataset(spec_pool: Sequence[str], games: int, workers: int = 1, seed: int = 0,
                      num_players_choices: Sequence[int] = (3, 4), max_turns: int = 400, sample_every: int = 2,
-                     progress: Optional[Callable[[int, int, GameResult], None]] = None
+                     progress: Optional[Callable[[int, int, GameResult], None]] = None,
+                     sibling_rate: float = 0.0
                      ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[GameResult]]:
-    """Self-play games with seats drawn from ``spec_pool``; returns (X, y, vp_frac, results)."""
+    """Self-play games with seats drawn from ``spec_pool``; returns (X, y, vp_frac, results).
+
+    With ``sibling_rate > 0`` every result also carries sibling afterstates
+    (see :func:`play_game`); :func:`sibling_arrays` stacks them.
+    """
     rng = random.Random(seed)
     jobs = []
     for g in range(games):
@@ -313,7 +433,7 @@ def generate_dataset(spec_pool: Sequence[str], games: int, workers: int = 1, see
         seats = [rng.choice(list(spec_pool)) for _ in range(n)]
         jobs.append((seats, seed * 7919 + g))
     results = run_games(jobs, workers=workers, record=True, max_turns=max_turns, sample_every=sample_every,
-                        progress=progress)
+                        progress=progress, sibling_rate=sibling_rate)
     Xs = [r.X for r in results if r.X is not None]
     ys = [r.y for r in results if r.y is not None]
     vs = [r.vp_frac for r in results if r.vp_frac is not None]
@@ -321,3 +441,22 @@ def generate_dataset(spec_pool: Sequence[str], games: int, workers: int = 1, see
         from .features import NUM_FEATURES
         return np.zeros((0, NUM_FEATURES), np.float16), np.zeros(0, np.float32), np.zeros(0, np.float32), results
     return np.concatenate(Xs), np.concatenate(ys), np.concatenate(vs), results
+
+
+def sibling_arrays(results: Sequence[GameResult], base_id: int = 0
+                   ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Stack the sibling afterstates of ``results``: ``(Xs, node, h, kind)`` with node ids made unique
+    across games (``base_id + 1000 * game_index + local id``)."""
+    Xs, nodes, hs, kinds = [], [], [], []
+    for k, r in enumerate(results):
+        if r.Xs is None or len(r.Xs) == 0:
+            continue
+        Xs.append(r.Xs)
+        nodes.append(r.s_node.astype(np.int64) + base_id + 1000 * k)
+        hs.append(r.s_h)
+        kinds.append(r.s_kind)
+    if not Xs:
+        from .features import NUM_FEATURES
+        return (np.zeros((0, NUM_FEATURES), np.float16), np.zeros(0, np.int64), np.zeros(0, np.float32),
+                np.zeros(0, np.int8))
+    return np.concatenate(Xs), np.concatenate(nodes), np.concatenate(hs), np.concatenate(kinds)

@@ -221,32 +221,139 @@ def test_evaluate_exact_on_finished_games():
     assert v.dtype == np.float32
 
 
-def test_train_fit_only_applies_mask(tmp_path):
-    """``python -m catanbot.train --fit-only --replay BUF --out NET`` fits on an existing buffer and
-    stores the hand-blind mask with the net; ``--no-mask`` gives a plain net."""
-    from catanbot import train as T
-    rng = np.random.default_rng(11)
-    n_games, per_game = 30, 20
+def _synthetic_buffer(tmp_path, n_games=30, per_game=20, seed=11):
+    rng = np.random.default_rng(seed)
     X = rng.normal(size=(n_games * per_game, F.NUM_FEATURES)).astype(np.float16)
     g = np.repeat(np.arange(n_games, dtype=np.int32), per_game)
     y = (X[:, F.feature_index("me_public_vp")].astype(np.float32) > 0).astype(np.float32)
     buf = str(tmp_path / "buf.npz")
     np.savez(buf, X=X, y=y, g=g, bias=np.zeros(len(y), np.float32))
+    return buf, X, y, g
+
+
+def test_train_fit_only_and_mask_flags(tmp_path):
+    """``python -m catanbot.train --fit-only --replay BUF --out NET`` fits on an existing buffer;
+    ``--mask-features`` stores the mask with the net (off by default)."""
+    from catanbot import train as T
+    buf, X, y, g = _synthetic_buffer(tmp_path)
     out = str(tmp_path / "net.npz")
-    common = ["--fit-only", "--replay", buf, "--epochs", "2", "--hidden", "8", "--batch-size", "64", "--seed", "0"]
+    common = ["--fit-only", "--replay", buf, "--epochs", "2", "--hidden", "8", "--batch-size", "64", "--seed", "0",
+              "--rank-weight", "0"]
     assert T.main(common + ["--out", out]) == 0
     net = ValueNet.load(out)
-    assert net.hidden == (8,) and net.masked_features() == [n for n, m in zip(F.FEATURE_NAMES, feature_mask(HAND_BLIND_FEATURES)) if m == 0]
+    assert net.hidden == (8,) and net.input_mask is None
     assert (tmp_path / "net_train.log").exists()
     assert not (tmp_path / "net_replay.npz").exists()   # fit-only never writes a buffer
-    out2 = str(tmp_path / "plain.npz")
-    assert T.main(common + ["--no-mask", "--out", out2]) == 0
-    assert ValueNet.load(out2).input_mask is None
+    out2 = str(tmp_path / "blind.npz")
+    assert T.main(common + ["--mask-features", ",".join(HAND_BLIND_FEATURES), "--out", out2]) == 0
+    assert ValueNet.load(out2).masked_features() == [n for n, m in zip(F.FEATURE_NAMES, feature_mask(HAND_BLIND_FEATURES)) if m == 0]
     out3 = str(tmp_path / "custom.npz")
     assert T.main(common + ["--mask-features", "g_turn,opp*_hand_size", "--out", out3]) == 0
     assert ValueNet.load(out3).masked_features() == ["opp1_hand_size", "opp2_hand_size", "opp3_hand_size", "g_turn"]
     # the same split / recipe through fit_replay directly
     args = T.build_parser().parse_args(common + ["--out", out])
     net2, hist, n_tr, n_va = T.fit_replay(X, y, g, args, seed=0)
-    assert n_tr + n_va == len(y) and 0 < n_va < len(y) and hist["epochs"] == 2
+    assert n_tr + n_va == len(y) and 0 < n_va < len(y) and hist["epochs"] == 2 and hist["n_pairs"] == 0
     np.testing.assert_array_equal(net2.predict(X[:50]), net.predict(X[:50]))
+
+
+def test_build_pairs():
+    from catanbot.train import build_pairs
+    # node 0: END_TURN 0.30, road 0.31 (too close), settlement 0.45, bad bank trade 0.20
+    # node 1: single row (no pairs); node 2: END_TURN 0.5 vs proposals 0.5 (no gap -> no pairs)
+    node = np.array([0, 0, 0, 0, 1, 2, 2])
+    h = np.array([0.30, 0.31, 0.45, 0.20, 0.9, 0.5, 0.5], np.float32)
+    kind = np.array([0, 1, 2, 5, 0, 0, 6], np.int8)
+    pos, neg = build_pairs(node, h, kind, gap=0.02, per_node=10, seed=0)
+    pairs = set(zip(pos.tolist(), neg.tolist()))
+    assert (2, 0) in pairs                       # top (settlement) beats END_TURN: always first
+    assert (pos[0], neg[0]) == (2, 0)
+    assert (0, 3) in pairs and (2, 3) in pairs and (2, 1) in pairs and (1, 3) in pairs
+    assert (1, 0) not in pairs and (0, 1) not in pairs   # gap 0.01 < 0.02
+    assert all(h[i] - h[j] >= 0.02 for i, j in pairs) and all(node[i] == node[j] for i, j in pairs)
+    assert not any(node[i] in (1, 2) for i in pos)
+    # per_node caps the count, keeping the top-vs-END_TURN pair
+    pos2, neg2 = build_pairs(node, h, kind, gap=0.02, per_node=2, seed=0)
+    assert len(pos2) == 2 and (pos2[0], neg2[0]) == (2, 0)
+    # rows of a node need not be contiguous
+    perm = np.array([3, 0, 5, 2, 6, 1, 4])
+    pos3, neg3 = build_pairs(node[perm], h[perm], kind[perm], gap=0.02, per_node=10, seed=0)
+    assert set(zip(node[perm][pos3].tolist(), node[perm][neg3].tolist())) == {(0, 0)}
+    assert set((int(perm[i]), int(perm[j])) for i, j in zip(pos3, neg3)) == pairs
+
+
+def test_pair_rank_gradient_and_fit():
+    from catanbot.model import pair_rank_loss
+    rng = np.random.default_rng(9)
+    net = ValueNet(n_in=3, hidden=(4,), seed=2, dtype=np.float64)
+    net.fit_normalisation(rng.normal(size=(40, 3)))
+    X = rng.normal(size=(6, 3))
+    y = rng.integers(0, 2, size=6).astype(np.float64)
+    P = (rng.normal(size=(5, 3)), rng.normal(size=(5, 3)))
+    loss, gW, gb = net.loss_and_grads(X, y, weight_decay=0.01, pairs=P, pair_weight=0.7, pair_margin=0.3)
+    analytic = np.concatenate([np.concatenate([w.ravel(), b.ravel()]) for w, b in zip(gW, gb)])
+    theta = net.get_params()
+    numeric = np.empty_like(theta)
+    h = 1e-6
+    for i in range(theta.size):
+        tp = theta.copy(); tp[i] += h; net.set_params(tp)
+        lp = net.loss_and_grads(X, y, weight_decay=0.01, pairs=P, pair_weight=0.7, pair_margin=0.3)[0]
+        tm = theta.copy(); tm[i] -= h; net.set_params(tm)
+        lm = net.loss_and_grads(X, y, weight_decay=0.01, pairs=P, pair_weight=0.7, pair_margin=0.3)[0]
+        numeric[i] = (lp - lm) / (2 * h)
+    net.set_params(theta)
+    rel = np.linalg.norm(analytic - numeric) / (np.linalg.norm(analytic) + np.linalg.norm(numeric))
+    assert rel < 1e-6, rel
+    l0, g0 = pair_rank_loss(np.array([2.0, 0.0]), np.array([0.0, 0.0]), 0.5)
+    assert l0 == pytest.approx((np.log1p(np.exp(-1.5)) + np.log1p(np.exp(0.5))) / 2) and g0.shape == (2,) and (g0 < 0).all()
+    # ranking is learned without hurting the outcome fit: y depends on f0, the pairs order f1
+    N = 3000
+    X = rng.normal(size=(N, 4)).astype(np.float32)
+    y = (X[:, 0] + 0.3 * rng.normal(size=N) > 0).astype(np.float32)
+    Xp = rng.normal(size=(1500, 4)).astype(np.float32)
+    Xn = Xp.copy()
+    Xn[:, 1] -= 1.0
+    ranked = ValueNet(n_in=4, hidden=(16,), seed=0)
+    hist = ranked.fit(X, y, epochs=12, batch_size=64, lr=0.01, weight_decay=0.0, X_val=X[:400], y_val=y[:400],
+                      pairs=(Xp[200:], Xn[200:]), val_pairs=(Xp[:200], Xn[:200]), pair_weight=1.0,
+                      pair_margin=0.5, patience=0, input_noise=0.1)
+    plain = ValueNet(n_in=4, hidden=(16,), seed=0)
+    hist0 = plain.fit(X, y, epochs=12, batch_size=64, lr=0.01, weight_decay=0.0, X_val=X[:400], y_val=y[:400],
+                      input_noise=0.1)
+    for k in ("pair_loss", "val_pair_loss", "val_pair_acc"):
+        assert k in hist and len(hist[k]) == hist["epochs"]
+    assert k not in hist0
+    d_ranked = ranked.logits(Xp[:200]) - ranked.logits(Xn[:200])
+    d_plain = plain.logits(Xp[:200]) - plain.logits(Xn[:200])
+    assert (d_ranked > 0).mean() > 0.9 and hist["val_pair_acc"][-1] > 0.9
+    assert abs((d_plain > 0).mean() - 0.5) < 0.2          # BCE alone knows nothing about f1
+    # the pairs force a dependence on f1 that the labels do not have, so the outcome fit pays a little
+    # (in the real data the pairs constrain states the labels are silent about); it must not be destroyed
+    assert hist["val_auc"][-1] > hist0["val_auc"][-1] - 0.06
+
+
+def test_fit_replay_with_siblings(tmp_path):
+    """fit_replay builds train / validation pairs from sibling arrays and reports their counts."""
+    from catanbot import train as T
+    buf, X, y, g = _synthetic_buffer(tmp_path, n_games=20, per_game=10)
+    rng = np.random.default_rng(3)
+    n_nodes, per_node = 40, 5
+    Xs = rng.normal(size=(n_nodes * per_node, F.NUM_FEATURES)).astype(np.float16)
+    sn = np.repeat(np.arange(n_nodes, dtype=np.int64) * 7, per_node)
+    sh = rng.uniform(0.1, 0.6, size=len(sn)).astype(np.float32)
+    sk = np.tile(np.array([0, 1, 2, 4, 5], np.int8), n_nodes)
+    args = T.build_parser().parse_args(["--fit-only", "--replay", buf, "--out", str(tmp_path / "n.npz"),
+                                        "--epochs", "2", "--hidden", "8", "--batch-size", "32", "--rank-batch", "16"])
+    net, hist, _, _ = T.fit_replay(X, y, g, args, seed=0, siblings=(Xs, sn, sh, sk))
+    assert hist["n_pairs"] > 0 and hist["n_val_pairs"] > 0 and len(hist["pair_loss"]) == hist["epochs"]
+    assert len(hist["val_pair_acc"]) == hist["epochs"]
+    assert net.predict(X[:5]).shape == (5,)
+    # sibling npz given on the command line is used by --fit-only (no game generation)
+    sib = str(tmp_path / "sib.npz")
+    np.savez(sib, Xs=Xs, sn=sn, sh=sh, sk=sk)
+    out = str(tmp_path / "ranked.npz")
+    assert T.main(["--fit-only", "--replay", buf, "--siblings", sib, "--out", out, "--epochs", "1", "--hidden", "8",
+                   "--batch-size", "32", "--rank-batch", "16"]) == 0
+    assert ValueNet.load(out).hidden == (8,)
+    log = (tmp_path / "ranked_train.log").read_text()
+    assert "ranking pairs:" in log and "val_pair_acc" in log

@@ -681,11 +681,82 @@ a printed micro-benchmark.
 
 ### Measured speed
 
-<!-- NATIVE_BENCH_TABLE -->
+`scripts/bench_search.py` (5 mid-game 4-player positions, beam 4 / expand 8, one BLAS
+thread, three subprocess modes; this container has 4 shared cores and was
+running a training job plus two other workflows, load average 9-13, so the
+absolute numbers are pessimistic and noisy by +-30 %):
+
+| evaluator | depth | python [s] | cpp [s] (lookahead in Python) | native [s] | speedup native vs python / vs cpp | nodes python / native |
+| --- | --- | --- | --- | --- | --- | --- |
+| heuristic | 1 | 1.75 | 0.18 | 0.25 | 7x / 0.7x (depth 1 has no lookahead; the native run pays the handle set-up) | 2020 / 2020 |
+| heuristic | 2 | 6.99 | 0.94 | 0.23 | **31x** / 4.1x | 6138 / 6375 |
+| heuristic | 3 | 26.9 | 4.63 | 0.46 | **58x** / 10x | 24916 / 35921 |
+| heuristic | 4 (3 positions, 3 s time limit) | 62.6 | 11.9 | 0.88 | **71x** / 14x | 62709 / 110107 |
+| net (fresh 256/128) | 1 | 0.83 | 0.41 | 0.41 | 2.0x / 1.0x | 2613 / 2613 |
+| net | 2 | 2.89 | 1.56 | 0.78 | 3.7x / 2.0x | 6660 / 6494 |
+| net | 3 | 14.6 | 8.21 | 5.56 | 2.6x / 1.5x | 27342 / 46066 |
+| net | 4 (3 positions, 3 s time limit) | 35.8 | 20.2 | 9.05 (hits the limit) | 4.0x / 2.2x | 62849 / 86438 |
+
+Per position with the heuristic evaluator: depth 2 = 0.045 s, depth 3 =
+0.09 s, depth 4 = 0.29 s; with the SearchBot configuration (opponent model +
+politics, beam 4, expand 8, 4 roll samples, lookahead 3, 20 000 nodes) a
+depth-2 move costs 0.045 s, depth 3 0.065 s, depth 4 0.17 s, i.e. the Python
+root (arbitrage, trade planning, political options, road targets) is now the
+bottleneck and depth 3-4 is playable at well under a second per move (the
+Python path: 0.6 s at depth 2, 2.5 s at depth 3, minutes at depth 4 because
+its sub-searchers do not see the time limit).  The value net is the exception:
+`MlpEval` costs ~165 us per evaluation for the default 256/128 net (~40 us for
+the 64/32 `models/value_net_candidate.npz`) with a scalar-per-row kernel, so a
+net-backed depth-3 search is ~1 s per position; a batched multi-row kernel is
+the documented follow-up.  `_future_values` alone on 12 end-of-turn states x 6
+samples: 333 ms Python vs 18 ms native (18x, pytest micro-benchmark).
+
+The native node counts differ because the extension counts every apply it
+performs (all trial candidates, every chance outcome, the afterstate
+evaluations that order the reduced search) while Python's prior-ordered top-6
+trials are fewer; `python` and `cpp` visit identical trees.
+
 
 ### Strength
 
-<!-- NATIVE_STRENGTH_TABLE -->
+All runs on this loaded machine with 2 workers and the SearchBot
+configuration (heuristic evaluator).  Win rates carry 95 % Wilson intervals;
+with 32-72 seats per bot a single batch resolves only differences of ~20
+points.
+
+*Native depth 3 vs native depth 2* - `python3 -m catanbot eval --bots
+"search:depth=3,search:depth=3,search:depth=2,search:depth=2" --games 16
+--workers 2 --players 4 --max-turns 200 --seed S`:
+
+| seed | games | native depth 3: win % (seats) / avg VP | native depth 2: win % (seats) / avg VP | avg turns |
+| --- | --- | --- | --- | --- |
+| 0 | 16 | 15.6 % (32) / 6.97 | 34.4 % (32) / 8.22 | 85 |
+| 1 | 16 | 25.0 % (32) / 7.47 | 25.0 % (32) / 7.44 | 87 |
+| both | 32 | **20.3 %** [12.3-31.7] (64) / 7.22 | **29.7 %** [19.9-41.8] (64) / 7.83 | 86 |
+
+Depth 3 is not stronger than depth 2 in these 32 games; the difference is
+inside the binomial interval but leans the wrong way.  The reduced sub-search
+tracks the Python one closely on identical leaves (see above), so this is a
+property of the searcher's depth-3 semantics (two roll samples and two
+lookahead nodes per sub-search make the future values noisier than the
+depth-2 mean shift) rather than of the port; the depth-3 vs depth-3 row below
+says the same about the Python path.
+
+*Native depth 2 vs Python depth 2 at the same table* - `python3
+scripts/bench_search.py --tournament --specs "search:depth=2,native=1"
+"search:depth=2,native=0" --games 24 --workers 2 --players 3 --max-turns 200
+--seed 0` (the third seat is drawn from the same two specs):
+
+| bot | seats | win % | 95 % CI | avg VP | s / decision |
+| --- | --- | --- | --- | --- | --- |
+| search:depth=2, native | 36 | 36.1 | 22.5-52.4 | 8.08 | 0.019 |
+| search:depth=2, Python | 36 | 30.6 | 18.0-46.9 | 8.17 | 0.069 |
+
+Equal in expectation, as it must be (the two differ only in the opponents'
+candidate set and proposals), at 3.6x less time per decision.
+
+<!-- NATIVE_STRENGTH_C -->
+
 
 ### Limitations / notes
 

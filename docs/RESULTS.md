@@ -4,6 +4,23 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 06:20 UTC - hourly check-in
+
+* **Landed and verified**: the strategy ablation harness (`scripts/ablate.py`,
+  30 tunables, paired games, per-decision cost; docs/ABLATIONS.md) and the
+  blockability placement term (robber concentration penalty; C++ parity
+  bit-exact; neutral within noise over 240 heuristic games, to be re-tested
+  with the search bot in the full sweep).  Smoke hint from the harness: trade
+  proposals are about half of the search bot's decision time at depth 1.
+* **In progress**: value-net fix (training-side; agent is fitting a net on the
+  saved buffer and running tournaments), native C++ search port (agent is
+  building cpp/search.* and the MLP forward), Catanatron ladders on both
+  versions (verification stage).
+* Training stays paused until the fix is verified.  Load average ~10 on 4
+  cores from the agents' experiments; the full ablation sweep waits for a
+  quiet window.
+* Opus switch notice: not yet sent (two implementation pieces still open).
+
 ## 2026-09-25 05:20 UTC - state before the overnight run
 
 **Value net.**  Two candidates trained on the accelerated self-play data

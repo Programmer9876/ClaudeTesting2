@@ -21,6 +21,15 @@ probability in ``[0, 1]``.  It is a plain multilayer perceptron:
   can-afford flags) removes that confound; the heuristic side of the blend
   (``selfplay.BlendedEvaluator``) still sees affordability and the 7-risk.
 
+* an optional **pairwise ranking term** (``fit(pairs=(X_pos, X_neg))``):
+  ``softplus(margin - (z_pos - z_neg))`` on the logits of two sibling
+  afterstates of the same decision, added to the BCE.  The search ranks
+  siblings, and the self-play labels hold no counterfactual for the moves the
+  behaviour policy never makes (holding an affordable build), so the net is
+  told directly which sibling is better (the heuristic's ordering of concrete
+  afterstates, see ``selfplay.play_game(sibling_rate=...)``) while the BCE keeps
+  its absolute values calibrated.
+
 :meth:`ValueNet.evaluate` returns the exact value (1 / 0) for finished games,
 like the heuristic evaluator, because game-over states are never recorded.
 
@@ -37,7 +46,7 @@ import numpy as np
 from .features import FEATURE_NAMES, NUM_FEATURES, extract_batch
 from .state import PHASE_GAME_OVER
 
-__all__ = ["ValueNet", "binary_auc", "feature_mask", "HAND_BLIND_FEATURES", "MODEL_VERSION"]
+__all__ = ["ValueNet", "binary_auc", "feature_mask", "pair_rank_loss", "HAND_BLIND_FEATURES", "MODEL_VERSION"]
 
 # Files written by this module: version 1 has no input mask (readable by older code), version 2
 # carries one (older loaders refuse it instead of silently using the net without its mask).
@@ -87,6 +96,20 @@ def _bce_from_logits(z: np.ndarray, y: np.ndarray) -> float:
     # max(z, 0) - z*y + log(1 + exp(-|z|))
     loss = np.maximum(z, 0.0) - z * y + np.log1p(np.exp(-np.abs(z)))
     return float(loss.mean())
+
+
+def _softplus(x: np.ndarray) -> np.ndarray:
+    """log(1 + exp(x)), numerically stable."""
+    return np.maximum(x, 0.0) + np.log1p(np.exp(-np.abs(x)))
+
+
+def pair_rank_loss(z_pos: np.ndarray, z_neg: np.ndarray, margin: float) -> Tuple[float, np.ndarray]:
+    """Mean logistic ranking loss ``softplus(margin - (z_pos - z_neg))`` and ``d loss / d z_pos``
+    (``d loss / d z_neg`` is its negative)."""
+    d = margin - (np.asarray(z_pos, np.float64) - np.asarray(z_neg, np.float64))
+    loss = float(_softplus(d).mean())
+    g = -_sigmoid(d) / max(1, len(d))
+    return loss, g
 
 
 def binary_auc(y_true: np.ndarray, scores: np.ndarray) -> float:
@@ -229,9 +252,23 @@ class ValueNet:
                 out[k] = 1.0 if s.winner == p else 0.0
         return out
 
-    def loss_and_grads(self, X: np.ndarray, y: np.ndarray, weight_decay: float = 0.0
-                       ) -> Tuple[float, List[np.ndarray], List[np.ndarray]]:
-        """Mean BCE (+ L2 penalty) and its gradients w.r.t. ``W`` and ``b``.
+    def _backprop(self, acts: List[np.ndarray], dz: np.ndarray, grads_W: List[np.ndarray],
+                  grads_b: List[np.ndarray]) -> None:
+        """Accumulate ``d loss / d W, b`` into ``grads_W`` / ``grads_b`` from ``dz`` ``(N, 1)`` (the loss
+        gradient w.r.t. the logits) and the activations of the forward pass that produced them."""
+        delta = dz
+        for i in range(len(self.W) - 1, -1, -1):
+            a = acts[i]
+            grads_W[i] += a.T @ delta
+            grads_b[i] += delta.sum(axis=0)
+            if i > 0:
+                delta = (delta @ self.W[i].T) * (a > 0)
+
+    def loss_and_grads(self, X: np.ndarray, y: np.ndarray, weight_decay: float = 0.0,
+                       pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None, pair_weight: float = 1.0,
+                       pair_margin: float = 0.5) -> Tuple[float, List[np.ndarray], List[np.ndarray]]:
+        """Mean BCE (+ L2 penalty, + the pairwise ranking term of :meth:`fit` with ``pairs``) and its
+        gradients w.r.t. ``W`` and ``b``.
 
         Exposed for gradient checking.  ``X`` is raw features (standardised
         internally with the stored mean/std).
@@ -244,18 +281,21 @@ class ValueNet:
         if weight_decay:
             loss += 0.5 * weight_decay * sum(float((W * W).sum()) for W in self.W)
         dz = ((_sigmoid(z) - y) / n).astype(self.dtype)[:, None]
-        gW: List[Optional[np.ndarray]] = [None] * len(self.W)
-        gb: List[Optional[np.ndarray]] = [None] * len(self.b)
-        delta = dz
-        for i in range(len(self.W) - 1, -1, -1):
-            a = acts[i]
-            gW[i] = a.T @ delta
-            gb[i] = delta.sum(axis=0)
-            if weight_decay:
+        gW: List[np.ndarray] = [np.zeros_like(W) for W in self.W]
+        gb: List[np.ndarray] = [np.zeros_like(b) for b in self.b]
+        self._backprop(acts, dz, gW, gb)
+        if pairs is not None and len(pairs[0]) > 0 and pair_weight > 0:
+            zp, acts_p = self._forward(self._prep(np.asarray(pairs[0])), keep=True)
+            zn, acts_n = self._forward(self._prep(np.asarray(pairs[1])), keep=True)
+            pl, gp = pair_rank_loss(zp, zn, pair_margin)
+            loss += pair_weight * pl
+            gp = (gp * pair_weight).astype(self.dtype)[:, None]
+            self._backprop(acts_p, gp, gW, gb)
+            self._backprop(acts_n, -gp, gW, gb)
+        if weight_decay:
+            for i in range(len(self.W)):
                 gW[i] = gW[i] + weight_decay * self.W[i]
-            if i > 0:
-                delta = (delta @ self.W[i].T) * (a > 0)
-        return loss, gW, gb  # type: ignore[return-value]
+        return loss, gW, gb
 
     # ------------------------------------------------------------------
     # parameters as a flat vector (gradient checks, tests)
@@ -334,7 +374,9 @@ class ValueNet:
             log: Optional[Callable[[str], None]] = None, patience: int = 5, clip_norm: float = 5.0,
             shuffle: bool = True, seed: Optional[int] = None, refit_norm: bool = False,
             beta1: float = 0.9, beta2: float = 0.999, adam_eps: float = 1e-8,
-            input_noise: float = 0.0) -> Dict[str, object]:
+            input_noise: float = 0.0, pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+            pair_weight: float = 1.0, pair_margin: float = 0.5, pair_batch: int = 256,
+            val_pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> Dict[str, object]:
         """Train with mini-batch Adam.
 
         ``X`` ``(N, n_in)`` raw features (any float dtype), ``y`` ``(N,)``
@@ -345,9 +387,18 @@ class ValueNet:
         (``patience <= 0`` disables early stopping).  ``log`` receives one
         line per epoch.
 
+        ``pairs = (X_pos, X_neg)`` (raw features, same length) adds the
+        ranking term ``pair_weight * mean softplus(pair_margin - (z_pos -
+        z_neg))``: every mini-batch step also takes the next ``pair_batch``
+        pairs (cycling through a shuffled order).  ``val_pairs`` are scored
+        each epoch (``val_pair_loss``, ``val_pair_acc`` = share ordered
+        correctly) and, when given, early stopping uses ``val_loss +
+        pair_weight * val_pair_loss``.
+
         Returns a history dict with lists ``train_loss``, ``val_loss``,
         ``val_auc``, ``val_acc`` (validation lists empty without a validation
-        set) plus ``epochs`` (run), ``best_epoch`` and ``stopped_early``.
+        set), ``pair_loss`` / ``val_pair_loss`` / ``val_pair_acc`` (with
+        pairs) plus ``epochs`` (run), ``best_epoch`` and ``stopped_early``.
         """
         X = np.asarray(X)
         y = np.asarray(y, dtype=self.dtype).ravel()
@@ -367,42 +418,78 @@ class ValueNet:
         if self._m is None:
             self._init_adam()
         batch_size = max(1, min(int(batch_size), n))
+        has_pairs = pairs is not None and len(pairs[0]) > 0 and pair_weight > 0
+        if has_pairs:
+            Pp = self._prep(np.asarray(pairs[0]))
+            Pn = self._prep(np.asarray(pairs[1]))
+            if len(Pp) != len(Pn):
+                raise ValueError("pairs must have the same number of positive and negative rows")
+            n_pairs = len(Pp)
+            pair_batch = max(1, min(int(pair_batch), n_pairs))
+            pidx = np.arange(n_pairs)
+            p_pos = 0
+        has_val_pairs = val_pairs is not None and len(val_pairs[0]) > 0
+        if has_val_pairs:
+            Vp = self._prep(np.asarray(val_pairs[0]))
+            Vn = self._prep(np.asarray(val_pairs[1]))
         history: Dict[str, object] = {"train_loss": [], "val_loss": [], "val_auc": [], "val_acc": [],
                                       "epochs": 0, "best_epoch": -1, "stopped_early": False}
+        if has_pairs:
+            history["pair_loss"] = []
+        if has_val_pairs:
+            history["val_pair_loss"] = []
+            history["val_pair_acc"] = []
         best_val = float("inf")
         best_params: Optional[np.ndarray] = None
         bad = 0
         idx = np.arange(n)
+
+        def noisy(H: np.ndarray) -> np.ndarray:
+            if input_noise > 0:
+                # Gaussian input noise (in standardised units) as a regulariser: positions
+                # from the same game are near-duplicates, and without noise the net memorises
+                # game identity instead of learning position value.
+                H = H + rng.normal(0.0, input_noise, H.shape).astype(self.dtype)
+                if self._input_mask is not None:
+                    H = H * self._input_mask   # hidden features stay hidden (no noise either)
+            return H
+
         for ep in range(int(epochs)):
             if shuffle:
                 rng.shuffle(idx)
+                if has_pairs:
+                    rng.shuffle(pidx)
             total = 0.0
+            total_pair = 0.0
+            n_pair_steps = 0
             for s in range(0, n, batch_size):
                 bi = idx[s:s + batch_size]
-                Hb = Xn[bi]
-                if input_noise > 0:
-                    # Gaussian input noise (in standardised units) as a regulariser: positions
-                    # from the same game are near-duplicates, and without noise the net memorises
-                    # game identity instead of learning position value.
-                    Hb = Hb + rng.normal(0.0, input_noise, Hb.shape).astype(self.dtype)
-                    if self._input_mask is not None:
-                        Hb = Hb * self._input_mask   # hidden features stay hidden (no noise either)
+                Hb = noisy(Xn[bi])
                 yb = y[bi]
                 z, acts = self._forward(Hb, keep=True)
                 total += _bce_from_logits(z, yb) * len(bi)
                 dz = ((_sigmoid(z) - yb) / len(bi)).astype(self.dtype)[:, None]
-                grads_W: List[np.ndarray] = [None] * len(self.W)  # type: ignore[list-item]
-                grads_b: List[np.ndarray] = [None] * len(self.b)  # type: ignore[list-item]
-                delta = dz
-                for i in range(len(self.W) - 1, -1, -1):
-                    a = acts[i]
-                    gW = a.T @ delta
-                    if weight_decay:
-                        gW += weight_decay * self.W[i]
-                    grads_W[i] = gW
-                    grads_b[i] = delta.sum(axis=0)
-                    if i > 0:
-                        delta = (delta @ self.W[i].T) * (a > 0)
+                grads_W: List[np.ndarray] = [np.zeros_like(W) for W in self.W]
+                grads_b: List[np.ndarray] = [np.zeros_like(b) for b in self.b]
+                self._backprop(acts, dz, grads_W, grads_b)
+                if has_pairs:
+                    # next slice of pairs (cycling); the ranking gradient is added to the BCE gradient
+                    if p_pos + pair_batch > n_pairs:
+                        rng.shuffle(pidx)
+                        p_pos = 0
+                    pb = pidx[p_pos:p_pos + pair_batch]
+                    p_pos += pair_batch
+                    zp, acts_p = self._forward(noisy(Pp[pb]), keep=True)
+                    zn, acts_n = self._forward(noisy(Pn[pb]), keep=True)
+                    pl, gp = pair_rank_loss(zp, zn, pair_margin)
+                    total_pair += pl
+                    n_pair_steps += 1
+                    gp = (gp * pair_weight).astype(self.dtype)[:, None]
+                    self._backprop(acts_p, gp, grads_W, grads_b)
+                    self._backprop(acts_n, -gp, grads_W, grads_b)
+                if weight_decay:
+                    for i in range(len(self.W)):
+                        grads_W[i] += weight_decay * self.W[i]
                 grads = [*grads_W, *grads_b]
                 if clip_norm and clip_norm > 0:
                     gn = math.sqrt(sum(float((g * g).sum()) for g in grads))
@@ -414,6 +501,18 @@ class ValueNet:
             history["train_loss"].append(train_loss)  # type: ignore[union-attr]
             history["epochs"] = ep + 1
             msg = f"epoch {ep + 1}/{epochs} train_loss={train_loss:.4f}"
+            if has_pairs:
+                pair_loss = total_pair / max(1, n_pair_steps)
+                history["pair_loss"].append(pair_loss)  # type: ignore[union-attr]
+                msg += f" pair_loss={pair_loss:.4f}"
+            vpl = 0.0
+            if has_val_pairs:
+                dv = self._forward(Vp) - self._forward(Vn)
+                vpl = float(_softplus(pair_margin - dv).mean())
+                vpa = float((dv > 0).mean())
+                history["val_pair_loss"].append(vpl)  # type: ignore[union-attr]
+                history["val_pair_acc"].append(vpa)  # type: ignore[union-attr]
+                msg += f" val_pair_loss={vpl:.4f} val_pair_acc={vpa:.3f}"
             if has_val:
                 zv = self._forward(Xv)
                 vl = _bce_from_logits(zv, yv)
@@ -424,8 +523,9 @@ class ValueNet:
                 history["val_acc"].append(acc)  # type: ignore[union-attr]
                 history["val_auc"].append(auc)  # type: ignore[union-attr]
                 msg += f" val_loss={vl:.4f} val_acc={acc:.3f} val_auc={auc:.3f}"
-                if vl < best_val - 1e-7:
-                    best_val = vl
+                objective = vl + (pair_weight * vpl if (has_pairs and has_val_pairs) else 0.0)
+                if objective < best_val - 1e-7:
+                    best_val = objective
                     best_params = self.get_params()
                     history["best_epoch"] = ep
                     bad = 0
