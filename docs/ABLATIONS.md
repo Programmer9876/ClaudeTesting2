@@ -292,3 +292,33 @@ slack is -3.3 pp (noise).  Self-play between identical bots is a weak test
 bed for targeting and political terms (the opponents share the same logic);
 the next step is the same paired design against the Catanatron stand-ins
 and 500+ games per candidate for the terms that matter for compute.
+
+## Sweep 2 (2026-09-25 13:40 UTC): the remaining six tunables, 120 paired games each
+
+Same design and base spec (seed 102).  Decision times are per searched
+decision, measured under a load average of about 4 (another workflow
+running), so only the relative cost is meaningful.
+
+| tunable | default | candidate | games | wins cand / default | delta (pp) | s.e. (pp) | ms/decision cand / default |
+|---|---|---|---|---|---|---|---|
+| devcards.KNIGHT_VALUE | 0.55 | 0.3 | 120 | None / None | +0.8 | 4.6 | 13.3 / 13.2 |
+| devcards.KNIGHT_VALUE | 0.55 | 0.8 | 120 | None / None | +0.0 | 4.6 | 13.1 / 12.9 |
+| opponent_model.stage_late_drop | 0.7 | 0.0 | 120 | None / None | +4.2 | 4.6 | 16.2 / 12.5 |
+| opponent_model.stage_late_drop | 0.7 | 0.4 | 120 | None / None | +5.0 | 4.6 | 14.5 / 12.8 |
+| placement.PLACEMENT_BLOCK_WEIGHT | 1.0 | 0.0 | 120 | None / None | -1.7 | 4.6 | 13.3 / 13.1 |
+| placement.PLACEMENT_BLOCK_WEIGHT | 1.0 | 0.5 | 120 | None / None | -2.5 | 4.6 | 13.6 / 13.4 |
+| search.dump_candidates | 3 | 0 | 120 | None / None | +0.0 | 4.6 | 13.1 / 12.9 |
+| search.dump_candidates | 3 | 1 | 120 | None / None | -0.8 | 4.6 | 13.1 / 13.0 |
+| search.trade_proposals | 3 | 0 | 120 | None / None | -17.5 | 4.3 | 7.1 / 18.8 |
+| search.trade_proposals | 3 | 1 | 120 | None / None | -5.0 | 4.6 | 10.7 / 14.2 |
+| trading.feed_leader_guard | True | False | 120 | None / None | +0.8 | 4.6 | 12.8 / 13.0 |
+
+Reading: one clear result - **trade proposals in the search are worth
++17.5 pp (s.e. 4.3) at about 12 ms per decision** (proposals=0 costs 17.5
+pp, proposals=1 costs 5 pp): the single most valuable term measured so far
+and cheap for what it buys.  Two weak signals worth a 400-game follow-up:
+the late-game trade damping may be slightly too strong (stage drop 0.0 /
+0.4 = +4.2 / +5.0 pp, one standard error) and the blockability weight is on
+the right side (removing it -1.7 pp, halving it -2.5 pp).  Knight value,
+dump candidates and the feed-the-leader guard are neutral at this sample
+size in self-play.

@@ -4,6 +4,16 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 13:40 UTC - ablation sweep 2 (six more tunables)
+
+Trade proposals inside the search are the most valuable strategy term
+measured: switching them off costs 17.5 pp (s.e. 4.3) for a saving of
+about 12 ms per decision; one proposal instead of three costs 5 pp.  Weak
+signals for follow-up at 400 games: late-game trade damping possibly too
+strong (+4-5 pp when weakened), blockability weight on the right side
+(-2 pp when removed).  Knight value, dump candidates, feed-the-leader
+guard: neutral.  All 11 tunables of the first two sweeps: docs/ABLATIONS.md.
+
 ## 2026-09-25 11:45 UTC - lookahead diagnosis: noise, not strategy
 
 The 15 % figure was 40-game noise; over 400 games vs the ValueFunction
