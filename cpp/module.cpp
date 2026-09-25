@@ -9,6 +9,8 @@
 //   (+ the heuristic helpers heuristic_longest_road_length, reachable_spots,
 //    score_settlement_spot, player_production, resource_scarcity,
 //    expected_hidden_vp, progress_to_build, mainly for the differential tests)
+//   HeuristicEval / MlpEval / BlendEval, future_values, reduced_search, choose_discard,
+//   best_robber_move, win_path, robber_weights: the native lookahead (search_bindings.inc)
 //
 // `states` are catanbot.state.GameState objects; they are converted once per
 // distinct consecutive object (like features.extract_batch) with the raw
@@ -31,8 +33,11 @@
 #include <random>
 
 #include "engine.hpp"
+#include "evaluator.hpp"
 #include "features.hpp"
 #include "heuristic.hpp"
+#include "policy.hpp"
+#include "search.hpp"
 #include "state.hpp"
 
 namespace py = pybind11;
@@ -1110,6 +1115,9 @@ int count_vp_py(py::handle state, long player, bool include_hidden) {
 
 }  // namespace engine_py
 
+// Native lookahead (search.hpp): evaluator handles, future_values, reduced_search and the strategy helpers.
+#include "search_bindings.inc"
+
 }  // namespace
 
 PYBIND11_MODULE(catanbot_core, m) {
@@ -1239,5 +1247,7 @@ PYBIND11_MODULE(catanbot_core, m) {
     m.attr("PLAYER_BLOCK") = (int)PLAYER_BLOCK;
     m.attr("GLOBAL_BLOCK") = (int)GLOBAL_BLOCK;
     m.attr("MAX_PLAYERS") = (int)MAX_PLAYERS;
-    m.attr("__version__") = "0.3.0";
+    // --- native lookahead ---------------------------------------------------
+    search_py::register_search(m);
+    m.attr("__version__") = "0.4.0";
 }

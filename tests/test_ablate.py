@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from catanbot import coalitions, danger, opponent_model, placement, politics, robber, trading, tuning
+from catanbot import coalitions, danger, heuristic, opponent_model, placement, politics, robber, trading, tuning
 from catanbot.agents.heuristic_bot import HeuristicBot
 from catanbot.agents.param_bot import ParamBot
 from catanbot.selfplay import make_bot, play_game
@@ -48,6 +48,11 @@ def test_registry_resolves_to_real_attributes():
     for name in ("PLACEMENT_BLOCK_WEIGHT", "PLACEMENT_ROBBER_Q"):
         assert (f"placement.{name}" in tuning.TUNABLES) == hasattr(placement, name)
     assert tuning.find("TURNS_HALF") is tuning.TUNABLES["danger.TURNS_HALF"]
+    for name in ("search.opp_roll_samples", "search.opponent_actions", "search.opponent_expand", "search.opponent_proposals"):
+        assert tuning.TUNABLES[name].requires_depth == 2      # Searcher._future_values only runs at depth >= 2
+    assert tuning.TUNABLES["search.beam"].requires_depth == 1
+    assert tuning.spec_depth("search:depth=2,beam=4") == 2 and tuning.spec_depth("heuristic:temp=0.1") == 1
+    assert tuning.spec_depth("search:beam=4") == 1
     with pytest.raises(KeyError):
         tuning.find("no_such_tunable")
     with pytest.raises(KeyError):
@@ -134,6 +139,106 @@ def test_parambot_plays_a_game_and_records_times():
     assert bots[0].trade_bias == 0.0     # attribute delegation to the inner bot
 
 
+def test_parambot_decision_time_excludes_override_overhead(monkeypatch):
+    import time
+    from catanbot.engine import legal_actions
+    orig_apply, orig_restore = tuning.apply, tuning.restore
+
+    def slow_apply(ov):
+        time.sleep(0.02)
+        return orig_apply(ov)
+
+    def slow_restore(tok):
+        time.sleep(0.02)
+        orig_restore(tok)
+
+    monkeypatch.setattr(tuning, "apply", slow_apply)
+    monkeypatch.setattr(tuning, "restore", slow_restore)
+    bot = ParamBot(HeuristicBot(temperature=0.15), {"danger.TURNS_HALF": 2.0})
+    s = new_game(4, rng=random.Random(1))
+    legal = legal_actions(s)
+    assert len(legal) > 1
+    for _ in range(3):
+        bot.decide(s, legal, random.Random(0))
+    assert bot.stats["decisions"] == 3 and all(t < 0.02 for t in bot.stats["times"])   # the 40 ms sleeps are not in it
+    assert bot.stats["overhead"] >= 3 * 0.04                                          # ... they are here
+    assert danger.TURNS_HALF == 3.0
+
+
+NONSEARCH = [t for t in tuning.TUNABLES.values() if t.kind != "search"]
+
+
+def _all_targets():
+    return {t.name: [tg.get() for tg in t.targets] for t in NONSEARCH}
+
+
+def test_parambot_restores_every_registry_target_after_midgame_raise():
+    before = _all_targets()
+    every_candidate = {t.name: t.candidates[0] for t in NONSEARCH}   # every non-search tunable at once
+
+    class Boom(HeuristicBot):
+        calls = 0
+
+        def decide(self, state, legal, rng):
+            Boom.calls += 1
+            if Boom.calls == 5:
+                raise RuntimeError("boom on decision 5")
+            return super().decide(state, legal, rng)
+
+    bots = [ParamBot(Boom(temperature=0.15), every_candidate), ParamBot(HeuristicBot(temperature=0.15), {}),
+            ParamBot(Boom(temperature=0.15), every_candidate), ParamBot(HeuristicBot(temperature=0.15), {})]
+    with pytest.raises(RuntimeError, match="decision 5"):
+        play_game(bots, rng=random.Random(3), seed=3, max_turns=100)
+    assert Boom.calls == 5
+    assert _all_targets() == before
+    assert tuning.verify_registry() == []
+    assert robber.danger_multiplier is danger.danger_multiplier
+    assert trading.offer_is_feeding_leader is heuristic.offer_is_feeding_leader
+    import catanbot.search as S
+    assert S.trade_stage_factor is opponent_model.trade_stage_factor is trading.trade_stage_factor
+    assert not danger._cache
+
+
+def test_two_parambots_each_see_their_own_values(monkeypatch):
+    """Two candidate bots with different overrides plus two default bots in one game: the value seen
+    inside a strategy function (danger.win_path, called from the bots' decisions) is the deciding
+    bot's own, and the defaults never see an override."""
+    before = _all_targets()
+    seen_in_win_path = []
+    current = ["-"]
+    orig_win_path, orig_dm = danger.win_path, danger.danger_multiplier
+
+    def logged_win_path(state, i, belief=None):
+        assert robber.danger_multiplier is danger.danger_multiplier          # both import sites always agree
+        seen_in_win_path.append((current[0], danger.TURNS_HALF, coalitions.SCALE, danger.danger_multiplier is orig_dm))
+        return orig_win_path(state, i, belief)
+
+    monkeypatch.setattr(danger, "win_path", logged_win_path)   # win_paths looks the name up at call time
+
+    class Tagged(HeuristicBot):
+        def __init__(self, tag):
+            super().__init__(temperature=0.15)
+            self.tag = tag
+
+        def decide(self, state, legal, rng):
+            current[0] = self.tag
+            try:
+                return super().decide(state, legal, rng)
+            finally:
+                current[0] = "-"
+
+    A = {"danger.TURNS_HALF": 1.5, "coalitions.SCALE": 2.0, "danger.danger_multiplier": False}
+    B = {"danger.TURNS_HALF": 6.0, "coalitions.SCALE": 0.25}
+    bots = [ParamBot(Tagged("A"), A), ParamBot(Tagged("D1"), {}), ParamBot(Tagged("B"), B), ParamBot(Tagged("D2"), {})]
+    play_game(bots, rng=random.Random(11), seed=11, max_turns=150)
+    expect = {"A": (1.5, 2.0, False), "B": (6.0, 0.25, True), "D1": (3.0, 0.5, True), "D2": (3.0, 0.5, True),
+              "-": (3.0, 0.5, True)}
+    assert {tag for tag, *_ in seen_in_win_path} >= {"A", "B", "D1", "D2"}
+    for tag, th, sc, orig in seen_in_win_path:
+        assert (th, sc, orig) == expect[tag], (tag, th, sc, orig)
+    assert _all_targets() == before
+
+
 def test_parambot_search_knob_only_on_search_bot():
     with pytest.raises(TypeError):
         ParamBot(HeuristicBot(), {"search.beam": 2})
@@ -179,6 +284,28 @@ def test_paired_stats_two_vs_two_matches_binomial():
     assert st["avg_vp_cand"] > st["avg_vp_def"]
 
 
+def test_paired_stats_per_game_records():
+    def game(pattern, winner, seed, mode):
+        return {"seed": seed, "pattern": pattern, "winner": winner, "vps": [10 if i == winner else 6 for i in range(4)],
+                "turns": 50, "actions": 100, "duration": 1.0, "seat_times": [[0.001, 0.003], [0.002], [0.001], [0.002]],
+                "seat_decisions": [2, 1, 1, 1], "seat_overhead": [0.0004, 0.0, 0.0002, 0.0], "evaluator_mode": mode,
+                "pid": 42}
+    st = tuning.paired_stats([game("CCDD", 0, 1, "c++ (catanbot_core)"), game("DDCC", 0, 2, "c++ (catanbot_core)"),
+                              game("CDCD", 3, 3, "c++ (catanbot_core)")])
+    recs = st["records"]
+    assert [r["seed"] for r in recs] == [1, 2, 3] and [r["pattern"] for r in recs] == ["CCDD", "DDCC", "CDCD"]
+    assert [r["winning_side"] for r in recs] == ["cand", "default", "default"]
+    assert [r["diff"] for r in recs] == [0.5, -0.5, -0.5]
+    assert st["delta"] == pytest.approx(sum(r["diff"] for r in recs) / 3)
+    assert recs[0]["seat_ms_mean"][0] == pytest.approx(2.0) and recs[0]["seat_decisions"] == [2, 1, 1, 1]
+    assert recs[0]["seat_overhead_ms"][0] == pytest.approx(0.4) and recs[0]["evaluator_mode"].startswith("c++")
+    assert st["evaluator_modes"] == ["c++ (catanbot_core)"]
+    # candidate seats: CCDD -> 0,1 (3 decisions, overhead 0.0004); DDCC -> 2,3 (2, 0.0002); CDCD -> 0,2 (3, 0.0006)
+    assert st["decisions_cand"] == 8 and st["decisions_def"] == 7
+    assert st["overhead_ms_cand"] == pytest.approx(1000 * (0.0004 + 0.0002 + 0.0006) / 8)
+    assert st["overhead_ms_def"] == pytest.approx(1000 * (0.0002 + 0.0004 + 0.0) / 7)
+
+
 def test_paired_stats_three_player_rotation_is_unbiased():
     # Equal strength: every seat wins its share -> the paired delta is zero on average.
     rows = []
@@ -214,6 +341,13 @@ def test_ablate_list_and_plan():
     assert p.returncode == 0 and "base spec search:depth=1,beam=4,expand=8,evaluator=heuristic" in p.stdout
     p = _run(["--tunable", "search.beam", "--plan", "--base-spec", "heuristic"])
     assert p.returncode != 0 and "search base spec" in (p.stdout + p.stderr)
+    # the opponent knobs are only read at depth >= 2: depth-2 spec by default, a depth-1 spec is refused
+    p = _run(["--tunable", "search.opp_roll_samples", "--plan"])
+    assert p.returncode == 0 and "base spec search:depth=2,beam=4,expand=8,evaluator=heuristic" in p.stdout
+    p = _run(["--tunable", "search.opponent_actions", "--plan", "--base-spec", "search:depth=1,beam=4,expand=8"])
+    assert p.returncode != 0 and "depth >= 2" in (p.stdout + p.stderr)
+    p = _run(["--tunable", "search.trade_proposals", "--plan", "--base-spec", "search:depth=1,beam=4,expand=8"])
+    assert p.returncode == 0
     p = _run(["--tunable", "nope"])
     assert p.returncode == 2 and "unknown tunable" in p.stderr
 
@@ -237,6 +371,21 @@ def test_ablate_smoke_run_writes_json(tmp_path):
     assert r["value"] == 2.0 and r["games"] == 2 and r["cand_seats"] == 4 and r["def_seats"] == 4
     assert r["cand_wins"] + r["def_wins"] + r["draws"] == 2
     assert r["ms_mean_cand"] > 0 and r["ms_mean_def"] > 0
+    # per-game records: both settings in every game, seats rotated, seeds from the seed formula
+    recs = r["records"]
+    assert len(recs) == 2 and [x["pattern"] for x in recs] == ["CCDD", "DDCC"]
+    assert [x["seed"] for x in recs] == [tuning.game_seed(1, 0), tuning.game_seed(1, 1)]
+    for x in recs:
+        assert len(x["vps"]) == 4 and len(x["seat_decisions"]) == 4 and len(x["seat_ms_mean"]) == 4
+        assert x["evaluator_mode"] == d["evaluator_mode"]
+    # ... and the statistics recompute from them
+    diffs = [x["diff"] for x in recs]
+    delta = sum(diffs) / 2
+    assert r["delta"] == pytest.approx(delta)
+    assert r["se"] == pytest.approx((sum((x - delta) ** 2 for x in diffs) / 1 / 2) ** 0.5)
+    assert r["ci95"] == pytest.approx([max(-1, delta - 1.96 * r["se"]), min(1, delta + 1.96 * r["se"])])
+    assert d["worker_evaluator_modes"] == [d["evaluator_mode"]] == r["evaluator_modes"]
+    assert r["overhead_ms_cand"] >= 0 and r["overhead_ms_def"] >= 0
 
 
 def test_ablate_python_evaluator_path_sets_env(tmp_path):
@@ -251,6 +400,10 @@ def test_ablate_python_evaluator_path_sets_env(tmp_path):
     d = json.loads(out.read_text())
     assert d["evaluator_mode"] == "python (CATANBOT_NO_ACCEL=1)" and d["needs_python_evaluator"]
     assert d["results"][0]["value"] == [1.0] * 5
+    # the process that played the game reports the Python evaluator too (both sides run in it)
+    assert d["worker_evaluator_modes"] == ["python (CATANBOT_NO_ACCEL=1)"]
+    assert all(x["evaluator_mode"] == "python (CATANBOT_NO_ACCEL=1)" for x in d["results"][0]["records"])
+    assert "evaluator mode in the game processes: python (CATANBOT_NO_ACCEL=1)" in p.stdout
     # A tunable that does not need it keeps the default mode (no re-exec).
     p = _run(["--tunable", "danger.BLOCK_NEED", "--plan"])
     assert p.returncode == 0 and "re-executing" not in p.stdout

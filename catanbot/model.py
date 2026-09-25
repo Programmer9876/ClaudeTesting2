@@ -167,14 +167,18 @@ class ValueNet:
     # forward / backward
     # ------------------------------------------------------------------
     def _prep(self, X: np.ndarray) -> np.ndarray:
-        X = np.asarray(X, dtype=self.dtype)
+        X = np.asarray(X)
         if X.ndim == 1:
             X = X[None, :]
         if X.shape[1] != self.n_in:
             raise ValueError(f"expected {self.n_in} features, got {X.shape[1]}")
-        H = (X - self.mean) / self.std
+        # One float32 copy standardised in place (the replay buffer is ~1.5M rows: (X - mean) / std
+        # would allocate two further full-size temporaries).
+        H = np.array(X, dtype=self.dtype, copy=True)
+        H -= self.mean
+        H /= self.std
         if self._input_mask is not None:
-            H = H * self._input_mask   # hidden features are exactly 0 whatever the input holds
+            H *= self._input_mask   # hidden features are exactly 0 whatever the input holds
         return H
 
     def _forward(self, H: np.ndarray, keep: bool = False):
@@ -283,9 +287,23 @@ class ValueNet:
     # ------------------------------------------------------------------
     def fit_normalisation(self, X: np.ndarray, eps: float = 1e-6) -> None:
         """Compute and store input mean / std from ``X`` (raw features)."""
-        X = np.asarray(X, dtype=np.float64)
-        self.mean = X.mean(axis=0).astype(self.dtype)
-        std = X.std(axis=0)
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = X[None, :]
+        n = X.shape[0]
+        # Two-pass mean / std accumulated in float64 over row chunks: no full float64 copy of a
+        # float16 replay buffer (which would be 4x its size).
+        chunk = 65536
+        mean = np.zeros(X.shape[1], np.float64)
+        for s in range(0, n, chunk):
+            mean += X[s:s + chunk].astype(np.float64).sum(axis=0)
+        mean /= max(1, n)
+        var = np.zeros(X.shape[1], np.float64)
+        for s in range(0, n, chunk):
+            d = X[s:s + chunk].astype(np.float64) - mean
+            var += (d * d).sum(axis=0)
+        std = np.sqrt(var / max(1, n))
+        self.mean = mean.astype(self.dtype)
         std[std < eps] = 1.0  # constant features: leave as-is (centred to 0)
         self.std = std.astype(self.dtype)
         self.norm_fitted = True

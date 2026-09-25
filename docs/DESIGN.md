@@ -267,7 +267,13 @@ and `models/train_log.json`.
 * `heuristic.py`: `HeuristicEvaluator().evaluate(states, players)`, `static_value(state, player) -> float`,
   `action_priors(state, actions) -> list[float]` (higher = try first).
 * `placement.py`: `score_settlement_spot(state, player, v)`, `best_settlement_spots(state, player, k)`,
-  `score_city(state, player, v)`, `road_targets(state, player)`, `resource_scarcity(state)`.
+  `score_city(state, player, v)`, `road_targets(state, player)`, `resource_scarcity(state)`.  Both spot
+  scorers subtract the blockability penalty `block_penalty(state, player, extra_settlement=v | extra_city=v)`
+  `= PLACEMENT_BLOCK_WEIGHT x (robber_exposure after - before)`: the demand-weighted pips one robber
+  placement blocks *because* our buildings share hexes (`P_block ~ W(h)^2`, 1.5x on a hex a 5+ VP opponent
+  works; 0 for a first building or any layout without shared hexes).  Constants `PLACEMENT_ROBBER_Q`,
+  `PLACEMENT_BLOCK_WEIGHT` (0 = old scores), `PLACEMENT_STRONG_THREAT`; `BlockContext` caches the per-player
+  part; `cpp/heuristic.cpp::score_spot` mirrors `score_settlement_spot` bit for bit (STRATEGY.md, Placement).
 * `trading.py`: `plan_trades(state, player, target_cost) -> list[Action]` (bank/port first when
   affordable and no cheaper player deal; player proposals otherwise or when the bank is empty),
   `should_accept(state, responder, offer, evaluator) -> bool`, `offer_is_feeding_leader(...)`.

@@ -9,7 +9,10 @@ inner bot never leaks an override into the rest of the process.  ``play_game`` n
 change: the wrapper has the same interface as the inner bot.
 
 ``stats`` records the wall time of every decision that had more than one legal action
-(``times``, seconds), the number of such decisions and of trivial ones.
+(``times``, seconds), the number of such decisions and of trivial ones.  A decision's time
+covers ``inner.decide`` only: the apply / restore of the overrides around it is measured
+separately (``overhead``, seconds), so a candidate that needs many patches is not charged
+for the harness's own work while the default side (empty overrides) pays none.
 """
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ class ParamBot(Bot):
         tag = label or ("cand" if self.overrides else "default")
         detail = ",".join(f"{tuning.find(k).name}={tuning.find(k).format(v)}" for k, v in self.overrides.items())
         self.name = f"{inner.name}[{tag}{(':' + detail) if detail else ''}]"
-        self.stats: Dict[str, Any] = {"decisions": 0, "trivial": 0, "seconds": 0.0, "times": []}
+        self.stats: Dict[str, Any] = {"decisions": 0, "trivial": 0, "seconds": 0.0, "times": [], "overhead": 0.0}
 
     # --- override plumbing ---------------------------------------------------------------
     def _enter(self):
@@ -61,17 +64,24 @@ class ParamBot(Bot):
         self._call(self.inner.reset)
 
     def decide(self, state: GameState, legal_actions: List[Action], rng) -> Action:
+        t_enter = time.perf_counter()
+        tokens = self._enter()
         t0 = time.perf_counter()
         try:
-            return self._call(self.inner.decide, state, legal_actions, rng)
+            return self.inner.decide(state, legal_actions, rng)
         finally:
-            dt = time.perf_counter() - t0
-            if len(legal_actions) > 1:
-                self.stats["decisions"] += 1
-                self.stats["seconds"] += dt
-                self.stats["times"].append(dt)
-            else:
-                self.stats["trivial"] += 1
+            t1 = time.perf_counter()
+            try:
+                self._exit(tokens)
+            finally:
+                t2 = time.perf_counter()
+                if len(legal_actions) > 1:
+                    self.stats["decisions"] += 1
+                    self.stats["seconds"] += t1 - t0
+                    self.stats["times"].append(t1 - t0)              # inner.decide only
+                    self.stats["overhead"] += (t0 - t_enter) + (t2 - t1)   # apply + restore, kept apart
+                else:
+                    self.stats["trivial"] += 1
 
     def observe(self, state: GameState, action: Action, player: int) -> None:
         self._call(self.inner.observe, state, action, player)

@@ -109,8 +109,9 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
     if not is_val.any():
         is_val[:max(1, n // 10)] = True
     val_idx, tr_idx = np.nonzero(is_val)[0], np.nonzero(~is_val)[0]
-    Xtr, ytr = X_buf[tr_idx].astype(np.float32), y_buf[tr_idx]
-    Xva, yva = X_buf[val_idx].astype(np.float32), y_buf[val_idx]
+    # float16 slices: ValueNet.fit standardises into one float32 copy itself (the buffer is large)
+    Xtr, ytr = X_buf[tr_idx], y_buf[tr_idx]
+    Xva, yva = X_buf[val_idx], y_buf[val_idx]
     mask = feature_mask(getattr(args, "mask_features", None))
     if warm_from:
         net = ValueNet.load(warm_from)

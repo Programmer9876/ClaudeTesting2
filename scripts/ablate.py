@@ -39,7 +39,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from catanbot import tuning  # noqa: E402  (reads CATANBOT_NO_ACCEL at import; see maybe_reexec)
-from catanbot.tuning import DEFAULT_CHEAP_SPEC, DEFAULT_SEARCH_SPEC, Tunable  # noqa: E402
+from catanbot.tuning import DEFAULT_CHEAP_SPEC, DEFAULT_DEEP_SPEC, DEFAULT_SEARCH_SPEC, Tunable, spec_depth  # noqa: E402
 
 RESULTS_START = "<!-- ablate:results:start -->"
 RESULTS_END = "<!-- ablate:results:end -->"
@@ -95,7 +95,13 @@ def resolve_spec(t: Tunable, base_spec: Optional[str]) -> str:
         if t.requires_search and not base_spec.startswith("search"):
             raise SystemExit(f"error: {t.name} only affects the search bot (evaluator / search knob); "
                              f"use a search base spec such as {DEFAULT_SEARCH_SPEC}")
+        if spec_depth(base_spec) < t.requires_depth:
+            raise SystemExit(f"error: {t.name} is only read by the searcher at depth >= {t.requires_depth} "
+                             f"(the opponents' turns are not simulated at depth {spec_depth(base_spec)}); both sides "
+                             f"would do identical work.  Use a base spec such as {DEFAULT_DEEP_SPEC}")
         return base_spec
+    if t.requires_depth >= 2:
+        return DEFAULT_DEEP_SPEC
     return DEFAULT_SEARCH_SPEC if t.requires_search else DEFAULT_CHEAP_SPEC
 
 
@@ -124,6 +130,7 @@ def run_tunable(t: Tunable, values: List[Any], base_spec: str, games: int, worke
         print("WARNING: this tunable is read by the static evaluator but the C++ evaluator is active; "
               "the two sides differ only where Python code reads the constant", flush=True)
     rows = []
+    worker_modes = set()
     t_start = time.time()
     for value in values:
         overrides = {t.name: value}
@@ -141,11 +148,17 @@ def run_tunable(t: Tunable, values: List[Any], base_spec: str, games: int, worke
         st["value_text"] = label
         st["verdict"] = tuning.verdict(st)
         rows.append(st)
+        worker_modes.update(st["evaluator_modes"])
+        if st["evaluator_modes"] != [mode]:
+            print(f"WARNING: the games were played with evaluator mode(s) {st['evaluator_modes']} but this "
+                  f"process reports {mode!r}", flush=True)
         print_row(t, st)
+    print(f"evaluator mode in the game processes: {', '.join(sorted(worker_modes)) or 'unknown'}")
     return {
         "tunable": t.name, "kind": t.kind, "default": t.default, "default_text": t.format(t.default),
         "description": t.description, "base_spec": base_spec, "players": players, "games": games, "seed": seed,
         "workers": workers, "max_turns": max_turns, "evaluator_mode": mode,
+        "worker_evaluator_modes": sorted(worker_modes),
         "needs_python_evaluator": t.needs_python_evaluator, "seconds": time.time() - t_start, "results": rows,
     }
 
@@ -161,17 +174,20 @@ def print_row(t: Tunable, st: Dict[str, Any]) -> None:
     print(f"      ms/decision cand {fmt(st['ms_mean_cand'], 2)} (p95 {fmt(st['ms_p95_cand'], 2)}) vs default "
           f"{fmt(st['ms_mean_def'], 2)} (p95 {fmt(st['ms_p95_def'], 2)}); extra {fmt(st['extra_ms'], 2)} ms "
           f"({st['cost']}); value/ms {vpm}; {st['verdict']}")
+    print(f"      override apply/restore overhead (excluded from the times above): cand "
+          f"{fmt(st['overhead_ms_cand'], 3)} ms, default {fmt(st['overhead_ms_def'], 3)} ms per decision; "
+          f"{st['decisions_cand']} / {st['decisions_def']} decisions")
 
 
 # ---------------------------------------------------------------------------
 # Listing and markdown
 # ---------------------------------------------------------------------------
 def print_registry() -> None:
-    print(f"{'name':34} {'kind':6} {'default':16} {'candidates':34} pyeval search  description")
+    print(f"{'name':34} {'kind':6} {'default':16} {'candidates':34} pyeval search depth description")
     for t in tuning.TUNABLES.values():
         cands = ", ".join(t.format(c) for c in t.candidates)
         print(f"{t.name:34} {t.kind:6} {t.format(t.default):16} {cands:34} {str(t.needs_python_evaluator):6} "
-              f"{str(t.requires_search):6} {t.description}")
+              f"{str(t.requires_search):6} {t.requires_depth:<5} {t.description}")
 
 
 def markdown_table(reports: List[Dict[str, Any]]) -> str:

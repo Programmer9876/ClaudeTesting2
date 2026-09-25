@@ -23,6 +23,7 @@ python3 scripts/ablate.py --tunable danger.TURNS_HALF --values 2,4.5 \
     --games 40 --workers 2 --seed 1 --players 4 --json out.json    # one weight, two candidates
 python3 scripts/ablate.py --tunable danger.danger_multiplier --flag-off --games 40 --players 3
 python3 scripts/ablate.py --tunable search.beam --values 2,6 --games 20 --workers 2   # search knob
+python3 scripts/ablate.py --tunable search.opp_roll_samples --values 1,6 --games 20      # opponent knob: depth-2 spec
 python3 scripts/ablate.py --tunable heuristic.EXPOSURE_WEIGHT --values 0,0.5 --games 20 --workers 2
 python3 scripts/ablate.py --tunable TURNS_HALF --plan              # plan only: spec, mode, seats
 python3 scripts/ablate.py --sweep-all --games 4 --workers 2 --out docs/ABLATIONS.md   # every tunable
@@ -32,21 +33,32 @@ python3 scripts/ablate.py --sweep-all --kinds weight,flag --only danger.TURNS_HA
 * `--base-spec` is the bot both sides play.  Default `heuristic:temp=0.15` (a game takes about
   0.3 s) for cheap runs; tunables that only the search bot reads (the evaluator weight and the
   search knobs) default to `search:depth=1,beam=4,expand=8,evaluator=heuristic` (about 10 s a
-  game with the C++ evaluator, 35 s with the Python one).  A tunable can be named by its registry
-  name (`danger.TURNS_HALF`) or its bare attribute when unique (`TURNS_HALF`).
+  game with the C++ evaluator, 35 s with the Python one).  The four opponent knobs
+  (`search.opp_roll_samples`, `opponent_actions`, `opponent_expand`, `opponent_proposals`) are only
+  read by `Searcher._future_values`, which runs at `depth >= 2`: at depth 1 both sides would do
+  identical work, so those default to `search:depth=2,beam=4,expand=8,evaluator=heuristic`
+  (`depth` column of `--list`) and a shallower `--base-spec` is refused.  A tunable can be named by
+  its registry name (`danger.TURNS_HALF`) or its bare attribute when unique (`TURNS_HALF`).
 * `--values` lists the candidates (registry candidates when omitted); flags take `on`/`off` or
   `--flag-off`; `placement.RESOURCE_DEMAND` takes vectors `w/b/s/wh/o` separated by `;`.
-* `--json` stores the full report; `--sweep-all` runs every tunable (or `--kinds` / `--only`
-  subsets, `--max-candidates N` for the first N candidates) as subprocesses and writes one
-  markdown table into the results block of `--out` (between the `ablate:results` markers).
+* `--json` stores the full report: per candidate the summary row plus `records`, one entry per
+  game (`seed`, `pattern`, `winner`, `winning_side`, the paired difference `diff` that game
+  contributes, `vps`, `turns`, `evaluator_mode` and `pid` of the process that played it, and per
+  seat the decision count, mean / p95 decision time and the override overhead), so every statistic
+  can be recomputed by hand.  `--sweep-all` runs every tunable (or `--kinds` / `--only` subsets,
+  `--max-candidates N` for the first N candidates) as subprocesses and writes one markdown table
+  into the results block of `--out` (between the `ablate:results` markers).
 * Evaluator mode.  `heuristic.static_value` has a bit-exact C++ port (`cpp/heuristic.cpp`) that
   reads **no Python constants**, so a tunable read by the evaluator (`heuristic.EXPOSURE_WEIGHT`,
   `placement.RESOURCE_DEMAND`; `needs_python_evaluator` in the registry) only takes effect on the
   Python evaluator.  For such tunables the script re-executes itself with `CATANBOT_NO_ACCEL=1`
   set *before* `catanbot` is imported (`catanbot/accel.py` reads it at import time) so **both**
   sides run the Python evaluator, and prints `evaluator mode: python (CATANBOT_NO_ACCEL=1)`.
-  Other tunables run `evaluator mode: c++ (catanbot_core)` when the extension is built.  The mode
-  is also stored in the JSON.  Compare decision times only within one mode.
+  Other tunables run `evaluator mode: c++ (catanbot_core)` when the extension is built.  Every
+  game record also carries the mode of the (forked) process that played it, the script prints
+  `evaluator mode in the game processes: ...` and warns if it differs from its own, and both are
+  stored in the JSON (`evaluator_mode`, `worker_evaluator_modes`).  Compare decision times only
+  within one mode.
 
 ## The paired design
 
@@ -56,15 +68,26 @@ marked `C` play the candidate value, seats marked `D` the default.
 * 4 players: 2 vs 2, seat patterns `CCDD DDCC CDCD DCDC CDDC DCCD` rotated per game;
   3 players: a rotating 2 vs 1, `CCD DDC CDC DCD DCC CDD`.  Consecutive patterns are complements,
   so any even number of games gives both sides exactly the same seats.
-* Game `g` uses seed `seed * 100003 + g` for every candidate value: the board, the dice and the
-  steals are identical across candidates, so candidates differ only through their decisions.
+* Game `g` uses seed `seed * 100003 + g` for every candidate value, so the board (and the seat
+  pattern) is identical across candidates.  `play_game` hands one `random.Random` to the engine
+  (dice, steals) and to the bots (temperature sampling), so the dice and steals coincide across
+  candidates only until the first decision that differs; from there on the games diverge, as in
+  any common-random-numbers design over a sequential game.  Within a game the two sides always
+  share everything, which is what the paired statistics rest on.
 * The override lives only inside the candidate bot's hooks.  `ParamBot.decide` (and `reset`,
   `observe`, `explain`) applies the overrides, calls the inner bot and restores everything in a
   `finally` block, so the default seats always see the defaults even though the constants are
   module globals and both sides run in one process; an exception inside the inner bot cannot
-  leak an override.  `danger`'s win-path cache is cleared around every apply / restore so a value
-  computed with one side's constants is never reused by the other.  Both sides are wrapped (the
-  default side with an empty override) so decision times are measured identically.
+  leak an override.  `danger`'s win-path cache is cleared before a candidate hook when the
+  tunable feeds it and after every candidate hook, so a value computed with one side's constants
+  is never reused by the other; since `observe` is wrapped too the cache is in effect emptied
+  after every action of a paired game, for both sides alike (it still serves repeated lookups
+  within one decision).  Both sides are wrapped (the default side with an empty override) so
+  decision times are measured identically.
+* Decision time is the wall time of `inner.decide` alone.  The apply / restore around it (up to
+  ~0.1 ms for a tunable that rewrites function defaults, ~0.005 ms for the empty override) is
+  accounted separately (`stats["overhead"]`, `overhead_ms_cand` / `overhead_ms_def` in the JSON
+  and printed) and never enters the decision times or `extra_ms`.
 * Search knobs (`kind = search`) are `SearchConfig` fields set on the bot's own config object,
   which is what the bot spec (`search:beam=2`) would have done; no global is touched.
 
@@ -76,7 +99,12 @@ and `d_g` likewise for the default side.  The report gives
 * wins per side and per-seat win rates (`cand_wins / cand_seats`, `def_wins / def_seats`);
 * `delta` = mean over games of `c_g - d_g`, the paired win-rate difference.  It is zero in
   expectation when both sides are equally strong, for 2-vs-2 and for the rotating 2-vs-1 design
-  alike, and every game contributes one paired observation;
+  alike, and every game contributes one paired observation (`diff` in the game records).  In
+  2-vs-2 it equals `cand_wins / cand_seats - def_wins / def_seats` exactly and ranges over
+  +-50pp (+50pp = the candidate side won every game).  In the 3-player rotation a game contributes
+  +-0.5 (two candidate seats) or +-1 (one), so `delta` is the mean of those contributions
+  (+75pp when the candidate side wins everything) and is not exactly the per-seat win-rate
+  difference, which the report prints alongside;
 * `se` = standard error of that mean over games and the 95% interval `delta +- 1.96 se`
   (clipped to +-100pp), using the unbiased sample variance of the paired differences.  In the
   2-vs-2 design this is the binomial standard error of the game-level side win rate
@@ -84,9 +112,9 @@ and `d_g` likewise for the default side.  The report gives
   small-sample factor; with `N` games it is about `0.5 / sqrt(N)`, i.e. about +-3.5pp (SE) and
   +-7pp (95% interval) at 200 games;
 * average VP per side (more sensitive than wins in small samples);
-* mean and p95 wall time per non-trivial decision (more than one legal action) per side,
-  `extra_ms` = candidate - default, and `cost` (`costlier` / `cheaper` / `same cost` within
-  0.05 ms);
+* mean and p95 wall time per non-trivial decision (more than one legal action) per side
+  (`inner.decide` only, see above), `extra_ms` = candidate - default, and `cost` (`costlier` /
+  `cheaper` / `same cost` within 0.05 ms);
 * `value_per_ms` = `delta / extra_ms`, only when the candidate is measurably costlier: the win
   rate bought per millisecond of decision time.  A cheaper candidate that is not worse needs no
   ratio, it is simply the better setting;
@@ -95,15 +123,16 @@ and `d_g` likewise for the default side.  The report gives
 
 Reading a row.  A strategy earns its place when its default beats the "off" value (or the
 smaller weight) by a margin whose interval excludes zero **and** the extra decision time is
-paid for: with the search bot deciding in about 100 ms, a strategy that costs 5 ms per decision
-must buy more than the search would gain from 5% more nodes.  A strategy whose off/low value is
+paid for: with the depth-1 search bot deciding in about 25 ms (C++ evaluator), a strategy that
+costs 1 ms per decision must buy more than the search would gain from 4% more nodes.  A strategy whose off/low value is
 not worse, or whose cost is high for a small gain, is a candidate for cutting or for a cheaper
 implementation.
 
 ## The registry
 
 `kind`: `weight` = a numeric constant; `flag` = an on/off strategy; `search` = a `SearchConfig`
-field.  `pyeval` = needs the Python evaluator; `search bot` = has no effect on the heuristic bot.
+field.  `pyeval` = needs the Python evaluator; `search bot` = has no effect on the heuristic bot;
+"depth >= 2 only" = `requires_depth = 2` in the registry (the script uses the depth-2 spec).
 Defaults are read from the modules at import time (the registry never hard-codes them).
 
 <!-- ablate:registry:start -->
@@ -132,10 +161,10 @@ Defaults are read from the modules at import time (the registry never hard-codes
 | `devcards.MONOPOLY_BASE_VALUE` | weight | 0.6 | 0.3, 0.9 |  |  | base VP-equivalent value of a drawn monopoly |
 | `search.trade_proposals` | search | 3 | 0, 1, 5 |  | yes | PROPOSE_TRADE candidates per node (0 = never propose) |
 | `search.dump_candidates` | search | 3 | 0, 1, 5 |  | yes | surplus dumps tried with > 7 cards (0 = off) |
-| `search.opponent_proposals` | search | 1 | 0, 2 |  | yes | proposals a simulated opponent may make per turn (0 = never) |
-| `search.opponent_actions` | search | 4 | 2, 6 |  | yes | greedy actions per simulated opponent turn |
-| `search.opponent_expand` | search | 6 | 3, 10 |  | yes | candidates evaluated per simulated opponent decision |
-| `search.opp_roll_samples` | search | 4 | 1, 2, 6 |  | yes | sampled roll sequences for the opponents' turns |
+| `search.opponent_proposals` | search | 1 | 0, 2 |  | yes | proposals a simulated opponent may make per turn (0 = never); depth >= 2 only |
+| `search.opponent_actions` | search | 4 | 2, 6 |  | yes | greedy actions per simulated opponent turn; depth >= 2 only |
+| `search.opponent_expand` | search | 6 | 3, 10 |  | yes | candidates evaluated per simulated opponent decision; depth >= 2 only |
+| `search.opp_roll_samples` | search | 4 | 1, 2, 6 |  | yes | sampled roll sequences for the opponents' turns; depth >= 2 only |
 | `search.beam` | search | 4 | 2, 6, 8 |  | yes | partial sequences kept per level |
 | `search.expand` | search | 8 | 4, 12, 16 |  | yes | actions tried per decision node |
 | `search.depth` | search | 1 | 2 |  | yes | turns of lookahead (2 = + opponents' turns) |
@@ -168,42 +197,50 @@ files is edited; the registry only patches attributes at run time and restores t
 **These are smoke numbers: 2-4 games per candidate on a 4-core machine under heavy load from
 other workflows.  Nothing here is significant (a 4-game interval is about +-50pp) and the
 decision times include scheduling noise; they only demonstrate that the harness runs end to
-end.  Do not tune anything from this table.**
+end.  Do not tune anything from these tables.**
 
 <!-- ablate:results:start -->
-Smoke sweep (`--sweep-all --only ... --max-candidates 2 --games 4 --workers 2`) of 5 tunables: 4 paired games per candidate, seed 1, 4 players, workers 2, run 2026-09-25 05:34 (smoke run: tiny game counts on a loaded machine, nothing here is significant).
+Sweep of 5 tunables: 4 paired games per candidate, seed 1, 4 players, workers 2, run 2026-09-25 05:49 (smoke run: tiny game counts on a loaded machine, nothing here is significant).
 
 | tunable | kind | value | default | spec | mode | games | cand W / def W (seats) | delta win-rate +- SE | 95% CI | avg VP c / d | ms/decision c / d (p95) | extra ms | value / ms | verdict |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| danger.TURNS_HALF | weight | 1.5 | 3 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.75 / 8.38 | 0.83 / 0.84 (5.7 / 5.6) | -0.02 | n/a (same cost) | inconclusive (too few games) |
-| danger.TURNS_HALF | weight | 2 | 3 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 8.12 | 0.89 / 0.84 (5.8 / 5.8) | 0.05 | n/a (same cost) | inconclusive (too few games) |
-| danger.danger_multiplier | flag | off | on | heuristic | c++ | 4 | 0 / 4 (8/8) | -50.0pp +- 0.0pp | [-50.0pp, -50.0pp] | 5.62 / 8.00 | 0.94 / 0.85 (5.9 / 5.7) | 0.09 | -5.7153 | inconclusive (too few games) |
-| coalitions.SCALE | weight | 0.25 | 0.5 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 7.75 | 1.00 / 0.93 (5.9 / 5.8) | 0.07 | -3.7768 | inconclusive (too few games) |
-| coalitions.SCALE | weight | 1 | 0.5 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 7.75 | 0.95 / 0.93 (6.0 / 6.0) | 0.02 | n/a (same cost) | inconclusive (too few games) |
-| politics.MAX_SLACK | weight | 0 | 0.3 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 7.75 | 0.60 / 0.61 (2.1 / 2.5) | -0.01 | n/a (same cost) | inconclusive (too few games) |
-| politics.MAX_SLACK | weight | 0.15 | 0.3 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 7.75 | 0.74 / 0.68 (5.5 / 5.5) | 0.06 | -4.4613 | inconclusive (too few games) |
-| trading.feed_leader_guard | flag | off | on | heuristic | c++ | 4 | 2 / 2 (8/8) | +0.0pp +- 28.9pp | [-56.6pp, +56.6pp] | 8.00 / 8.50 | 0.75 / 0.74 (5.3 / 5.4) | 0.01 | n/a (same cost) | inconclusive (too few games) |
+| danger.TURNS_HALF | weight | 1.5 | 3 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.75 / 8.38 | 1.21 / 1.29 (9.6 / 9.8) | -0.08 | n/a (cheaper) | inconclusive (too few games) |
+| danger.TURNS_HALF | weight | 2 | 3 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 8.12 | 1.26 / 1.15 (9.7 / 8.3) | 0.12 | -2.1570 | inconclusive (too few games) |
+| danger.danger_multiplier | flag | off | on | heuristic | c++ | 4 | 0 / 4 (8/8) | -50.0pp +- 0.0pp | [-50.0pp, -50.0pp] | 5.62 / 8.00 | 1.23 / 1.25 (9.7 / 9.6) | -0.02 | n/a (same cost) | inconclusive (too few games) |
+| coalitions.SCALE | weight | 0.25 | 0.5 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 7.75 | 1.31 / 1.25 (10.2 / 9.8) | 0.07 | -3.6446 | inconclusive (too few games) |
+| coalitions.SCALE | weight | 1 | 0.5 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 7.75 | 1.27 / 1.20 (9.6 / 9.7) | 0.07 | -3.6187 | inconclusive (too few games) |
+| politics.MAX_SLACK | weight | 0 | 0.3 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 7.75 | 1.11 / 1.10 (9.4 / 9.5) | 0.01 | n/a (same cost) | inconclusive (too few games) |
+| politics.MAX_SLACK | weight | 0.15 | 0.3 | heuristic | c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 7.75 | 1.40 / 1.19 (10.0 / 9.5) | 0.21 | -1.1664 | inconclusive (too few games) |
+| trading.feed_leader_guard | flag | off | on | heuristic | c++ | 4 | 2 / 2 (8/8) | +0.0pp +- 28.9pp | [-56.6pp, +56.6pp] | 8.00 / 8.50 | 1.30 / 1.29 (9.7 / 9.7) | 0.02 | n/a (same cost) | inconclusive (too few games) |
 <!-- ablate:results:end -->
 
 <!-- ablate:smoke:start -->
-Individual smoke runs (`--games 4 --workers 2 --seed 1`, 2 games for the search spec):
+Individual smoke runs (verification pass, `--workers 2 --seed 1`; decision times are `inner.decide` only,
+override overhead excluded and shown separately; 4 games for the heuristic spec, 2 for the search specs):
 
-| command | spec / mode | games | cand W / def W (seats) | delta +- SE | 95% CI | avg VP c / d | ms/decision c / d (p95) | extra ms | value / ms |
+| command | spec / mode | games | cand W / def W (seats) | delta +- SE | 95% CI | avg VP c / d | ms/decision c / d (p95) | extra ms | overhead c / d ms |
 |---|---|---|---|---|---|---|---|---|---|
-| `--tunable danger.TURNS_HALF --values 2,4.5 --players 4` value 2 | heuristic / c++ (catanbot_core) | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 8.12 | 0.86 / 0.74 (5.7 / 5.5) | +0.12 | -2.1333 |
-| `--tunable danger.TURNS_HALF --values 2,4.5 --players 4` value 4.5 | heuristic / c++ (catanbot_core) | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 7.75 | 0.89 / 0.82 (6.0 / 5.6) | +0.07 | -3.4127 |
-| `--tunable danger.danger_multiplier --flag-off --players 3` value off | heuristic / c++ (catanbot_core) | 4 | 0 / 4 (6/6) | -75.0pp +- 14.4pp | [-100.0pp, -46.7pp] | 5.17 / 8.83 | 0.77 / 0.85 (5.4 / 5.4) | -0.08 | n/a (cheaper) |
-| `--tunable placement.RESOURCE_DEMAND --max-candidates 1 --players 4` value 1/1/1/1/1 | heuristic / python (CATANBOT_NO_ACCEL=1) | 4 | 2 / 2 (8/8) | +0.0pp +- 28.9pp | [-56.6pp, +56.6pp] | 7.88 / 8.62 | 0.73 / 0.68 (4.9 / 4.2) | +0.05 | n/a (same cost) |
-| `--tunable search.trade_proposals --values 0 --games 2` value 0 | search / c++ (catanbot_core) | 2 | 1 / 1 (4/4) | +0.0pp +- 50.0pp | [-98.0pp, +98.0pp] | 6.75 / 6.25 | 12.79 / 26.43 (57.3 / 89.0) | -13.63 | n/a (cheaper) |
-| `--tunable heuristic.EXPOSURE_WEIGHT --values 0 --games 2` value 0 | search / python (CATANBOT_NO_ACCEL=1) | 2 | 2 / 0 (4/4) | +50.0pp +- 0.0pp | [+50.0pp, +50.0pp] | 7.75 / 6.75 | 130.85 / 126.39 (565.5 / 551.3) | +4.47 | +0.1120 |
+| `--tunable danger.BLOCK_NEED --values 0,4 --games 4 --players 4` value 0 | heuristic / c++ (catanbot_core) | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.62 / 7.88 | 1.07 / 0.98 (8.3 / 8.2) | +0.09 | 0.038 / 0.003 |
+| `--tunable danger.BLOCK_NEED --values 0,4 --games 4 --players 4` value 4 | heuristic / c++ (catanbot_core) | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 7.25 / 8.00 | 1.13 / 1.19 (9.6 / 9.5) | -0.07 | 0.049 / 0.011 |
+| `--tunable trading.feed_leader_guard --flag-off --games 4 --players 3` value off | heuristic / c++ (catanbot_core) | 4 | 1 / 3 (6/6) | -37.5pp +- 31.5pp | [-99.2pp, +24.2pp] | 7.00 / 8.83 | 0.97 / 1.02 (8.2 / 7.3) | -0.04 | 0.031 / 0.003 |
+| `--tunable placement.RESOURCE_DEMAND --max-candidates 1 --games 4 --players 4` value 1/1/1/1/1 | heuristic / python (CATANBOT_NO_ACCEL=1), re-exec; game processes reported python too | 4 | 2 / 2 (8/8) | +0.0pp +- 28.9pp | [-56.6pp, +56.6pp] | 7.88 / 8.62 | 1.19 / 1.12 (9.5 / 9.3) | +0.07 | 0.042 / 0.006 |
+| `--tunable search.opp_roll_samples --values 1 --games 2 --players 4` on the **depth-1** spec (before the `requires_depth` rule) | search depth 1 / c++ | 2 | 2 / 0 (4/4) | +50.0pp +- 0.0pp | [+50.0pp, +50.0pp] | 7.75 / 7.50 | 35.01 / 25.09 (123.2 / 100.7) | +9.91 | 0.024 / 0.006 |
+| `--tunable search.opp_roll_samples --values 1 --games 2 --players 4 --max-turns 40` (depth-2 spec, the default now) | search depth 2 / c++ | 2 | 1 / 1 (4/4) | +0.0pp +- 50.0pp | [-98.0pp, +98.0pp] | 3.50 / 3.75 | 34.74 / 40.90 (142.4 / 138.0) | -6.16 | 0.033 / 0.022 |
+| `--tunable danger.TURNS_HALF --values 2,4.5 --games 4 --workers 1 --seed 7` (pairing proof, both values) | heuristic / c++ | 4 | 1 / 3 (8/8) | -25.0pp +- 25.0pp | [-74.0pp, +24.0pp] | 5.62 / 7.12 (value 2) | 0.56 / 0.68 (2.4 / 3.7) | -0.12 | 0.015 / 0.007 |
 
-What the smoke runs do show: the harness runs both bots, both player counts, the flag path, the
-in-place vector override, the search knob path and the Python-evaluator re-exec; a search decision
-costs about 26 ms with the C++ evaluator and about 126 ms with the Python one on this loaded machine,
-a heuristic decision under 1 ms; `search.trade_proposals=0` halves the search bot's decision time
-(no proposals to expand), which is the kind of cost signal the full run must weigh against the win
-rate; and the +-4 ms `extra` on `heuristic.EXPOSURE_WEIGHT=0` (identical work on both sides) is the
-size of the timing noise here, hence the 0.05 ms `same cost` band is only meaningful on a quiet machine.
+What the smoke runs do show.  The harness runs both bots, both player counts, the flag path, the
+in-place vector override, the search-knob path and the Python-evaluator re-exec (the game processes
+report `python (CATANBOT_NO_ACCEL=1)` and `catanbot.accel.AVAILABLE` is false in them; on the C++ path
+the Python `static_value` is never called).  The pairing-proof run (seed 7, `--workers 1`) has the
+same four seeds `700021..700024` and the same seat patterns `CCDD DDCC CDCD DCDC` for both candidate
+values, and its `delta`, `se`, interval, per-side VP and decision times recompute exactly from the
+per-game `records` in the JSON.  The depth-1 `opp_roll_samples` row is the negative example that led
+to the `requires_depth` rule: at depth 1 the knob is never read, both sides did identical work, and
+the "+9.9 ms" is nothing but scheduling noise on this loaded machine (two workers on four shared
+cores under other workflows) - which is also the size of noise to expect in any search-spec timing
+here; the 0.05 ms `same cost` band is only meaningful on a quiet machine.  On the depth-2 spec the
+same candidate is measurably cheaper, as it should be.  A heuristic decision costs about 1 ms here,
+a depth-1 search decision about 25 ms with the C++ evaluator and about 130 ms with the Python one.
 <!-- ablate:smoke:end -->
 
 ## Protocol for a full run (quiet machine)
@@ -215,12 +252,15 @@ size of the timing noise here, hence the 0.05 ms `same cost` band is only meanin
    rule-based bot reads (danger, coalitions, politics, trading, placement, dev cards).
 3. Real pass, the search bot, per tunable: `--tunable NAME --base-spec
    search:depth=1,beam=4,expand=8,evaluator=heuristic --games 200 --workers W --players 4` and
-   again with `--players 3`; at 10 s a game that is about 35 min per candidate per player count
-   with 4 workers.  Tunables marked `pyeval` run the Python evaluator on both sides (3.5x slower);
+   again with `--players 3`; at 10 s a game that is about 35 min of CPU per candidate per player
+   count (about 9 min with 4 workers).  Tunables marked `pyeval` run the Python evaluator on both sides (3.5x slower);
    their decision times are comparable only with each other.
 4. Search knobs: the same, with the candidate's cost in the table; keep a knob's larger value
    only when `value_per_ms` beats the alternative of spending the same milliseconds on
-   `beam` / `expand` (run those first as the yardstick).
+   `beam` / `expand` (run those first as the yardstick).  The four opponent knobs run on the
+   depth-2 spec (several times slower per game; budget accordingly) and `search.depth=2` itself
+   is the ablation of the opponents'-turns lookahead as a whole - run it first: if depth 2 does
+   not pay for its cost, the opponent knobs are moot.
 5. Decide per tunable: interval excludes zero at 200 games (about +-5pp) in both player counts
    -> adopt / cut; otherwise keep the default and the cheaper implementation.  Confirm a winner
    with a fresh `--seed` before changing the constant in the module.

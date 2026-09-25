@@ -31,11 +31,14 @@ from typing import List, Optional, Sequence
 __all__ = ["AVAILABLE", "extract", "extract_batch", "longest_road_length", "static_values", "static_value",
            "heuristic_evaluate", "load_core", "disabled_by_env", "verify",
            "ENGINE_ACTIVE", "ENGINE_ENV", "engine_enabled_by_env", "engine_available", "engine_legal_actions",
-           "engine_apply", "engine_apply_inplace", "engine_apply_forced", "random_playout_fast"]
+           "engine_apply", "engine_apply_inplace", "engine_apply_forced", "random_playout_fast",
+           "NATIVE_SEARCH_ENV", "native_search_disabled_by_env", "native_search_available", "native_evaluator",
+           "evaluator_key", "robber_weights_bundle", "future_values"]
 
 # Entry points every usable build provides; an older build missing one is stale and gets disabled by verify().
 _REQUIRED = ("extract_batch", "extract", "longest_road_length", "static_values", "static_value", "heuristic_evaluate",
-             "UnsupportedStateError", "legal_actions", "apply", "apply_inplace", "apply_forced", "random_playout_fast")
+             "UnsupportedStateError", "legal_actions", "apply", "apply_inplace", "apply_forced", "random_playout_fast",
+             "future_values", "HeuristicEval", "MlpEval", "BlendEval")
 
 
 def disabled_by_env() -> bool:
@@ -254,3 +257,160 @@ def engine_apply_forced(state, action, drawn_index: int):
 def random_playout_fast(state, seed=None, max_turns=None, max_actions: int = 2_000_000, trace: bool = False):
     """``engine.random_playout`` entirely in C++ (see ``core.random_playout_fast``); needs the extension."""
     return _core.random_playout_fast(state, seed, max_turns, int(max_actions), bool(trace))
+
+
+# ---------------------------------------------------------------------------
+# Native lookahead (C++ port of Searcher._future_values: opponents' greedy turns + reduced our-turn search)
+# ---------------------------------------------------------------------------
+# ``search.Searcher._future_values`` hands its batch of end-of-turn states to ``core.future_values`` when
+# :func:`native_search_available` is true and the evaluator is one the extension knows
+# (:func:`native_evaluator`).  The Python body stays the reference and the fallback: extension missing or
+# stale, ``CATANBOT_NO_ACCEL=1``, ``CATANBOT_NO_NATIVE_SEARCH=1``, ``SearchConfig(native_future=False)``, an
+# evaluator the extension does not know (any object other than a ``HeuristicEvaluator``, a float32 ``ValueNet``
+# or a ``BlendedEvaluator`` of the two) or a state the structs cannot hold (``UnsupportedStateError`` ->
+# :func:`future_values` returns ``None``).  See docs/CPP.md, section "Native lookahead".
+NATIVE_SEARCH_ENV = "CATANBOT_NO_NATIVE_SEARCH"
+_NATIVE_REQUIRED = ("future_values", "HeuristicEval", "MlpEval", "BlendEval", "reduced_search")
+
+
+def native_search_disabled_by_env() -> bool:
+    """True when ``CATANBOT_NO_NATIVE_SEARCH`` is set to anything but empty / 0 / false / no."""
+    return os.environ.get(NATIVE_SEARCH_ENV, "").strip().lower() not in ("", "0", "false", "no")
+
+
+def native_search_available() -> bool:
+    """True when the extension is usable, provides the lookahead entry points and the env switch is off."""
+    if not AVAILABLE or native_search_disabled_by_env():
+        return False
+    if not (_verified or verify()):
+        return False
+    return _core is not None and all(hasattr(_core, name) for name in _NATIVE_REQUIRED)
+
+
+def _is_float32_net(ev) -> bool:
+    import numpy as np
+    try:
+        if not (isinstance(ev.W, list) and isinstance(ev.b, list) and len(ev.W) >= 1 and len(ev.W) == len(ev.b)):
+            return False
+        if np.dtype(getattr(ev, "dtype", None)) != np.float32:
+            return False
+        arrays = list(ev.W) + list(ev.b) + [ev.mean, ev.std]
+        return all(isinstance(x, np.ndarray) and x.dtype == np.float32 for x in arrays)
+    except Exception:
+        return False
+
+
+def evaluator_key(evaluator):
+    """What the native handle was built from (arrays replaced by ``set_params`` / ``load`` change it).
+
+    In-place mutation of the same numpy arrays is not detected (documented); ``None`` for unknown objects.
+    """
+    name = getattr(evaluator, "name", None)
+    if name == "heuristic" and hasattr(evaluator, "temperature") and not hasattr(evaluator, "inner"):
+        return ("heuristic", float(evaluator.temperature))
+    if name == "blend" and hasattr(evaluator, "net") and hasattr(evaluator, "alpha") and hasattr(evaluator, "heuristic"):
+        kn = evaluator_key(evaluator.net)
+        kh = evaluator_key(evaluator.heuristic)
+        if kn is None or kn[0] != "mlp" or kh is None or kh[0] != "heuristic":
+            return None
+        return ("blend", float(evaluator.alpha), kn, kh)
+    if hasattr(evaluator, "W") and hasattr(evaluator, "b") and hasattr(evaluator, "mean") and hasattr(evaluator, "std") \
+            and hasattr(evaluator, "n_in") and _is_float32_net(evaluator):
+        return ("mlp", id(evaluator), tuple((int(x.ctypes.data), x.shape) for x in list(evaluator.W) + list(evaluator.b)
+                                            + [evaluator.mean, evaluator.std]))
+    return None
+
+
+def native_evaluator(evaluator):
+    """The extension's twin of ``evaluator`` (a handle), or ``None`` when it has none.
+
+    Duck-typed: a ``HeuristicEvaluator`` (``name == "heuristic"``, ``temperature``), a float32 ``ValueNet``
+    (``W`` / ``b`` / ``mean`` / ``std`` / ``n_in``) or a ``BlendedEvaluator`` (``net`` / ``alpha`` / ``heuristic``)
+    of those two.  Anything else - a timing wrapper, a float64 net, a custom evaluator - gets ``None`` and the
+    search keeps its Python path.
+    """
+    if not native_search_available():
+        return None
+    key = evaluator_key(evaluator)
+    if key is None:
+        return None
+    try:
+        if key[0] == "heuristic":
+            return _core.HeuristicEval(float(evaluator.temperature))
+        if key[0] == "mlp":
+            return _core.MlpEval(list(evaluator.W), list(evaluator.b), evaluator.mean, evaluator.std)
+        if key[0] == "blend":
+            net = _core.MlpEval(list(evaluator.net.W), list(evaluator.net.b), evaluator.net.mean, evaluator.net.std)
+            return _core.BlendEval(net, float(evaluator.alpha), _core.HeuristicEval(float(evaluator.heuristic.temperature)))
+    except (ValueError, TypeError):
+        return None
+    return None
+
+
+def robber_weights_bundle(state, politics, model) -> Optional[dict]:
+    """The state-independent part of the simulated opponents' robber target weights.
+
+    Mirrors ``politics.PoliticalState.robber_target_weights(state, actor, model)`` (``politics`` given) or
+    ``OpponentModel.robber_habit_weights(state, actor)`` (only ``model`` given): per (actor, victim) the
+    constant factors ``[1 + 1.2 grudge, 1 - 0.5 max(0, capital - baseline), habit base, 1 - 0.6 ally]``, the
+    victim's leader-habit factor and per (victim, leader) the coalition factor (1.0 when the bloc is weak).  The
+    extension multiplies them in the Python order onto ``target_weight`` / ``threat`` recomputed per simulated
+    state, with the leader recomputed per state as well, so the weights are bit-identical.  ``None`` when
+    neither is given (``best_robber_move`` then uses its own threat x danger weights, like Python).
+    """
+    import numpy as np
+    n = state.num_players
+    if politics is None and model is None:
+        return None
+    const = np.ones((n, n, 4), dtype=np.float64)
+    habit_leader = np.ones((n, n), dtype=np.float64)
+    coal = np.ones((n, n), dtype=np.float64)
+    if model is not None:
+        from .opponent_model import _pname
+        for a in range(n):
+            prof = model.profile_of(state, a)
+            total = sum(prof.robbed.values())
+            for j in range(n):
+                if j == a:
+                    continue
+                f = 1.0
+                if total > 0 and n > 2:
+                    share = prof.robbed.get(_pname(state, j), 0.0) / total
+                    trust = min(1.0, total / 3.0)
+                    f *= max(0.5, min(2.5, 1.0 + 0.8 * trust * (share * (n - 1) - 1.0)))
+                const[a, j, 2] = f
+                if prof.robs_leader.weight >= 1:
+                    habit_leader[a, j] = 0.6 + 0.8 * prof.robs_leader.mean()
+    if politics is None:
+        return {"mode": "habit", "n": n, "has_habit": True, "const": const, "habit_leader": habit_leader, "coal": coal}
+    politics.ensure(n)
+    for a in range(n):
+        for j in range(n):
+            if j == a:
+                continue
+            const[a, j, 0] = 1.0 + 1.2 * politics.grudge(a, j)
+            const[a, j, 1] = 1.0 - 0.5 * max(0.0, politics.get(j, a) - politics.baseline)
+            ally = min(1.0, politics.coalitions.strength(a, j) / 2.0)
+            const[a, j, 3] = 1.0 - 0.6 * ally
+    for j in range(n):
+        for k in range(n):
+            if j == k:
+                continue
+            st = politics.coalitions.strength(j, k)
+            if st >= 1.0:
+                coal[j, k] = 1.0 + 0.3 * min(2.0, st)
+    return {"mode": "politics", "n": n, "has_habit": model is not None, "const": const, "habit_leader": habit_leader,
+            "coal": coal}
+
+
+def future_values(states, me: int, depth: int, levels, rolls, evaluator, robber=None, rng=None, deadline=None,
+                  node_budget=None):
+    """``core.future_values`` -> ``(values, nodes)``; ``None`` for a state the extension cannot represent."""
+    try:
+        vals, nodes = _core.future_values(states, int(me), int(depth), levels, rolls, evaluator, robber, rng, deadline,
+                                          node_budget, False)
+    except ValueError as exc:
+        if _unsupported(exc):
+            return None
+        raise
+    return [float(v) for v in vals], int(nodes)

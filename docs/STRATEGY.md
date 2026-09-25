@@ -137,13 +137,72 @@ known, so hands are sampled from a production-weighted prior
 Settlement spots score pips weighted by resource demand and board scarcity,
 with diminishing returns on what we already produce, diversity, new
 resource types, port synergy, expansion room and a blocking bonus when an
-opponent wanted the spot.  Cities go on the best producers (ore/wheat
-weighted).  Roads head for the best reachable spot, discounted by distance
-and contest, and count towards Longest Road; a road that cuts an opponent
-off from their best reachable spot (`road_block_values`: the drop of their
-best two-road spot score when the edge is taken) gets the same bonus as a
-contested spot, and a little more when it also extends our own Longest Road
-candidate.
+opponent wanted the spot, minus a *blockability* penalty (below).  Cities go
+on the best producers (ore/wheat weighted), minus the same penalty.  Roads
+head for the best reachable spot, discounted by distance and contest, and
+count towards Longest Road; a road that cuts an opponent off from their best
+reachable spot (`road_block_values`: the drop of their best two-road spot
+score when the edge is taken) gets the same bonus as a contested spot, and a
+little more when it also extends our own Longest Road candidate.
+
+### Blockability
+
+Income is not only expected value.  The robber sits on one hex, so two of our
+buildings on the same hex - or a city next to our settlement on it - let a
+single robber placement switch all of that income off; the best-EV hex is not
+the best spot when it concentrates what we already have.
+`robber_exposure(state, player, extra_settlement=None, extra_city=None)`
+measures that concentration in the pips-equivalent units of the spot scorers:
+
+* `W_b(h)`: demand-weighted pips of our building `b` on hex `h` (settlement =
+  pips, city = 2 x pips, times `RESOURCE_DEMAND[res] x scarcity[res] ** 0.5`).
+  The robber's current position is ignored: the term is about where it *can*
+  go.  `W(h) = sum_b W_b(h)`.
+* `P_block(h) = PLACEMENT_ROBBER_Q x W(h)^2 / sum_h' W(h')^2 x (1 + 0.5 x shared_strong(h))`:
+  opponents aim the robber at our juiciest hex (the square makes concentration
+  costly), and they park it on a strong player's hexes anyway -
+  `shared_strong(h)` is 1 when an opponent with `robber.threat >=
+  PLACEMENT_STRONG_THREAT` (5+ estimated VP, hidden VP cards included) has a
+  building on `h`.  The threshold is absolute rather than "the strongest at
+  the table", so early on, when nobody is a robber magnet yet, only
+  concentration is charged.
+* `stack(h) = 1 - sum_b W_b(h)^3 / W(h)^3`: the share of the hex's weight that
+  is there because buildings share it (0 for one building, 0.75 for two equal
+  settlements, 0.67 for a city next to a settlement, 0.89 for three).
+* `exposure = sum_h P_block(h) x W(h) x stack(h)` and a candidate building is
+  charged `PLACEMENT_BLOCK_WEIGHT x (exposure_after - exposure_before)`.
+
+Measuring exposure against the same buildings on separate hexes (`stack`) is
+what keeps a first building - and any layout without shared hexes - free: the
+scorers never trade raw pips against blockability, only stacking (a spread-out
+building can even earn a small bonus for diluting an existing stack).  The
+constants are module-level and tunable: `PLACEMENT_ROBBER_Q = 0.35` (share of
+the time the robber sits on one of our hexes when we are an ordinary target),
+`PLACEMENT_BLOCK_WEIGHT = 1.0` (0 switches the term off and restores the old
+scores exactly), `PLACEMENT_STRONG_THREAT = 1.3`.  `BlockContext` caches the
+per-player part for callers that score many candidates, and
+`cpp/heuristic.cpp` (`score_spot` / `BlockContext`) is the bit-exact port that
+`static_value`'s expansion term uses.
+
+Worked numbers on the standard board (weight 1.0):
+
+* First settlement on ore 10 + sheep 2 + brick 6.  A second settlement on the
+  brick 6 (brick 6 + sheep 4, 8 pips) is charged 1.93 points, a brick 6 +
+  wood 11 corner 2.01: about 1.9 pips of brick (one brick pip is worth 1.02
+  in the production term at that point).  The same 8 pips on hexes we do not
+  work cost 0, so wheat 12 + brick 6 + wood 11 drops from 15.1 to 13.1 and the
+  spread spots (wheat 9 + wood 11 + wood 8: 20.5) stay ahead.
+* Two settlements on the ore 8 (brick 10 + ore 8 and a coast corner of the
+  8): the second costs 3.01 points because most of that income sits on one
+  hex; when a 7-VP leader (threat 2.47) also works the 8 it costs 4.52 (the
+  1.5x factor).  The city upgrade there costs 0.86 / 1.28 with the leader; a
+  city on a settlement that shares no hex with our other buildings costs 0.
+* Setup: round-1 picks are unchanged (no penalty for a first building); on 10
+  random boards 2 of the 40 round-2 picks change, exactly where the old top
+  spot shared a hex with the player's first settlement (seed 1, player 3:
+  ore 11 + wood 6 + sheep 4 next to its own ore 11 gives way to ore 5 +
+  brick 10; seed 3, player 1: wood 4 + wheat 8 next to its wheat 8 gives way
+  to sheep 10 + brick 4 + ore 12).
 
 ## Opponent modelling (`opponent_model.py`)
 

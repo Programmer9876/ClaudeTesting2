@@ -48,6 +48,7 @@ import importlib
 import inspect
 import math
 import multiprocessing as mp
+import os
 import random
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -56,6 +57,19 @@ KEEP = object()   # make(value) returns it when the candidate value means "leave
 
 DEFAULT_CHEAP_SPEC = "heuristic:temp=0.15"
 DEFAULT_SEARCH_SPEC = "search:depth=1,beam=4,expand=8,evaluator=heuristic"
+DEFAULT_DEEP_SPEC = "search:depth=2,beam=4,expand=8,evaluator=heuristic"   # for knobs only depth >= 2 reads
+
+
+def spec_depth(spec: str) -> int:
+    """Search depth a bot spec produces (1 for the heuristic bot / an unspecified depth)."""
+    kind, _, rest = spec.partition(":")
+    if kind.strip() != "search":
+        return 1
+    for item in rest.split(","):
+        k, _, v = item.partition("=")
+        if k.strip() == "depth" and v.strip():
+            return int(float(v))
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -102,27 +116,49 @@ def _function_of(fn):
     return getattr(fn, "__func__", fn)
 
 
+# (function, parameter) -> ("kw", None) or ("pos", index into __defaults__).  ``inspect.signature``
+# costs ~100 us; ParamBot applies and restores around every hook, so the slot is resolved once.
+_DEFAULT_SLOTS: Dict[Tuple[int, str], Tuple[str, Optional[int]]] = {}
+
+
+def _default_slot(fn, param: str) -> Tuple[str, Optional[int]]:
+    key = (id(fn), param)
+    slot = _DEFAULT_SLOTS.get(key)
+    if slot is None:
+        sig = inspect.signature(fn)
+        p = sig.parameters[param]
+        if p.default is inspect.Parameter.empty:
+            raise ValueError(f"{fn} parameter {param!r} has no default")
+        if p.kind == inspect.Parameter.KEYWORD_ONLY:
+            slot = ("kw", None)
+        else:
+            positional = [n for n, q in sig.parameters.items()
+                          if q.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+            n_defaults = len(fn.__defaults__ or ())
+            with_defaults = positional[len(positional) - n_defaults:]
+            slot = ("pos", with_defaults.index(param))
+        _DEFAULT_SLOTS[key] = slot
+    return slot
+
+
 def _get_default(fn, param: str) -> Any:
-    p = inspect.signature(_function_of(fn)).parameters[param]
-    if p.default is inspect.Parameter.empty:
-        raise ValueError(f"{fn} parameter {param!r} has no default")
-    return p.default
+    fn = _function_of(fn)
+    kind, idx = _default_slot(fn, param)
+    if kind == "kw":
+        return (fn.__kwdefaults__ or {})[param]
+    return fn.__defaults__[idx]
 
 
 def _set_default(fn, param: str, value: Any) -> None:
     fn = _function_of(fn)
-    sig = inspect.signature(fn)
-    p = sig.parameters[param]
-    if p.kind == inspect.Parameter.KEYWORD_ONLY:
+    kind, idx = _default_slot(fn, param)
+    if kind == "kw":
         kw = dict(fn.__kwdefaults__ or {})
         kw[param] = value
         fn.__kwdefaults__ = kw
         return
-    positional = [n for n, q in sig.parameters.items()
-                  if q.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
-    defaults = list(fn.__defaults__ or ())
-    with_defaults = positional[len(positional) - len(defaults):]
-    defaults[with_defaults.index(param)] = value
+    defaults = list(fn.__defaults__)
+    defaults[idx] = value
     fn.__defaults__ = tuple(defaults)
 
 
@@ -166,6 +202,7 @@ class Tunable:
     targets: Tuple[Target, ...] = ()           # everything apply() sets (default: the module attribute itself)
     make: Optional[Callable[[Any], Any]] = None  # candidate value -> object installed at the targets
     requires_search: bool = False              # has no effect on the heuristic bot (evaluator / search knob)
+    requires_depth: int = 1                    # search knobs the searcher only reads at this depth or more
     clear_caches: bool = False                 # clear danger's win-path cache around apply / restore
     spec_key: Optional[str] = None             # search kind: equivalent selfplay bot-spec key, if any
     parse: Callable[[str], Any] = _parse_float
@@ -326,19 +363,24 @@ def _build_registry() -> Dict[str, Tunable]:
         default=live(devcards, "MONOPOLY_BASE_VALUE"), candidates=[0.3, 0.9],
         description="base VP-equivalent value of a drawn monopoly")
     # --- search knobs (SearchConfig fields; defaults are what the default search spec produces) ---
+    # The opponents' turns (Searcher._future_values) are only simulated with depth >= 2: the four
+    # opponent knobs do nothing at depth 1, so their ablation needs a depth-2 base spec (the script
+    # picks DEFAULT_DEEP_SPEC and refuses a shallower one).
     cfg = make_bot(DEFAULT_SEARCH_SPEC).config
-    for attr, key, cands, desc in (
-            ("trade_proposals", "trades", [0, 1, 5], "PROPOSE_TRADE candidates per node (0 = never propose)"),
-            ("dump_candidates", None, [0, 1, 5], "surplus dumps tried with > 7 cards (0 = off)"),
-            ("opponent_proposals", None, [0, 2], "proposals a simulated opponent may make per turn (0 = never)"),
-            ("opponent_actions", None, [2, 6], "greedy actions per simulated opponent turn"),
-            ("opponent_expand", None, [3, 10], "candidates evaluated per simulated opponent decision"),
-            ("opp_roll_samples", "opprolls", [1, 2, 6], "sampled roll sequences for the opponents' turns"),
-            ("beam", "beam", [2, 6, 8], "partial sequences kept per level"),
-            ("expand", "expand", [4, 12, 16], "actions tried per decision node"),
-            ("depth", "depth", [2], "turns of lookahead (2 = + opponents' turns)")):
+    for attr, key, cands, depth, desc in (
+            ("trade_proposals", "trades", [0, 1, 5], 1, "PROPOSE_TRADE candidates per node (0 = never propose)"),
+            ("dump_candidates", None, [0, 1, 5], 1, "surplus dumps tried with > 7 cards (0 = off)"),
+            ("opponent_proposals", None, [0, 2], 2,
+             "proposals a simulated opponent may make per turn (0 = never); depth >= 2 only"),
+            ("opponent_actions", None, [2, 6], 2, "greedy actions per simulated opponent turn; depth >= 2 only"),
+            ("opponent_expand", None, [3, 10], 2, "candidates evaluated per simulated opponent decision; depth >= 2 only"),
+            ("opp_roll_samples", "opprolls", [1, 2, 6], 2, "sampled roll sequences for the opponents' turns; depth >= 2 only"),
+            ("beam", "beam", [2, 6, 8], 1, "partial sequences kept per level"),
+            ("expand", "expand", [4, 12, 16], 1, "actions tried per decision node"),
+            ("depth", "depth", [2], 1, "turns of lookahead (2 = + opponents' turns)")):
         add(name=f"search.{attr}", module="catanbot.search", attr=attr, default=getattr(cfg, attr), kind="search",
-            candidates=cands, requires_search=True, spec_key=key, parse=_parse_int, description=desc)
+            candidates=cands, requires_search=True, requires_depth=depth, spec_key=key, parse=_parse_int,
+            description=desc)
     return {t.name: t for t in reg}
 
 
@@ -506,8 +548,11 @@ def play_paired_game(base_spec: str, overrides: Dict[str, Any], pattern: str, se
     return {
         "seed": seed, "pattern": pattern, "winner": res.winner, "vps": list(res.vps), "turns": res.turns,
         "actions": res.actions, "duration": res.duration,
-        "seat_times": [list(b.stats["times"]) for b in bots],
+        "seat_times": [list(b.stats["times"]) for b in bots],          # inner.decide only (see ParamBot)
         "seat_decisions": [b.stats["decisions"] for b in bots],
+        "seat_overhead": [b.stats["overhead"] for b in bots],          # apply / restore seconds, excluded above
+        "evaluator_mode": evaluator_mode(),                            # the mode of the process that played it
+        "pid": os.getpid(),
     }
 
 
@@ -571,7 +616,10 @@ def paired_stats(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     diffs: List[float] = []
     t_c: List[float] = []
     t_d: List[float] = []
+    oh_c = oh_d = 0.0
     turns: List[int] = []
+    records: List[Dict[str, Any]] = []
+    modes = set()
     for r in results:
         pat = r["pattern"]
         C = [i for i, s in enumerate(pat) if s == "C"]
@@ -583,11 +631,14 @@ def paired_stats(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         if w in C:
             cand_wins += 1
             c_g = 1.0 / len(C)
+            side = "cand"
         elif w in D:
             def_wins += 1
             d_g = 1.0 / len(D)
+            side = "default"
         else:
             draws += 1
+            side = "draw"
         diffs.append(c_g - d_g)
         vp_c.extend(r["vps"][i] for i in C)
         vp_d.extend(r["vps"][i] for i in D)
@@ -595,7 +646,21 @@ def paired_stats(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             t_c.extend(r["seat_times"][i])
         for i in D:
             t_d.extend(r["seat_times"][i])
+        overhead = r.get("seat_overhead") or [0.0] * len(pat)
+        oh_c += sum(overhead[i] for i in C)
+        oh_d += sum(overhead[i] for i in D)
         turns.append(r["turns"])
+        if r.get("evaluator_mode"):
+            modes.add(r["evaluator_mode"])
+        seat_ms = [[1000.0 * x for x in ts] for ts in r["seat_times"]]
+        records.append({
+            "seed": r["seed"], "pattern": pat, "winner": w, "winning_side": side, "diff": c_g - d_g,
+            "vps": list(r["vps"]), "turns": r["turns"], "actions": r.get("actions"), "duration": r["duration"],
+            "evaluator_mode": r.get("evaluator_mode"), "pid": r.get("pid"),
+            "seat_decisions": list(r["seat_decisions"]),
+            "seat_ms_mean": [_mean(ms) for ms in seat_ms], "seat_ms_p95": [_p95(ms) for ms in seat_ms],
+            "seat_overhead_ms": [1000.0 * x for x in overhead],
+        })
     delta = _mean(diffs) if diffs else float("nan")
     if G > 1:
         var = sum((x - delta) ** 2 for x in diffs) / (G - 1)
@@ -635,7 +700,12 @@ def paired_stats(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "decisions_cand": len(ms_c), "decisions_def": len(ms_d),
         "ms_mean_cand": mean_c, "ms_p95_cand": _p95(ms_c), "ms_mean_def": mean_d, "ms_p95_def": _p95(ms_d),
         "extra_ms": extra, "cost": cost, "value_per_ms": value_per_ms,
+        # apply / restore time per decision (NOT part of the decision times above); shows the harness's own cost
+        "overhead_ms_cand": 1000.0 * oh_c / len(ms_c) if ms_c else float("nan"),
+        "overhead_ms_def": 1000.0 * oh_d / len(ms_d) if ms_d else float("nan"),
         "avg_turns": _mean(turns), "seconds": sum(r["duration"] for r in results),
+        "evaluator_modes": sorted(modes),      # as reported by the process that played each game
+        "records": records,                    # one entry per game, in seed order
     }
 
 

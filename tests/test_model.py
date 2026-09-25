@@ -219,3 +219,34 @@ def test_evaluate_exact_on_finished_games():
     v = net.evaluate([over, over, over, s], [2, 0, 3, 1])
     assert v[0] == 1.0 and v[1] == 0.0 and v[2] == 0.0 and v[3] == v_live[1]
     assert v.dtype == np.float32
+
+
+def test_train_fit_only_applies_mask(tmp_path):
+    """``python -m catanbot.train --fit-only --replay BUF --out NET`` fits on an existing buffer and
+    stores the hand-blind mask with the net; ``--no-mask`` gives a plain net."""
+    from catanbot import train as T
+    rng = np.random.default_rng(11)
+    n_games, per_game = 30, 20
+    X = rng.normal(size=(n_games * per_game, F.NUM_FEATURES)).astype(np.float16)
+    g = np.repeat(np.arange(n_games, dtype=np.int32), per_game)
+    y = (X[:, F.feature_index("me_public_vp")].astype(np.float32) > 0).astype(np.float32)
+    buf = str(tmp_path / "buf.npz")
+    np.savez(buf, X=X, y=y, g=g, bias=np.zeros(len(y), np.float32))
+    out = str(tmp_path / "net.npz")
+    common = ["--fit-only", "--replay", buf, "--epochs", "2", "--hidden", "8", "--batch-size", "64", "--seed", "0"]
+    assert T.main(common + ["--out", out]) == 0
+    net = ValueNet.load(out)
+    assert net.hidden == (8,) and net.masked_features() == [n for n, m in zip(F.FEATURE_NAMES, feature_mask(HAND_BLIND_FEATURES)) if m == 0]
+    assert (tmp_path / "net_train.log").exists()
+    assert not (tmp_path / "net_replay.npz").exists()   # fit-only never writes a buffer
+    out2 = str(tmp_path / "plain.npz")
+    assert T.main(common + ["--no-mask", "--out", out2]) == 0
+    assert ValueNet.load(out2).input_mask is None
+    out3 = str(tmp_path / "custom.npz")
+    assert T.main(common + ["--mask-features", "g_turn,opp*_hand_size", "--out", out3]) == 0
+    assert ValueNet.load(out3).masked_features() == ["opp1_hand_size", "opp2_hand_size", "opp3_hand_size", "g_turn"]
+    # the same split / recipe through fit_replay directly
+    args = T.build_parser().parse_args(common + ["--out", out])
+    net2, hist, n_tr, n_va = T.fit_replay(X, y, g, args, seed=0)
+    assert n_tr + n_va == len(y) and 0 < n_va < len(y) and hist["epochs"] == 2
+    np.testing.assert_array_equal(net2.predict(X[:50]), net.predict(X[:50]))

@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from . import accel as _accel  # optional C++ extension: native opponent simulation for _future_values (docs/CPP.md)
 from . import actions as A
 from . import board as B
 from . import engine as E
@@ -68,6 +69,13 @@ class SearchConfig:
     dump_candidates: int = 3        # surplus dumps (discard.surplus_dump_actions) always tried with > 7 cards
     discard_candidates: int = 3
     use_opponent_model: bool = True
+    # C++ opponent simulation + reduced lookahead for ``_future_values`` when ``catanbot_core`` is built (see
+    # docs/CPP.md "Native lookahead").  The simulated opponents then evaluate every non-trade legal action instead
+    # of the prior-ordered top ``opponent_expand`` and never propose trades (``opponent_proposals`` is ignored);
+    # the Python code in ``_future_values`` / ``_greedy_turn`` / ``_reduced_search_values`` stays the reference
+    # and is used when the extension is missing, ``CATANBOT_NO_ACCEL`` / ``CATANBOT_NO_NATIVE_SEARCH`` is set,
+    # the evaluator is not a HeuristicEvaluator / float32 ValueNet / BlendedEvaluator, or a state is unsupported.
+    native_future: bool = True
 
 
 @dataclass
@@ -109,6 +117,27 @@ def roll_distribution(samples: int) -> List[Tuple[int, float]]:
     return [(v, p / tot) for v, p in top]
 
 
+def reduced_config(cfg: SearchConfig, depth: int, budget: int) -> SearchConfig:
+    """The config of the reduced sub-search that scores the leaves of ``_future_values`` at ``depth >= 2``.
+
+    Shared by the Python path (``_reduced_search_values``) and the native one (one entry per lookahead level).
+    ``budget`` is the node budget left per leaf; the sub-search gets at least 500 nodes.
+    """
+    return SearchConfig(depth=depth, beam=max(2, cfg.beam // 3), expand=max(4, cfg.expand // 2),
+                        max_actions_per_turn=4, roll_samples=min(cfg.roll_samples, 5),
+                        opp_roll_samples=max(2, cfg.opp_roll_samples // 3),
+                        opponent_actions=3, opponent_expand=4, finished_lookahead=2,
+                        max_nodes=max(500, budget),
+                        trade_proposals=1, discard_candidates=2, use_opponent_model=cfg.use_opponent_model,
+                        trade_cap_early=cfg.trade_cap_early, trade_cap_late=cfg.trade_cap_late,
+                        opponent_proposals=0, dump_candidates=min(2, cfg.dump_candidates),
+                        native_future=cfg.native_future)
+
+
+_NATIVE_LEVEL_FIELDS = ("opponent_actions", "beam", "expand", "max_actions_per_turn", "roll_samples",
+                        "opp_roll_samples", "finished_lookahead", "discard_candidates", "max_nodes")
+
+
 class Searcher:
     """Expectimax + beam search over one turn with max^n opponent simulation."""
 
@@ -127,6 +156,17 @@ class Searcher:
         self._chain_next: Dict[Action, Action] = {}   # first step of an intermediary deal -> its second step
         self._arb_cache: Dict[tuple, list] = {}        # arbitrage deals per (hands, trades) within one search
         self._shift = 0.0            # mean(future - static) of the lookahead set, applied to static leaves
+        # Native lookahead (C++): the evaluator's twin handle, or None -> the Python _future_values below.
+        self._native_ev = None
+        self._native_key = None
+        if self.config.native_future and _accel.native_search_available():
+            self._native_ev = _accel.native_evaluator(evaluator)
+            self._native_key = _accel.evaluator_key(evaluator) if self._native_ev is not None else None
+
+    @property
+    def native_active(self) -> bool:
+        """True when ``_future_values`` runs in the C++ extension (see ``SearchConfig.native_future``)."""
+        return self._native_ev is not None
 
     # ------------------------------------------------------------------
     # public API
@@ -145,6 +185,10 @@ class Searcher:
         self._political_reasons = {}
         self._chain_next = {}
         self._arb_cache = {}
+        if self._native_ev is not None and _accel.evaluator_key(self.evaluator) != self._native_key:
+            # The net's arrays were replaced (set_params / load): rebuild the native twin.
+            self._native_ev = _accel.native_evaluator(self.evaluator)
+            self._native_key = _accel.evaluator_key(self.evaluator) if self._native_ev is not None else None
         legal = E.legal_actions(state)
         if not legal:
             return []
@@ -615,6 +659,10 @@ class Searcher:
         # Common random numbers: the same roll sequences for every state.
         rng = random.Random(self._rng.random())
         seqs = [[rng.randint(1, 6) + rng.randint(1, 6) for _ in range(3 * 4)] for _ in range(n_samples)]
+        if self._native_ev is not None and states:
+            out = self._native_future_values(states, me, depth, seqs)
+            if out is not None:
+                return out
         leaves: List[GameState] = []
         owner: List[int] = []
         for si, s0 in enumerate(states):
@@ -633,15 +681,37 @@ class Searcher:
             cnt[o] += 1
         return [out[i] / max(1, cnt[i]) for i in range(len(states))]
 
+    def _native_rng(self):
+        """The ``rng`` argument of the native call: a seed drawn from our stream (tests may return a Random)."""
+        return self._rng.getrandbits(63)
+
+    def _native_future_values(self, states: Sequence[GameState], me: int, depth: int,
+                              seqs: Sequence[Sequence[int]]) -> Optional[List[float]]:
+        """``_future_values`` in the extension (opponents' greedy turns, reduced lookahead, leaf evaluation).
+
+        Returns ``None`` when a state cannot be represented natively; the caller then runs the Python body.
+        """
+        cfg = self.config
+        levels = [cfg]
+        d = depth
+        while d >= 2:
+            budget = (cfg.max_nodes - self.nodes) // max(1, len(states) * max(1, len(seqs)))
+            levels.append(reduced_config(levels[-1], d, budget))
+            d -= 1
+        level_dicts = [{k: int(getattr(lv, k)) for k in _NATIVE_LEVEL_FIELDS} for lv in levels]
+        model = self.model if cfg.use_opponent_model else None
+        robber = _accel.robber_weights_bundle(states[0], self.politics, model)
+        res = _accel.future_values(states, me, depth, level_dicts, [list(q) for q in seqs], self._native_ev, robber,
+                                   rng=self._native_rng(), deadline=self._deadline,
+                                   node_budget=max(0, cfg.max_nodes - self.nodes))
+        if res is None:
+            return None
+        vals, nodes = res
+        self.nodes += nodes
+        return vals
+
     def _reduced_search_values(self, leaves: Sequence[GameState], me: int, depth: int) -> List[float]:
-        sub_cfg = SearchConfig(depth=depth, beam=max(2, self.config.beam // 3), expand=max(4, self.config.expand // 2),
-                               max_actions_per_turn=4, roll_samples=min(self.config.roll_samples, 5),
-                               opp_roll_samples=max(2, self.config.opp_roll_samples // 3),
-                               opponent_actions=3, opponent_expand=4, finished_lookahead=2,
-                               max_nodes=max(500, (self.config.max_nodes - self.nodes) // max(1, len(leaves))),
-                               trade_proposals=1, discard_candidates=2, use_opponent_model=self.config.use_opponent_model,
-                               trade_cap_early=self.config.trade_cap_early, trade_cap_late=self.config.trade_cap_late,
-                               opponent_proposals=0, dump_candidates=min(2, self.config.dump_candidates))
+        sub_cfg = reduced_config(self.config, depth, (self.config.max_nodes - self.nodes) // max(1, len(leaves)))
         vals = []
         for s in leaves:
             if s.phase == PHASE_GAME_OVER or E.acting_player(s) != me:

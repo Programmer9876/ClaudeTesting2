@@ -388,7 +388,6 @@ ActionC choose_discard_action(const GameStateC& s, int player, const ActionList*
 // danger.py
 // ---------------------------------------------------------------------------
 void win_path(const GameStateC& s, int i, WinPathC& out) {
-    const PlayerC& p = s.players[i];
     const int n = s.num_players;
     out = WinPathC{};
     const double vp = estimated_vp(s, i);

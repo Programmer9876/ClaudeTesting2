@@ -220,9 +220,9 @@ ordinary target (nobody singles us out).  Tunable; the penalty scales with it.""
 PLACEMENT_BLOCK_WEIGHT = 1.0
 """Weight of the blockability penalty on the pips-equivalent scale of
 ``score_settlement_spot`` / ``score_city``.  With 1.0 a second settlement on
-the 6 our first settlement already works costs ~1.9 points (~1.7 pips of
-production value) against a second 6 elsewhere; set to 0 to switch the term
-off (the scores are then exactly the old ones)."""
+the brick 6 our first settlement already works costs 1.9-2.0 points (~1.9 pips
+of production value) against the same pips on hexes we do not work; set to 0
+to switch the term off (the scores are then exactly the old ones)."""
 
 PLACEMENT_STRONG_THREAT = 1.3
 """An opponent whose ``robber.threat`` is at least this (5+ estimated VP: the
