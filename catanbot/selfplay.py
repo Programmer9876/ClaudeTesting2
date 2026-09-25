@@ -9,6 +9,12 @@ processes::
     "search:depth=1,evaluator=heuristic"
     "search:depth=1,model=models/value_net.npz,blend=0.5"   # 50/50 net + heuristic
 
+Counter-offer keys (search bot; docs/STRATEGY.md "Counter-offers"; all off by default):
+``counter=1`` (make counter-offers when answering an offer - only has an effect in games with the rules
+flag ``GameState.allow_counters``, ``play_game(..., allow_counters=True)``), ``counter_n=2`` (counters
+expanded per offer), ``counter_aggr=1.0`` (ranking exponent, > 1 greedier) and ``resp_la=1`` (value every
+answer to an offer after the rest of the proposer's turn; works under the default rules too).
+
 Trading-style keys (heuristic and search bots, DESIGN section 11):
 ``accept_bias=0.3`` (per-game acceptance bias drawn from U(-0.3, 0.3)),
 ``offer_temp=0.5`` (temperature over the proposal ranking) and
@@ -179,6 +185,11 @@ def make_bot(spec: str) -> Bot:
             paths_crowd=float(kw.get("paths_crowd", 1.0)),
             paths_priors=int(float(kw.get("paths_priors", 1))),
             paths_spots=int(float(kw.get("paths_spots", 0))),
+            # counter-offers / out-of-turn trade analysis: off unless the spec says counter=1 / resp_la=1
+            counters=int(float(kw.get("counter", 0))),
+            counter_candidates=int(float(kw.get("counter_n", 2))),
+            counter_aggr=float(kw.get("counter_aggr", 1.0)),
+            respond_lookahead=int(float(kw.get("resp_la", 0))),
         )
         ev = load_evaluator(kw.get("model") or kw.get("evaluator"),
                             float(kw["blend"]) if "blend" in kw else None)
@@ -190,7 +201,14 @@ def make_bot(spec: str) -> Bot:
 
 
 def _valid_extra_action(state: GameState, a, legal) -> bool:
-    """Trade proposals outside the engine's bounded candidate list are still legal if well formed."""
+    """Trade proposals (and, under the counter-offer rules, counters) outside the engine's bounded candidate
+    list are still legal if well formed."""
+    if a and a[0] == A.COUNTER_TRADE and state.allow_counters:
+        try:
+            E.apply(state, a)
+            return True
+        except (E.IllegalActionError, TypeError, IndexError):
+            return False
     if not a or a[0] != A.PROPOSE_TRADE or len(a) != 3:
         return False
     if not any(x[0] == A.PROPOSE_TRADE for x in legal):
@@ -461,8 +479,11 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
               sample_every: int = 1, seed: int = 0, specs: Optional[List[str]] = None,
               on_action: Optional[Callable[[GameState, A.Action, int], None]] = None,
               sibling_rate: float = 0.0, sibling_setup_rate: Optional[float] = None,
-              sibling_other_rate: Optional[float] = None) -> GameResult:
+              sibling_other_rate: Optional[float] = None, allow_counters: bool = False) -> GameResult:
     """Play one full game.  ``bots[i]`` controls seat ``i``.
+
+    ``allow_counters`` turns on the counter-offer rules variant (``GameState.allow_counters``, see the
+    engine docstring) for this game; off by default (the base game, byte-identical to before).
 
     ``sibling_rate`` (with ``record``) is the share of the current player's
     main-phase decisions at which the afterstates of every legal action are
@@ -480,6 +501,8 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
     if state is None:
         state = new_game(n, rng=rng)
     state.max_turns = max_turns
+    if allow_counters:
+        state.allow_counters = True
     for b in bots:
         b.reset()
     feats: List[np.ndarray] = []
@@ -556,19 +579,21 @@ def _worker(args) -> GameResult:
     sibling_rate = args[5] if len(args) > 5 else 0.0
     sibling_setup_rate = args[6] if len(args) > 6 else None
     sibling_other_rate = args[7] if len(args) > 7 else None
+    allow_counters = bool(args[8]) if len(args) > 8 else False
     bots = [make_bot(s) for s in specs]
     rng = random.Random(seed)
     return play_game(bots, rng=rng, record=record, max_turns=max_turns, sample_every=sample_every,
                      seed=seed, specs=list(specs), sibling_rate=sibling_rate, sibling_setup_rate=sibling_setup_rate,
-                     sibling_other_rate=sibling_other_rate)
+                     sibling_other_rate=sibling_other_rate, allow_counters=allow_counters)
 
 
 def run_games(jobs: Sequence[Tuple[List[str], int]], workers: int = 1, record: bool = False, max_turns: int = 400,
               sample_every: int = 1, progress: Optional[Callable[[int, int, GameResult], None]] = None,
               sibling_rate: float = 0.0, sibling_setup_rate: Optional[float] = None,
-              sibling_other_rate: Optional[float] = None) -> List[GameResult]:
-    """Run ``jobs`` = [(specs_per_seat, seed), ...] possibly in parallel."""
-    args = [(list(specs), seed, record, max_turns, sample_every, sibling_rate, sibling_setup_rate, sibling_other_rate)
+              sibling_other_rate: Optional[float] = None, allow_counters: bool = False) -> List[GameResult]:
+    """Run ``jobs`` = [(specs_per_seat, seed), ...] possibly in parallel (``allow_counters``: rules variant)."""
+    args = [(list(specs), seed, record, max_turns, sample_every, sibling_rate, sibling_setup_rate, sibling_other_rate,
+             allow_counters)
             for specs, seed in jobs]
     results: List[GameResult] = []
     if workers <= 1 or len(args) <= 1:

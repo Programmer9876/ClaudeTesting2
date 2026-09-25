@@ -561,6 +561,72 @@ def _build_spot_board(s, a, m, v, x, c, contested):
     return s, me, v
 
 
+def test_bundle_rate_shares_one_conversion_budget():
+    """Review fix: a bundle's missing resources share one conversion budget.  With a per-resource TAU share
+    the same converted cards were credited to sheep, wheat and ore at once, so a wood/brick-only seat bought
+    dev cards about as fast as an ore/wheat seat without sheep (0.18-0.25 vs 0.21 per round)."""
+    q = [4] * 5
+    ore_wheat = W.bundle_rate([0.0, 0.0, 0.0, 1.22, 1.22], q, W._DEV_BUNDLE, W.TAU)
+    wood_brick = W.bundle_rate([0.56, 1.56, 0.0, 0.0, 0.0], q, W._DEV_BUNDLE, W.TAU)
+    assert ore_wheat > 2.5 * wood_brick > 0.0
+    assert W.bundle_rate([0.0] * 5, q, W._DEV_BUNDLE, W.TAU) == 0.0
+    assert W.bundle_rate([1.0, 1.0, 0, 0, 0], q, W._ROAD_BUNDLE, W.TAU) == 1.0     # nothing to convert: exact
+    rng = random.Random(3)
+    for _ in range(2000):
+        e = [rng.choice([0.0, rng.uniform(0, 2)]) for _ in range(5)]
+        ratio = [rng.choice([2, 3, 4]) for _ in range(5)]
+        for need in (W._DEV_BUNDLE, W._ROAD_BUNDLE):
+            k = W.bundle_rate(e, ratio, need, W.TAU)
+            sur = sum(max(0.0, e[r] - k * need[r]) / ratio[r] for r in range(5))
+            dfc = sum(max(0.0, k * need[r] - e[r]) for r in range(5))
+            assert k >= 0.0 and (abs(W.TAU * sur - dfc) < 1e-9 or (k == 0.0 and W.TAU * sur <= dfc + 1e-12))
+            assert W.bundle_rate([x * 1.2 for x in e], ratio, need, W.TAU) >= k - 1e-12
+
+
+def test_memo_keys_cover_other_roads_and_the_dev_pool():
+    """Review fix: our room and the reach / spot memos are keyed on every seat's roads (an opponent's road on our
+    frontier at a depth >= 2 leaf), and the spot memo on which opponents static counts as strong (their estimated
+    VP moves with the dev pool when we buy a card while their devs are hidden)."""
+    s = road_board([5, 4, 3, 2])
+    eocc = s.occupied_edges()
+    net = set(s.players[0].settlements)
+    for e in s.players[0].roads:
+        net.update(B.EDGE_VERTICES[e])
+    free = sorted({e for v in net for e in B.VERTEX_EDGES[v] if e not in eocc})
+    t = s.copy()
+    t.players[1].roads.extend(free[:3])
+    ctx = W.PathsContext(s, 0)
+    ctx.corrections(s)
+    ctx.corrections(t)
+    assert ctx.room(t, 0, W._osig(t)) == W.PathsContext._compute_room(t, 0) < W.PathsContext._compute_room(s, 0)
+    changed = 0
+    for seed in range(40):
+        rng = random.Random(seed)
+        s = new_game(4, rng=rng)
+        bots = [HeuristicBot() for _ in range(4)]
+        while s.phase != PHASE_GAME_OVER and s.turn < 40:
+            i = E.acting_player(s)
+            s = E.apply_inplace(s, bots[i].decide(s, E.legal_actions(s), rng), rng)
+        if s.phase == PHASE_GAME_OVER:
+            continue
+        set_me(s, 0)
+        for j in (1, 2, 3):
+            p = s.players[j]
+            p.dev_known, p.dev_cards, p.dev_cards_new = False, [0] * 5, [0] * 5
+            p.dev_count = 5 if s.public_vp(j) == 4 else p.dev_count
+        s.players[0].dev_cards, s.players[0].dev_cards_new = [0] * 5, [0] * 5
+        s2 = s.copy()
+        s2.players[0].dev_cards_new[B.DEV_VP] = 1          # our VP-card buy leaves the pool: their estimates drop
+        if W._strong_flags(s, 0) == W._strong_flags(s2, 0):
+            continue
+        changed += 1
+        warm = W.PathsContext(s, 0, spots=True)
+        warm.spot_correction(s)
+        cold = W.PathsContext(s, 0, spots=True)
+        assert warm.spot_correction(s2) == cold.spot_correction(s2)
+    assert changed >= 2
+
+
 def test_contested_spots():
     s, me, v = _spot_board(contested=True)
     ctx = W.PathsContext(s, me, spots=True)

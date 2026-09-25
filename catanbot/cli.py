@@ -706,6 +706,16 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
                                f"--fix '{mep.color}.devs=knight:1,vp:1' for exact knight / monopoly advice.")
     # advice sections
     advice: Dict[str, List[str]] = {}
+    if offer and state.phase == PHASE_TRADE_RESPONSE:
+        # Accept / reject / counter, each valued after the rest of the proposer's turn (catanbot/counteroffers.py).
+        try:
+            from .counteroffers import offer_response_report
+            orep = offer_response_report(state, me, evaluator, model=model, politics=politics,
+                                         rng=random.Random(getattr(args, "seed", 0) or 0))
+            advice["offer"] = orep["lines"]
+            report["offer_response"] = {"best": orep["best"], "options": orep["options"]}
+        except Exception as ex:  # pragma: no cover
+            advice["offer"] = [f"(offer response analysis unavailable: {ex})"]
     try:
         advice["trading"] = trade_advice(state, me, model=model)
     except Exception as ex:  # pragma: no cover
@@ -811,7 +821,8 @@ def print_report(state: GameState, me: int, report: Dict[str, Any], parse_warnin
             print(f"     why: {a['explanation']}")
         if len(a["line"]) > 1:
             print(f"     line: {line}")
-    titles = [("trading", "Trading"), ("seven_risk", "7-protection"), ("robber", "Knight / robber"),
+    titles = [("offer", "Offer response (accept / reject / counter, after the proposer's turn)"),
+              ("trading", "Trading"), ("seven_risk", "7-protection"), ("robber", "Knight / robber"),
               ("dev_cards", "Development cards"), ("politics", "Politics"), ("win_paths", "Win paths"),
               ("opponents", "Opponents")]
     for key, title in titles:

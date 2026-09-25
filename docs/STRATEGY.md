@@ -321,10 +321,15 @@ pool, the bank factor, liveness, the opponents' road room) are fixed per decisio
 sibling leaves are compared on one scale.
 
 **Supply** (cards per round, per seat): production with the robber's block counted
-for `min(1, 2 / H)` of the horizon, plus 0.35 of what the port ratios convert from
-the other resources, times a bank factor `min(1, bank / (table income + 1))`.  Road
-rate = `min(wood, brick, total / 2)`, dev rate = `min(sheep, wheat, ore, total / 3)`:
-your production decides which paths are cheap for you.
+for `min(1, 2 / H)` of the horizon, times a bank factor `min(1, bank / (table income +
+1))`.  Road rate and dev rate are *bundle rates* (`bundle_rate`): the most roads (wood +
+brick) or dev cards (sheep + wheat + ore) per round such that the missing cards are
+covered by 0.35 of the surplus left after the bundle's own cards, converted at the
+seat's port ratios - one conversion budget shared by every missing resource (capped at
+total / 2 and total / 3).  Your production decides which paths are cheap for you: an
+ore + wheat seat without sheep buys dev cards ~3x faster than a wood + brick seat.
+(The per-resource supply `income + 0.35 x converted income of the other resources`
+is kept for the contested-spot timing.)
 
 **Race levels.**  Longest Road: official trail length + half the roads the hand (and
 held Road Building cards) could pay for + growth `min(room left, 0.6 x road rate x H)`
@@ -402,6 +407,6 @@ share and a portfolio (points per card: city, settlement, dev card, road-for-len
 `HAND_W`, `ESC`, `TIE_LR`, `LIVE_LR`, `LIVE_LA`, `PRIOR_SCALE` and `PLACEBO` (the
 seat-rotated control); the constants only matter with `paths=1` in the base spec.
 **Cost** (depth 1, beam 4, expand 8, 30 mid-game positions, loaded machine):
-1.26x the default's decision time (p95 1.27x), 1.56x with `paths_spots=1`; ~26 us per
+1.25-1.26x the default's decision time (p95 1.3-1.5x), 1.56-1.64x with `paths_spots=1`; ~26 us per
 leaf on top of the batched C++ evaluation.  Experiments and decision rules:
 docs/ABLATIONS_WINPATHS.md.

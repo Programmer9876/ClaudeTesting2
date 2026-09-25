@@ -571,12 +571,14 @@ class OpponentModel:
         """P(the current player ``j`` accepts a counter-offer: they receive ``receives`` and pay ``pays``).
 
         ``j`` proposed ``original`` (they give ``original.give`` and want ``original.get``), so they want this
-        trade: the logit starts from a strong prior for their own deal (+1.4) and moves by 1.8 x the change of
-        the deal's worth for them (implied valuation x their needs, like :meth:`predict_accept`) - a counter
-        asking one card more is ~30 %, a swap for a card they value alike ~75 %.  Their observed record on
-        counters, the game stage, favour slack towards the counterer and the leader penalty shift it;
-        ``alternatives`` (somebody accepted the original as proposed) costs 1.2 logits.  ``original=None``
-        falls back to :meth:`predict_accept`.
+        trade: the logit starts from a prior for their own deal (+1.0) and moves by 2.5 x the change of the
+        deal's worth for them - implied valuation x their needs like :meth:`predict_accept`, with what they
+        asked for weighted 1.8x (they need it: a swap for another card is a real loss) and what they offered
+        0.7x (their surplus).  Mid-game that puts a swap at ~30 %, one more of a card they offered ~30 %, one
+        more of another card ~15 % (calibrated on self-play: search-bot proposers took 14-17 % of the counters
+        a 1.4-prior version predicted at 20-43 %).  Their observed record on counters, the game stage, favour
+        slack towards the counterer and the leader penalty shift it; ``alternatives`` (somebody accepted the
+        original as proposed) costs 1.2 logits.  ``original=None`` falls back to :meth:`predict_accept`.
         """
         if original is None:
             return self.predict_accept(state, j, receives, pays, proposer=counterer, belief=belief, politics=politics)
@@ -596,14 +598,18 @@ class OpponentModel:
         prod = player_production(state, j, ignore_robber=True)
         pref = prof.build_preference()
 
+        asked = original.get
+        offered = original.give
+
         def worth(recv: Sequence[int], pay: Sequence[int]) -> float:
             g = 0.0
             for r in range(5):
                 boost = (1.0 + 0.6 / (1.0 + 8.0 * prod[r])) * (0.8 + 0.2 * pref[r])
+                boost *= 1.8 if asked[r] else (0.7 if offered[r] else 1.0)
                 g += vals[r] * boost * (recv[r] - pay[r])
             return g + 0.15 * (sum(recv) - sum(pay))
 
-        logit = 1.4 + 1.8 * (worth(receives, pays) - worth(original.get, original.give))
+        logit = 1.0 + 2.5 * (worth(receives, pays) - worth(asked, offered))
         acc = prof.acceptance_rate()
         logit += 2.5 * (acc - 0.45) * (0.3 + 0.7 * prof.confidence())
         if prof.counter_accept.weight >= 1:

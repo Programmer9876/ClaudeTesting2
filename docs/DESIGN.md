@@ -622,8 +622,11 @@ Model and knobs: docs/STRATEGY.md "Win-path races"; experiments: docs/ABLATIONS_
   bank factor, liveness gates, the opponents' road room) and frozen copies of the module
   constants (so `ParamBot`'s apply / restore around `decide` is enough), plus memo dicts
   that live for one `search()` call: supply by (seat, buildings, robber), trail lengths by
-  (buildings, seat, roads), our road room, race solutions by their exact inputs, reach sets
-  and spot scores.  Every memo value is a pure function of its key and no RNG is used, so
+  (buildings, seat, roads), our road room by (every seat's roads, buildings), race solutions
+  by their exact inputs, reach sets by (seat, every seat's roads, buildings) and spot scores
+  by (spot, our buildings, every seat's roads and buildings, which opponents static counts as
+  strong - their estimated VP moves with the dev pool).  Every memo value is a pure function
+  of its key - also at depth >= 2, where the simulated opponents build - and no RNG is used, so
   cold and warm caches give bit-identical values (tested) and the search's RNG streams are
   untouched.  Opponents cannot build during our turn, so their entries hit on every leaf
   after the first; the race-solve hit rate is ~96 %.

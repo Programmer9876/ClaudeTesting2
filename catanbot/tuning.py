@@ -393,6 +393,19 @@ def _build_registry() -> Dict[str, Tunable]:
         add(name=f"search.{attr}", module="catanbot.search", attr=attr, default=getattr(cfg, attr), kind="search",
             candidates=cands, requires_search=True, requires_depth=depth, spec_key=key, parse=_parse_int,
             description=desc)
+    # Counter-offers / out-of-turn trade analysis (docs/STRATEGY.md "Counter-offers").  counters and
+    # counter_aggr only act in games under the counter-offer rules (scripts/ablate.py --counters, i.e.
+    # GameState.allow_counters); counter_aggr also needs counter=1 in the base spec.  respond_lookahead works
+    # under the default rules as well.
+    for attr, key, cands, parse, desc in (
+            ("counters", "counter", [1], _parse_int,
+             "make counter-offers when answering an offer (0 = never); needs the rules flag (ablate.py --counters)"),
+            ("respond_lookahead", "resp_la", [1], _parse_int,
+             "value accept / reject / counter after the rest of the proposer's turn (0 = at the trade)"),
+            ("counter_aggr", "counter_aggr", [0.5, 2.0], _parse_float,
+             "counter ranking P(accept)^(1/aggr) x gain (> 1 greedier); needs counter=1 and the rules flag")):
+        add(name=f"search.{attr}", module="catanbot.search", attr=attr, default=getattr(cfg, attr), kind="search",
+            candidates=cands, requires_search=True, requires_depth=1, spec_key=key, parse=parse, description=desc)
     return {t.name: t for t in reg}
 
 
@@ -547,16 +560,28 @@ def paired_jobs(games: int, seed: int, num_players: int) -> List[Tuple[str, int]
 
 
 def play_paired_game(base_spec: str, overrides: Dict[str, Any], pattern: str, seed: int,
-                     max_turns: int = 400) -> Dict[str, Any]:
+                     max_turns: int = 400, allow_counters: bool = False) -> Dict[str, Any]:
     """One game: seats marked 'C' get ``ParamBot(base bot, overrides)``, seats 'D' the bare base bot
-    (wrapped too, so decision times are measured identically).  Returns a picklable summary."""
+    (wrapped too, so decision times are measured identically).  Returns a picklable summary.
+    ``allow_counters`` plays the game under the counter-offer rules variant (``GameState.allow_counters``)."""
     from .agents.param_bot import ParamBot
     from .selfplay import make_bot, play_game
     bots = []
     for side in pattern:
         inner = make_bot(base_spec)
         bots.append(ParamBot(inner, overrides if side == "C" else {}, label="cand" if side == "C" else "default"))
-    res = play_game(bots, rng=random.Random(seed), seed=seed, max_turns=max_turns)
+    made = [0] * len(pattern)
+    taken = [0] * len(pattern)
+
+    def count_counters(state, action, player):     # counter-offers made / taken per seat (counters rule only)
+        from . import actions as A
+        if action[0] == A.COUNTER_TRADE:
+            made[player] += 1
+        elif action[0] == A.ACCEPT_TRADE and state.pending_trade is not None and state.pending_trade.origin is not None:
+            taken[state.pending_trade.proposer] += 1
+
+    res = play_game(bots, rng=random.Random(seed), seed=seed, max_turns=max_turns, allow_counters=allow_counters,
+                    on_action=count_counters if allow_counters else None)
     return {
         "seed": seed, "pattern": pattern, "winner": res.winner, "vps": list(res.vps), "turns": res.turns,
         "actions": res.actions, "duration": res.duration,
@@ -565,19 +590,25 @@ def play_paired_game(base_spec: str, overrides: Dict[str, Any], pattern: str, se
         "seat_overhead": [b.stats["overhead"] for b in bots],          # apply / restore seconds, excluded above
         "evaluator_mode": evaluator_mode(),                            # the mode of the process that played it
         "pid": os.getpid(),
+        "allow_counters": bool(allow_counters),
+        "seat_counters": made, "seat_counters_taken": taken,
     }
 
 
 def _paired_worker(args) -> Dict[str, Any]:
-    base_spec, overrides, pattern, seed, max_turns = args
-    return play_paired_game(base_spec, overrides, pattern, seed, max_turns)
+    base_spec, overrides, pattern, seed, max_turns = args[:5]
+    allow_counters = bool(args[5]) if len(args) > 5 else False
+    return play_paired_game(base_spec, overrides, pattern, seed, max_turns, allow_counters=allow_counters)
 
 
 def run_paired(base_spec: str, overrides: Dict[str, Any], games: int, seed: int, num_players: int,
                workers: int = 1, max_turns: int = 400,
-               progress: Optional[Callable[[int, int, Dict[str, Any]], None]] = None) -> List[Dict[str, Any]]:
-    """Play ``games`` paired games (identical seeds for every call with the same ``seed``)."""
-    args = [(base_spec, dict(overrides), pattern, gseed, max_turns) for pattern, gseed in paired_jobs(games, seed, num_players)]
+               progress: Optional[Callable[[int, int, Dict[str, Any]], None]] = None,
+               allow_counters: bool = False) -> List[Dict[str, Any]]:
+    """Play ``games`` paired games (identical seeds for every call with the same ``seed``); ``allow_counters``
+    plays every game under the counter-offer rules variant."""
+    args = [(base_spec, dict(overrides), pattern, gseed, max_turns, allow_counters)
+            for pattern, gseed in paired_jobs(games, seed, num_players)]
     out: List[Dict[str, Any]] = []
     if workers <= 1 or len(args) <= 1:
         for k, a in enumerate(args):
@@ -718,6 +749,16 @@ def paired_stats(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "avg_turns": _mean(turns), "seconds": sum(r["duration"] for r in results),
         "evaluator_modes": sorted(modes),      # as reported by the process that played each game
         "records": records,                    # one entry per game, in seed order
+        # counter-offer rules (ablate.py --counters): counters made / taken, per side
+        "allow_counters": any(r.get("allow_counters") for r in results),
+        "counters_cand": sum(sum(r["seat_counters"][i] for i, c in enumerate(r["pattern"]) if c == "C")
+                             for r in results if "seat_counters" in r),
+        "counters_def": sum(sum(r["seat_counters"][i] for i, c in enumerate(r["pattern"]) if c == "D")
+                            for r in results if "seat_counters" in r),
+        "counters_taken_cand": sum(sum(r["seat_counters_taken"][i] for i, c in enumerate(r["pattern"]) if c == "C")
+                                   for r in results if "seat_counters_taken" in r),
+        "counters_taken_def": sum(sum(r["seat_counters_taken"][i] for i, c in enumerate(r["pattern"]) if c == "D")
+                                  for r in results if "seat_counters_taken" in r),
     }
 
 

@@ -47,6 +47,7 @@ from . import board as B
 from . import counting
 from . import heuristic
 from . import placement
+from .robber import threat as _threat
 from .state import GameState, PHASE_GAME_OVER, PHASE_MAIN, PHASE_SETUP_ROAD, PHASE_SETUP_SETTLEMENT
 
 # ---------------------------------------------------------------------------
@@ -127,9 +128,9 @@ class RaceSolution(NamedTuple):
 
 class Supply(NamedTuple):
     inc: tuple        # cards per round by resource (robber-adjusted)
-    s: tuple          # supply per round incl. port conversions, times the bank factor
-    road_rate: float  # roads per round the supply can pay for
-    dev_rate: float   # dev cards per round
+    s: tuple          # per resource: income + TAU x the other resources' port-converted income, x bank factor
+    road_rate: float  # roads per round the income can pay for (bundle_rate: one shared conversion budget)
+    dev_rate: float   # dev cards per round (bundle_rate)
 
 
 class Races(NamedTuple):
@@ -323,9 +324,8 @@ def _rsig(state: GameState) -> tuple:
 def _strong_flags(state: GameState, me: int) -> tuple:
     """Which opponents count as strong in static's spot blockability term (``placement.strong_opponent_hexes``):
     ``robber.threat`` reads their estimated VP, which moves with the dev pool (our own dev buy / knight play)."""
-    from .robber import threat
     lim = placement.PLACEMENT_STRONG_THREAT
-    return tuple([j != me and threat(state, j) >= lim for j in range(state.num_players)])
+    return tuple([j != me and _threat(state, j) >= lim for j in range(state.num_players)])
 
 
 def _name(state: GameState, i: int) -> str:
@@ -371,7 +371,7 @@ class PathsContext:
         self._room: Dict[tuple, int] = {}
         self._race: Dict[tuple, RaceSolution] = {}
         self._reach: Dict[tuple, dict] = {}
-        self._spot: Dict[tuple, float] = {}
+        self._spot: Dict[tuple, Dict[int, float]] = {}
         self._contest_memo: Dict[tuple, tuple] = {}
         # frozen scalars used on every leaf
         self._hand_w = float(P["HAND_W"])
@@ -745,14 +745,23 @@ class PathsContext:
         return (tuple(p.settlements), tuple(p.cities), rsig if rsig is not None else _rsig(state), osig,
                 _strong_flags(state, self.me))
 
-    def _spot_value(self, state: GameState, v: int, osig: tuple, prefix: Optional[tuple] = None) -> float:
+    def _spot_scores(self, prefix: tuple) -> Dict[int, float]:
+        """The spot-score memo of one position (two levels: the long prefix is hashed once per leaf, not per spot)."""
+        sub = self._spot.get(prefix)
+        if sub is None:
+            sub = self._put(self._spot, prefix, {})
+        return sub
+
+    def _spot_value(self, state: GameState, v: int, osig: tuple, prefix: Optional[tuple] = None,
+                    sub: Optional[Dict[int, float]] = None) -> float:
         """static's score of spot ``v`` for us (memo: ``v`` and our position, see ``_spot_prefix``)."""
-        key = (v, prefix if prefix is not None else self._spot_prefix(state, osig))
-        hit = self._spot.get(key)
+        if sub is None:
+            sub = self._spot_scores(prefix if prefix is not None else self._spot_prefix(state, osig))
+        hit = sub.get(v)
         if hit is not None:
             return hit
         self.stats["spot_misses"] += 1
-        return self._put(self._spot, key, _spot_score(state, self.me, v))
+        return self._put(sub, v, _spot_score(state, self.me, v))
 
     def _turns_to_afford(self, hand: Sequence[float], s: Sequence[float], d: int) -> float:
         cost = (1 + d, 1 + d, 1, 1, 0)
@@ -827,13 +836,13 @@ class PathsContext:
             return 0.0              # uncontested: P_me = 1 everywhere, the rescaled terms equal static's
         leaf = leaf if leaf is not None else self._inputs(state)
         table = self._spot_table(state, leaf)
-        prefix = self._spot_prefix(state, leaf.osig, leaf.rsig)
+        sub = self._spot_scores(self._spot_prefix(state, leaf.osig, leaf.rsig))
         best_now = 0.0
         best_base = 0.0
         sum_p0 = 0.0
         cnt0 = 0
         for v, d, pm, _info in table:
-            sv = self._spot_value(state, v, leaf.osig, prefix) / (1.0 + 0.9 * d)
+            sv = self._spot_value(state, v, leaf.osig, sub=sub) / (1.0 + 0.9 * d)
             if sv > best_base:
                 best_base = sv
             if sv * pm > best_now:

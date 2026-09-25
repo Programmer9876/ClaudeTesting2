@@ -7,6 +7,11 @@
     python3 scripts/ablate.py --tunable heuristic.EXPOSURE_WEIGHT --values 0,0.5 \\
         --base-spec search:depth=1,beam=4,expand=8,evaluator=heuristic --games 20
     python3 scripts/ablate.py --sweep-all --games 4 --workers 2 --out docs/ABLATIONS.md
+    python3 scripts/ablate.py --tunable search.counters --counters --games 1000 \
+        --base-spec search:depth=1,beam=4,expand=8,evaluator=heuristic      # counter-offer rules on
+
+``--counters`` plays every game under the counter-offer rules variant (``GameState.allow_counters``, off in
+the base game): responders may counter, and the report adds the counters made / taken per side.
 
 Every game seats the SAME bot spec on both sides: the tunable at a candidate value
 ('C' seats) and at its default ('D' seats), 2-vs-2 in 4-player games and a rotating
@@ -119,12 +124,12 @@ def json_safe(x: Any) -> Any:
 # One tunable
 # ---------------------------------------------------------------------------
 def run_tunable(t: Tunable, values: List[Any], base_spec: str, games: int, workers: int, seed: int,
-                players: int, max_turns: int, quiet: bool = False) -> Dict[str, Any]:
+                players: int, max_turns: int, quiet: bool = False, allow_counters: bool = False) -> Dict[str, Any]:
     mode = tuning.evaluator_mode()
     print(f"tunable {t.name} ({t.kind}): default {t.format(t.default)}; candidates "
           f"{', '.join(t.format(v) for v in values)}")
     print(f"base spec {base_spec}; {players} players; {games} paired games per candidate; seed {seed}; "
-          f"workers {workers}")
+          f"workers {workers}" + ("; counter-offer rules ON" if allow_counters else ""))
     print(f"evaluator mode: {mode}")
     if t.needs_python_evaluator and not mode.startswith("python"):
         print("WARNING: this tunable is read by the static evaluator but the C++ evaluator is active; "
@@ -142,7 +147,7 @@ def run_tunable(t: Tunable, values: List[Any], base_spec: str, games: int, worke
                       f"{r['turns']} turns, {r['duration']:.1f}s", file=sys.stderr, flush=True)
 
         results = tuning.run_paired(base_spec, overrides, games, seed, players, workers=workers,
-                                    max_turns=max_turns, progress=progress)
+                                    max_turns=max_turns, progress=progress, allow_counters=allow_counters)
         st = tuning.paired_stats(results)
         st["value"] = value
         st["value_text"] = label
@@ -153,11 +158,16 @@ def run_tunable(t: Tunable, values: List[Any], base_spec: str, games: int, worke
             print(f"WARNING: the games were played with evaluator mode(s) {st['evaluator_modes']} but this "
                   f"process reports {mode!r}", flush=True)
         print_row(t, st)
+        if allow_counters:
+            g = max(1, st["games"])
+            print(f"      counter-offers per game: cand {st['counters_cand'] / g:.2f} made / "
+                  f"{st['counters_taken_cand'] / g:.2f} taken, default {st['counters_def'] / g:.2f} made / "
+                  f"{st['counters_taken_def'] / g:.2f} taken")
     print(f"evaluator mode in the game processes: {', '.join(sorted(worker_modes)) or 'unknown'}")
     return {
         "tunable": t.name, "kind": t.kind, "default": t.default, "default_text": t.format(t.default),
         "description": t.description, "base_spec": base_spec, "players": players, "games": games, "seed": seed,
-        "workers": workers, "max_turns": max_turns, "evaluator_mode": mode,
+        "workers": workers, "max_turns": max_turns, "evaluator_mode": mode, "allow_counters": bool(allow_counters),
         "worker_evaluator_modes": sorted(worker_modes),
         "needs_python_evaluator": t.needs_python_evaluator, "seconds": time.time() - t_start, "results": rows,
     }
@@ -252,6 +262,8 @@ def sweep(args) -> int:
             cmd += ["--base-spec", args.base_spec]
         if args.max_candidates:
             cmd += ["--max-candidates", str(args.max_candidates)]
+        if args.counters:
+            cmd += ["--counters"]
         print(f"--- {name}", flush=True)
         proc = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True)
         sys.stdout.write(proc.stdout)
@@ -292,6 +304,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--base-spec", help=f"bot spec for both sides (default {DEFAULT_CHEAP_SPEC}, or "
                                        f"{DEFAULT_SEARCH_SPEC} for tunables only the search bot reads)")
     p.add_argument("--max-turns", type=int, default=400)
+    p.add_argument("--counters", action="store_true",
+                   help="play every game under the counter-offer rules variant (GameState.allow_counters)")
     p.add_argument("--max-candidates", type=int, default=0, help="only the first N registry candidates")
     p.add_argument("--json", help="write the report to this JSON file")
     p.add_argument("--quiet", action="store_true", help="no per-game progress lines")
@@ -331,12 +345,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.plan:
         print(f"tunable {t.name} ({t.kind}): default {t.format(t.default)}; candidates "
               f"{', '.join(t.format(v) for v in values)}")
-        print(f"base spec {base_spec}; {args.players} players; {args.games} paired games per candidate; seed {args.seed}")
+        print(f"base spec {base_spec}; {args.players} players; {args.games} paired games per candidate; seed {args.seed}"
+              + ("; counter-offer rules ON" if args.counters else ""))
         print(f"evaluator mode: {tuning.evaluator_mode()}")
         print("seat patterns: " + " ".join(p for p, _ in tuning.paired_jobs(min(args.games, 6), args.seed, args.players)))
         return 0
     report = run_tunable(t, values, base_spec, args.games, max(1, args.workers), args.seed, args.players,
-                         args.max_turns, quiet=args.quiet)
+                         args.max_turns, quiet=args.quiet, allow_counters=args.counters)
     if args.json:
         with open(args.json, "w") as f:
             json.dump(json_safe(report), f, indent=1)

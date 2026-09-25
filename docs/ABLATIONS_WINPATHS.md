@@ -62,7 +62,10 @@ $PY33 scripts/ablate_catanatron.py --cand-spec "search:depth=1,beam=4,expand=8,e
 
   Per leaf: 11 us (batched C++ heuristic) vs 37 us (C++ static values + the correction); the context costs
   ~0.12 ms per decision; race-solve memo hit rate 96 %.  Budget targets (<= 1.35x awards + priors, <= 1.6x with
-  spots, hard limit 2.0x) are met.  The shadow game changed 11.4 % of the first actions (inside the Stage 2 band).
+  spots, hard limit 2.0x) are met.  Independent review re-measurement after the review fixes (30 other positions,
+  turns 16-110 of 3 heuristic games, best of 3): default 18.7 ms, `paths=1` 23.3 ms (1.25x, p95 1.46-1.51x),
+  `paths_priors=0` 1.23x, `paths_spots=1` 30.7 ms (1.64x, p95 2.1x - slightly over the 1.6x spots target, under
+  the 2.0x hard limit); single positions reach 2.5x because the term changes the tree, not the per-leaf cost.  The shadow game changed 11.4 % of the first actions (inside the Stage 2 band).
 
 ## Stage 1 - calibration (1 process, ~1-2 min)
 
@@ -150,9 +153,21 @@ Stage 6 ~1.5 h - about 10 h of 3-core time after the proof; Stages 1-2 ~7 min on
 * **No 1e-4 rounding of the race inputs.**  Every input is a deterministic function of the state and every memo
   is a pure function of its key, so exact-float keys already make cold and warm caches bit-identical (tested) and
   the rounding cost ~5 us per leaf.  The solve memo hit rate is unchanged (96 %).
-* **Spot-score memo key** also holds our roads and the award owners (the spec's key omitted them): the spot's
-  expansion term reads every road and its blockability term the opponents' VP, so without them the memo would
-  not be a pure function of its key.  Only matters with `paths_spots=1`.
+* **Memo keys (review fix).**  Our road room, the reach sets and the spot scores are keyed on *every* seat's
+  roads (the spec keyed our room on our roads, the reach of seat j on j's and our roads): another seat's road
+  can occupy our frontier edges or cut a reach path, which happens at depth >= 2 leaves (the simulated
+  opponents build).  The spot-score key also holds which opponents static's blockability term counts as strong
+  (`robber.threat >= PLACEMENT_STRONG_THREAT`): with hidden opponent dev cards their estimated VP moves with the
+  dev pool, i.e. with our own dev buy or knight play inside the turn - the implementation's key (our roads +
+  award owners) returned a stale score there (warm vs cold spot correction -1.116 vs -1.143 in
+  `test_memo_keys_cover_other_roads_and_the_dev_pool`).  Only the spot part matters at depth 1, and only with
+  `paths_spots=1` and hidden dev cards.
+* **Bundle rates (review fix).**  The spec's `road_rate = min(s_wood, s_brick, ...)` /
+  `dev_rate = min(s_sheep, s_wheat, s_ore, ...)` with `s_r = inc_r + TAU (sum conv - conv_r)` credits the same
+  converted cards to every missing resource, so a wood / brick-only seat got about the dev rate of an ore / wheat
+  seat without sheep (0.18-0.25 vs 0.21 per round).  `bundle_rate` shares one conversion budget (`TAU` of the
+  surplus left after the bundle's own cards, at port ratios): 0.06 vs 0.18.  For a seat missing one resource
+  the rate is close to the spec's; `s_r` is kept for the contested-spot timing.
 * **Won-path limit** (test 13): one more knight is worth 0.12 points there (P is already ~0.98; the softmax
   tails leave the rivals ~2 %), just above the spec's 0.1-point bound; the test asserts < 0.15 points (0.015 VP)
   and that the BUY_DEV prior moves by < 0.5 and is not promoted.

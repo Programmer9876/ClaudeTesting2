@@ -74,6 +74,9 @@ class SearchBot(Bot):
             self.politics = PoliticalState(state.num_players)
 
     def decide(self, state: GameState, legal_actions: List[Action], rng) -> Action:
+        if state.allow_counters and not self.config.counters and state.phase == PHASE_TRADE_RESPONSE:
+            # Counter-offer rules, bot without counters: answer like a bot that does not know them.
+            legal_actions = [a for a in legal_actions if a[0] != A.COUNTER_TRADE] or legal_actions
         if len(legal_actions) == 1:
             self.last_results = [ScoredAction(legal_actions[0], 0.0)]
             return legal_actions[0]
@@ -137,6 +140,11 @@ class SearchBot(Bot):
         if self.model is None:
             return
         predicted = None
+        if action[0] == A.COUNTER_TRADE and self.belief is not None:
+            try:     # card counting: they hold what they offered, and probably lack what they asked for
+                self.belief.observe_counter(player, action[1], action[2])
+            except Exception:
+                pass
         if action[0] in (A.PROPOSE_TRADE, A.ACCEPT_TRADE, A.REJECT_TRADE, A.MOVE_ROBBER, A.PLAY_KNIGHT,
                          A.BUILD_CITY, A.BUILD_SETTLEMENT, A.BUY_DEV):
             try:
