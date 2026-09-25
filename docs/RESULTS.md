@@ -4,6 +4,29 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 19:55 UTC - pre-registered strength proof launched
+
+Protocol: docs/PROOF_PROTOCOL.md (pre-registered in 704849b, tooling
+amendment only appended; the original text is byte-identical).  Tooling
+verified (exact binomial tails equal to an independent rational
+implementation, Clopper-Pearson against exact bisection and scipy, Holm,
+every claim condition on synthetic data, chunked runs reproduce an
+uninterrupted run game for game, replay of every logged game re-applies
+exactly; full suite 550 / 561 passed on catanatron 3.2.1 / 3.3.0).  The
+proof runs from a frozen git worktree of commit 9984181
+(/home/user/proof_snapshot, its own C++ build), so development elsewhere
+cannot change the bot under test.  About 4.3 h at 3 workers; every game is
+logged (about 2.7 KiB per game compressed) and can be replayed.
+
+Disclosed readings of the protocol, fixed before any proof game: alpha
+5.7e-7 is used as registered (the text calls it one-sided 5-sigma; it is
+the two-sided 5-sigma tail, i.e. stricter than one-sided); condition 5
+fails only when the bot is significantly *below* 0.25 against a stand-in
+(its heading), not when it is significantly above; the 99 % bounds are the
+lower ends of the central 99 % intervals (conservative).  Heads-up from
+non-protocol timing runs (20 games each): SameTurnAlphaBeta was the
+hardest Catanatron opponent (6/20), so claim 1 is at risk on T3.
+
 ## 2026-09-25 17:45 UTC - Catanatron test harness built; three facts that shape the proof
 
 * **Catanatron's bots cannot trade.**  Its ValueFunction player rejects every
