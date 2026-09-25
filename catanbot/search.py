@@ -80,9 +80,9 @@ class ScoredAction:
 
 
 class _Node:
-    __slots__ = ("state", "prob", "children", "static", "value", "finished", "line")
+    __slots__ = ("state", "prob", "children", "static", "value", "finished", "line", "group")
 
-    def __init__(self, state: GameState, prob: float, line: List[Action]):
+    def __init__(self, state: GameState, prob: float, line: List[Action], group: int = 0):
         self.state = state
         self.prob = prob
         self.children: List[Tuple[Action, List[Tuple[float, "_Node"]]]] = []
@@ -90,6 +90,7 @@ class _Node:
         self.value: Optional[float] = None
         self.finished = False
         self.line = line
+        self.group = group          # siblings (outcomes of the same chance node) share a group
 
 
 _ROLL_ORDER = sorted(B.ROLL_PROB.items(), key=lambda kv: -kv[1])
@@ -119,6 +120,7 @@ class Searcher:
         self._deadline: Optional[float] = None
         self._rng = random.Random(12345)
         self._political_reasons: Dict[Action, str] = {}
+        self._shift = 0.0            # mean(future - static) of the lookahead set, applied to static leaves
 
     # ------------------------------------------------------------------
     # public API
@@ -143,6 +145,8 @@ class Searcher:
         root = _Node(state, 1.0, [])
         finished: List[_Node] = []
         frontier = [root]
+        self._shift = 0.0
+        group_id = 0
         for level in range(cfg.max_actions_per_turn + 1):
             if not frontier or self._budget_exhausted():
                 break
@@ -156,8 +160,9 @@ class Searcher:
                         outcomes = self._outcomes(node.state, a, me)
                     except E.IllegalActionError:
                         continue
+                    group_id += 1
                     for p, s2 in outcomes:
-                        child = _Node(s2, node.prob * p, node.line + [a])
+                        child = _Node(s2, node.prob * p, node.line + [a], group_id)
                         child.finished = self._is_finished(s2, me)
                         kids.append((p, child))
                         new_nodes.append(child)
@@ -171,14 +176,21 @@ class Searcher:
             unfinished = [n for n in new_nodes if not n.finished]
             finished.extend(n for n in new_nodes if n.finished)
             unfinished.sort(key=lambda n: -n.static)
-            frontier = unfinished[:cfg.beam]
-        # Future values for the most promising end-of-turn nodes.
+            # Beam by node, but never split a chance node: every outcome of a kept
+            # action stays in the frontier so its expectation is over real continuations.
+            keep_groups = {n.group for n in unfinished[:cfg.beam]}
+            frontier = [n for n in unfinished if n.group in keep_groups]
+        # Future values for the most promising end-of-turn nodes; the mean shift between
+        # lookahead and static values is applied to every other leaf so that lines with and
+        # without lookahead are compared at the same horizon.
         if cfg.depth >= 2 and finished and not self._budget_exhausted():
             finished.sort(key=lambda n: -(n.static + 0.05 * math.log(max(n.prob, 1e-6))))
             top = finished[:cfg.finished_lookahead]
             fv = self._future_values([n.state for n in top], me, cfg.depth - 1)
             for n, v in zip(top, fv):
-                n.value = v
+                n.value = float(v)
+            if top:
+                self._shift = sum(n.value - n.static for n in top) / len(top)
         # Backup.
         self._backup(root, me)
         results: List[ScoredAction] = []
@@ -218,7 +230,7 @@ class Searcher:
     def _backup(self, node: _Node, me: int) -> float:
         if not node.children:
             if node.value is None:
-                node.value = node.static
+                node.value = min(1.0, max(0.0, node.static + self._shift))
             return node.value
         best = -1.0
         for a, kids in node.children:
@@ -254,6 +266,15 @@ class Searcher:
             return [(A.END_TURN,)]
         if len(legal) == 1:
             return legal
+        if state.phase == PHASE_TRADE_SELECT and state.pending_trade is not None:
+            # Never complete a trade with a player about to win / whom it would hand a build.
+            from .robber import estimated_vp
+            from .trading import offer_is_feeding_leader
+            safe = [a for a in legal if a[0] != A.EXECUTE_TRADE
+                    or not (offer_is_feeding_leader(state, me, a[1], state.pending_trade.give)[0]
+                            or estimated_vp(state, a[1]) >= B.VP_TO_WIN - 1)]
+            if safe:
+                legal = safe
         priors = action_priors(state, legal, me, self.belief)
         stage_f = trade_stage_factor(state)
         order = sorted(range(len(legal)), key=lambda i: -priors[i])
@@ -306,9 +327,37 @@ class Searcher:
             outs = self._steal_outcomes(state, action, me)
         elif kind == A.PROPOSE_TRADE:
             outs = self._trade_outcomes(state, action, me)
+        elif kind in (A.ACCEPT_TRADE, A.REJECT_TRADE) and state.phase == PHASE_TRADE_RESPONSE:
+            outs = self._response_outcomes(state, action, me)
         else:
             outs = [(1.0, self._apply(state, action))]
         return [(p, self._autoplay_others(s, me)) for p, s in outs]
+
+    def _response_outcomes(self, state: GameState, action: Action, me: int) -> List[Tuple[float, GameState]]:
+        """Our ACCEPT / REJECT: let the other responders answer and the proposer choose a
+        partner (uniformly among accepters), so the leaf contains the executed trade."""
+        offer = state.pending_trade
+        s = self._apply(state, action)
+        guard = 0
+        while s.phase == PHASE_TRADE_RESPONSE and s.pending_trade is not None and guard < 8:
+            j = E.acting_player(s)
+            ok, _ = should_accept(s, j, s.pending_trade, politics=self.politics)
+            s = self._apply(s, (A.ACCEPT_TRADE,) if ok and (A.ACCEPT_TRADE,) in E.legal_actions(s) else (A.REJECT_TRADE,))
+            guard += 1
+        if s.phase != PHASE_TRADE_SELECT or s.pending_trade is None:
+            return [(1.0, s)]
+        accepters = [j for j, ok in s.pending_trade.responses.items() if ok]
+        legal = E.legal_actions(s)
+        outs = []
+        if accepters:
+            p = 1.0 / len(accepters)
+            for j in accepters:
+                a = (A.EXECUTE_TRADE, j)
+                if a in legal:
+                    outs.append((p, self._apply(s, a)))
+        if not outs:
+            outs.append((1.0, self._apply(s, (A.CANCEL_TRADE,)) if (A.CANCEL_TRADE,) in legal else s))
+        return outs
 
     def _dev_outcomes(self, state: GameState, action: Action, me: int) -> List[Tuple[float, GameState]]:
         deck = state.dev_deck

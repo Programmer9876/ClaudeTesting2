@@ -423,6 +423,13 @@ class OpponentModel:
             if any(p.resources[r] < pays[r] for r in range(5)):
                 return 0.0
             can_pay = 1.0
+        elif belief is not None:
+            can_pay = 1.0
+            for r in range(5):
+                if pays[r] > 0:
+                    can_pay *= belief.probability_has(j, r, pays[r])
+            if can_pay <= 0.0:
+                return 0.0
         else:
             hands = expected_opponent_hands(state, me=proposer)
             n = p.hand_size
@@ -477,7 +484,7 @@ class OpponentModel:
             gain_us = sum(our_vals[r] * (get[r] - give[r]) for r in range(5))
             best_p, best_j = 0.0, -1
             for j in range(state.num_players):
-                if j == me:
+                if j == me or not self._safe_partner(state, me, j, give):
                     continue
                 pj = self.predict_accept(state, j, give, get, proposer=me, belief=belief)
                 if pj > best_p:
@@ -510,6 +517,9 @@ class OpponentModel:
                 for y in range(5):      # what we pay
                     if x == y or p.resources[y] <= 0:
                         continue
+                    give_vec = [1 if r == y else 0 for r in range(5)]
+                    if not self._safe_partner(state, me, j, give_vec):
+                        continue
                     their_edge = pj.value[y] - pj.value[x]      # >0: they prefer y (they give x cheaply)
                     our_edge = our_vals[x] - our_vals[y]        # >0: we prefer x
                     give = tuple(1 if r == y else 0 for r in range(5))
@@ -526,7 +536,7 @@ class OpponentModel:
                                               f"we need {B.RESOURCE_NAMES[x]} more (edge {our_edge:+.2f}, P(accept) {prob:.0%})"})
                     # intermediary: sell x to k for z
                     for k in range(n):
-                        if k in (me, j):
+                        if k in (me, j) or not self._safe_partner(state, me, k, [1 if r == x else 0 for r in range(5)]):
                             continue
                         pk = self.profile_of(state, k)
                         for z in range(5):
@@ -552,6 +562,14 @@ class OpponentModel:
                                                   f"{B.RESOURCE_NAMES[z]} (P {prob:.0%} x {prob2:.0%})"})
         out.sort(key=lambda d: -d["gain"])
         return out[:8]
+
+    @staticmethod
+    def _safe_partner(state: GameState, me: int, j: int, give: Sequence[int]) -> bool:
+        """Never feed a player about to win or whom the cards would hand a build."""
+        from .trading import offer_is_feeding_leader
+        if state.public_vp(j) + expected_hidden_vp(state, j) >= B.VP_TO_WIN - 1:
+            return False
+        return not offer_is_feeding_leader(state, me, j, give)[0]
 
     def summary(self, state: GameState, me: Optional[int] = None) -> List[str]:
         lines = []

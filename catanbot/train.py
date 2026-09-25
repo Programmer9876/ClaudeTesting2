@@ -144,10 +144,11 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
 
         # ---- fit (validation = 10 % of whole games, never positions of a training game) ----
         n = len(y_buf)
-        games_all = np.unique(g_buf)
-        rs = np.random.default_rng(args.seed + it)
-        val_games = set(rs.choice(games_all, size=max(1, int(0.1 * len(games_all))), replace=False).tolist())
-        is_val = np.array([g in val_games for g in g_buf])
+        # Deterministic hash of the game id: a game is always validation or always training,
+        # so warm-started nets are never validated on games they were fitted on.
+        is_val = ((g_buf.astype(np.uint64) * np.uint64(2654435761) + np.uint64(args.seed)) >> np.uint64(7)) % np.uint64(10) == 0
+        if not is_val.any():
+            is_val[:max(1, n // 10)] = True
         val_idx, tr_idx = np.nonzero(is_val)[0], np.nonzero(~is_val)[0]
         Xtr, ytr = X_buf[tr_idx].astype(np.float32), y_buf[tr_idx]
         Xva, yva = X_buf[val_idx].astype(np.float32), y_buf[val_idx]
@@ -173,7 +174,7 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
                          seed=args.seed * 31 + it, num_players=4, max_turns=args.max_turns)
         cw = res["summary"][cand_spec]["win_rate"]
         bw = res["summary"][best_spec]["win_rate"]
-        promoted = cw >= bw * args.promote_ratio if best_path else cw >= bw * args.promote_ratio
+        promoted = cw > bw * args.promote_ratio
         _log(f"  eval ({args.eval_games} games, {time.time() - t_ev:.0f}s): candidate {cw:.2f} vs best {bw:.2f} "
              f"(avg vp {res['summary'][cand_spec]['avg_vp']:.1f} vs {res['summary'][best_spec]['avg_vp']:.1f}) -> "
              f"{'PROMOTED' if promoted else 'rejected'}", fh)
@@ -211,7 +212,7 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
     p.add_argument("--weight-decay", type=float, default=1e-3)
     p.add_argument("--hidden", type=int, nargs="+", default=[128, 64])
     p.add_argument("--eval-games", type=int, default=40)
-    p.add_argument("--promote-ratio", type=float, default=1.0, help="promote if cand_win >= ratio * best_win")
+    p.add_argument("--promote-ratio", type=float, default=1.0, help="promote if cand_win > ratio * best_win")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--depth", type=int, default=1)
     p.add_argument("--beam", type=int, default=4)

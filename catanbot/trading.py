@@ -306,8 +306,22 @@ def should_accept(state: GameState, responder: int, offer: TradeOffer, evaluator
     my_before = list(p.resources)
     my_after = [my_before[r] + offer.give[r] - offer.get[r] for r in range(5)]
     mine = completes_build(my_before, my_after, available_builds(state, responder))
-    if feeding and not (mine in ("city", "settlement")):
-        return False, "don't feed the leader: " + why
+    if feeding:
+        # Their completed build must never bring them to 10, and we only override the
+        # rule when our own completed build is worth at least as much as theirs.
+        hands = expected_opponent_hands(state, me=responder)
+        their_after = [hands[proposer][r] + offer.get[r] for r in range(5)]
+        theirs = None
+        for cost, name in ((B.COST_CITY, "city"), (B.COST_SETTLEMENT, "settlement")):
+            if all(their_after[r] + 0.5 >= cost[r] for r in range(5)):
+                theirs = name
+                break
+        their_vp_gain = 1 if theirs else 0
+        build_vp = {"city": 1, "settlement": 1}
+        if pvp + their_vp_gain >= B.VP_TO_WIN or pvp >= B.VP_TO_WIN - 1:
+            return False, "don't feed the leader: " + why
+        if not (mine in ("city", "settlement") and build_vp[mine] >= their_vp_gain):
+            return False, "don't feed the leader: " + why
     # Card-count: never accept a deal that makes us give more cards than we get
     # unless it completes a build for us.
     net = sum(offer.give) - sum(offer.get)

@@ -23,9 +23,9 @@ from .discard import choose_discard, needed_vector
 from .placement import (RESOURCE_DEMAND, best_city_spots, best_settlement_spots, buildable_settlements,
                         player_production, reachable_spots, resource_scarcity, road_targets,
                         score_city, score_settlement_spot, setup_pick, setup_road_pick)
-from .robber import best_robber_move, hex_damage, should_play_knight, threat
+from .robber import best_robber_move, estimated_vp, hex_damage, should_play_knight, threat
 from .state import GameState, PHASE_GAME_OVER
-from .trading import candidate_offers, plan_trades, should_accept
+from .trading import candidate_offers, offer_is_feeding_leader, plan_trades, should_accept
 
 BUILD_VALUE = {"city": 3.2, "settlement": 2.8, "dev card": 1.0, "road": 0.5}
 
@@ -240,15 +240,16 @@ def action_priors(state: GameState, actions: Sequence[Action], player: Optional[
             elif ctx["lr"] >= 4 and state.longest_road_owner != player:
                 v += 8.0
         elif k == A.BUY_DEV:
-            v = 45.0 + (35.0 if ctx["buy_dev"][0] else 0.0)
+            v = 80.0 if ctx["buy_dev"][0] else 20.0
         elif k == A.PLAY_KNIGHT:
             h, victim, _ = ctx["robber"]
-            v = 30.0 + (45.0 if ctx["knight"][0] else 0.0)
+            recommended = ctx["knight"][0]
             if a[1] == h and a[2] == victim:
-                v += 20.0
+                # The recommended knight outranks ROLL (100) so it is played before rolling.
+                v = 110.0 if recommended else 50.0
             else:
                 opp, own = hex_damage(state, a[1], player)
-                v += 0.5 * (opp - 1.6 * own)
+                v = (60.0 if recommended else 30.0) + min(15.0, 0.5 * (opp - 1.6 * own))
         elif k == A.MOVE_ROBBER:
             h, victim, _ = ctx["robber"]
             opp, own = hex_damage(state, a[1], player)
@@ -276,7 +277,12 @@ def action_priors(state: GameState, actions: Sequence[Action], player: Optional[
         elif k == A.REJECT_TRADE:
             v = 10.0 if ctx.get("accept") else 80.0
         elif k == A.EXECUTE_TRADE:
-            v = 70.0 - 10.0 * (threat(state, a[1]) - 1.0)
+            offer = state.pending_trade
+            feeding = False
+            if offer is not None:
+                feeding = (offer_is_feeding_leader(state, player, a[1], offer.give)[0]
+                           or estimated_vp(state, a[1]) >= B.VP_TO_WIN - 1)
+            v = 1.0 if feeding else 70.0 - 10.0 * (threat(state, a[1]) - 1.0)
         elif k == A.CANCEL_TRADE:
             v = 5.0
         elif k == A.END_TURN:

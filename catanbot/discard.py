@@ -66,10 +66,19 @@ def needed_vector(state: GameState, player: int, keep_for=None) -> List[int]:
         keep_for = [c for c, _ in default_keep_targets(state, player)]
     needed = [0] * 5
     for k, cost in enumerate(keep_for[:2]):
-        w = 1.0 if k == 0 else 0.5
         for r in range(5):
-            needed[r] = max(needed[r], int(round(cost[r] * w)))
+            want = cost[r] if k == 0 else -(-cost[r] // 2)   # ceil(cost / 2) for the second target
+            needed[r] = max(needed[r], int(want))
     return needed
+
+
+def _needed_tiers(state: GameState, player: int, keep_for=None):
+    """(top-target cost, second-target half) used to score discards in two tiers."""
+    if keep_for is None:
+        keep_for = [c for c, _ in default_keep_targets(state, player)]
+    top = list(keep_for[0]) if keep_for else [0] * 5
+    second = [-(-keep_for[1][r] // 2) for r in range(5)] if len(keep_for) > 1 else [0] * 5
+    return top, second
 
 
 def choose_discard(state: GameState, player: int, keep_for=None,
@@ -82,7 +91,8 @@ def choose_discard(state: GameState, player: int, keep_for=None,
     p = state.players[player]
     hand = list(p.resources)
     n = sum(hand) // 2
-    needed = needed_vector(state, player, keep_for)
+    top, second = _needed_tiers(state, player, keep_for)
+    needed = [max(top[r], second[r]) for r in range(5)]
     prod = player_production(state, player, ignore_robber=True)
     scarcity = resource_scarcity(state)
     discard = [0] * 5
@@ -92,7 +102,15 @@ def choose_discard(state: GameState, player: int, keep_for=None,
             if hand[r] <= 0:
                 continue
             surplus = hand[r] - needed[r]
-            score = (10.0 if surplus > 0 else 0.0) + 0.5 * surplus + 6.0 * prod[r] \
+            # Two tiers: dipping below the top target's cost is much worse than below the
+            # second target's half, and both are worse than discarding surplus.
+            if surplus > 0:
+                tier = 10.0
+            elif hand[r] > top[r]:
+                tier = 4.0
+            else:
+                tier = 0.0
+            score = tier + 0.5 * surplus + 6.0 * prod[r] \
                 - 1.5 * RESOURCE_DEMAND[r] * scarcity[r]
             if score > best_score:
                 best_score, best_r = score, r

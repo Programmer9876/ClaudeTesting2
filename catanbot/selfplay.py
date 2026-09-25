@@ -16,6 +16,7 @@ every decision, labelled with the eventual winner).
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 import random
 import time
 from dataclasses import dataclass, field
@@ -31,7 +32,7 @@ from .agents.random_bot import RandomBot
 from .agents.search_bot import SearchBot
 from .heuristic import HeuristicEvaluator
 from .search import SearchConfig
-from .state import GameState, PHASE_GAME_OVER, new_game
+from .state import GameState, PHASE_GAME_OVER, PHASE_ROLL, new_game
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +81,17 @@ def load_evaluator(path: Optional[str], blend: Optional[float] = None):
     """
     if not path or path in ("heuristic", "none"):
         return HeuristicEvaluator()
-    ev = _MODEL_CACHE.get(path)
+    try:
+        st = os.stat(path)
+        key = f"{path}:{st.st_mtime_ns}:{st.st_size}"   # a rewritten file must not hit the cache
+    except OSError:
+        key = path
+    ev = _MODEL_CACHE.get(key)
     if ev is None:
         from .model import ValueNet
         ev = ValueNet.load(path)
-        _MODEL_CACHE[path] = ev
+        _MODEL_CACHE.clear()
+        _MODEL_CACHE[key] = ev
     if blend is not None and 0.0 < blend < 1.0:
         return BlendedEvaluator(ev, blend)
     return ev
@@ -157,6 +164,8 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
     """Play one full game.  ``bots[i]`` controls seat ``i``."""
     rng = rng or random.Random(seed)
     n = num_players or len(bots)
+    if n > len(bots):
+        raise ValueError(f"{n} players but only {len(bots)} bots")
     if state is None:
         state = new_game(n, rng=rng)
     state.max_turns = max_turns
@@ -175,7 +184,9 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
         legal = E.legal_actions(state)
         if not legal:
             break
-        if record and n_actions % sample_every == 0 and len(legal) > 1:
+        # Record decision states and every roll-phase state: the depth-1 search evaluates
+        # exactly the start-of-turn (roll phase) states, so the net must see them in training.
+        if record and n_actions % sample_every == 0 and (len(legal) > 1 or state.phase == PHASE_ROLL):
             X = extract([state] * n, list(range(n)))
             feats.append(X.astype(np.float16))
             who.extend(range(n))

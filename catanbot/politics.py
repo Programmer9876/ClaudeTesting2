@@ -450,15 +450,16 @@ def political_trade_options(state: GameState, me: int, evaluator=None, politics:
         give = tuple(min(missing[r], p.resources[r]) for r in range(5))
         if sum(give) < sum(missing):
             continue
+        # We ask for a card they do not need for the award and that we are not giving.
         if pk.hand_known:
-            cands = [r for r in range(5) if pk.resources[r] > needs[r]]
+            cands = [r for r in range(5) if needs[r] == 0 and give[r] == 0 and pk.resources[r] > 0]
         else:
-            cands = [r for r in range(5) if pk.hand_size > 0]
+            cands = [r for r in range(5) if needs[r] == 0 and give[r] == 0 and pk.hand_size > 0]
         if not cands:
             continue
         cheapest = min(cands, key=lambda r: RESOURCE_DEMAND[r] * scarcity[r])
         get = tuple(1 if r == cheapest else 0 for r in range(5))
-        if get == give:
+        if any(give[r] and get[r] for r in range(5)) or sum(give) == 0:
             continue
         action = (A.PROPOSE_TRADE, give, get)
         # Evaluate: state after the trade (and after k spends the cards on the award).

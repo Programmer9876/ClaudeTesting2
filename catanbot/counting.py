@@ -208,18 +208,38 @@ class HandBelief:
         self.size[thief] += 1
         self._renormalise(victim)
 
-    def observe_monopoly(self, i: int, res: int) -> None:
-        total = 0.0
+    def observe_monopoly(self, i: int, res: int, taken: Optional[int] = None) -> None:
+        """Player ``i`` monopolised ``res``.  ``taken`` = number of cards collected (public);
+        if unknown, the expected total is used.  Card counts are conserved exactly."""
+        shares = [self.expected[j][res] if j != i else 0.0 for j in range(self.n)]
+        total = sum(shares)
+        if taken is None:
+            taken = int(round(total))
+        taken = max(0, min(taken, sum(self.size[j] for j in range(self.n) if j != i)))
+        # integer shares per victim by largest remainder, bounded by their hand sizes
+        ints = [0] * self.n
+        if taken > 0 and total > 0:
+            raw = [taken * s / total for s in shares]
+            ints = [min(int(r), self.size[j]) for j, r in enumerate(raw)]
+            rem = taken - sum(ints)
+            order = sorted((j for j in range(self.n) if j != i), key=lambda j: -(raw[j] - int(raw[j])))
+            k = 0
+            while rem > 0 and order:
+                j = order[k % len(order)]
+                if ints[j] < self.size[j]:
+                    ints[j] += 1
+                    rem -= 1
+                k += 1
+                if k > 4 * self.n:
+                    break
         for j in range(self.n):
             if j == i:
                 continue
-            take = self.expected[j][res]
-            total += take
-            self.size[j] -= int(round(take))
+            self.size[j] -= ints[j]
             self.expected[j][res] = 0.0
             self._renormalise(j)
-        self.expected[i][res] += total
-        self.size[i] += int(round(total))
+        self.expected[i][res] += sum(ints)
+        self.size[i] += sum(ints)
 
     def observe_hand_size(self, i: int, size: int) -> None:
         """Resynchronise with the public hand size (e.g. after an unobserved event)."""
