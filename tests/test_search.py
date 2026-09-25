@@ -475,3 +475,157 @@ def test_bot_specs_parse_trading_styles_and_games_record_the_bias():
             make_bot("heuristic:trade_eps=0.1"), make_bot("random:end=0.5")]
     r = play_game(bots, rng=random.Random(3), max_turns=25)
     assert r.turns > 0 and bots[0].trade_bias is not None
+
+
+# ---------------------------------------------------------------------------
+# lookahead invariants (DESIGN section 4: horizon consistency, shrinkage, unclamped backup)
+# ---------------------------------------------------------------------------
+def _finished_nodes(root):
+    out = []
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.finished:
+            out.append(n)
+        for _, kids in n.children:
+            stack.extend(k for _, k in kids)
+    return out
+
+
+class _RootSearcher(Searcher):
+    """Keeps the root node, the states handed to ``_future_values`` and what it returned."""
+
+    def search(self, state, player=None, rng=None):
+        self.root = None
+        self.lookahead_states = None
+        self.lookahead_values = None
+        return super().search(state, player, rng)
+
+    def _backup(self, node, me):
+        if self.root is None:
+            self.root = node
+        return super()._backup(node, me)
+
+    def _future_values(self, states, me, depth):
+        self.lookahead_states = list(states)
+        self.lookahead_values = [float(v) for v in self._mock_future(states, me)]
+        return self.lookahead_values
+
+    def _mock_future(self, states, me):
+        return self._eval(list(states), [me] * len(states))
+
+
+def test_lookahead_values_every_end_node_and_a_constant_offset_keeps_the_depth1_ranking():
+    """With ``finished_lookahead=0`` every end-of-turn node of the tree gets the future value, and a lookahead
+    that only adds a constant to every static value cannot change the depth-1 ranking - also when the constant
+    pushes ``static + shift`` below 0 for most leaves (the backup no longer clamps; the root values are clamped
+    on output).  The old top-4 selection valued identical candidates differently by membership alone."""
+    ev = HeuristicEvaluator()
+    base = dict(beam=4, expand=8, trade_proposals=0)
+
+    class ConstantOffset(_RootSearcher):
+        def _mock_future(self, states, me):
+            return [float(v) - 0.5 for v in self._eval(list(states), [me] * len(states))]
+
+    checked = 0
+    for seed in (5, 9, 13, 21):
+        s = mid_game(seed=seed)
+        r1 = Searcher(ev, SearchConfig(depth=1, **base)).search(s, 0, random.Random(1))
+        se = ConstantOffset(ev, SearchConfig(depth=2, finished_lookahead=0, **base))
+        r2 = se.search(s, 0, random.Random(1))
+        fin = _finished_nodes(se.root)
+        assert fin and se.lookahead_states is not None
+        assert len(se.lookahead_states) == len(fin)                  # all of them, not the top N
+        assert all(n.value is not None for n in fin)
+        assert abs(se._shift + 0.5) < 1e-9
+        assert [r.action for r in r1] == [r.action for r in r2], seed
+        assert all(0.0 <= r.value <= 1.0 for r in r2)
+        assert all(r2[i].value >= r2[i + 1].value for i in range(len(r2) - 1))
+        # the finished nodes' values sit exactly at the shifted horizon (mean delta == every delta)
+        assert all(abs(n.value - (n.static - 0.5)) < 1e-9 for n in fin)
+        checked += 1
+    assert checked == 4
+
+
+def test_lookahead_top_n_selection_is_still_available():
+    ev = HeuristicEvaluator()
+    checked = 0
+    for seed in (5, 9, 13, 21, 29):
+        s = mid_game(seed=seed)
+        se = _RootSearcher(ev, SearchConfig(depth=2, beam=4, expand=8, trade_proposals=0, finished_lookahead=2))
+        se.search(s, 0, random.Random(1))
+        fin = _finished_nodes(se.root)
+        if len(fin) <= 2:
+            continue
+        assert len(se.lookahead_states) == 2
+        # the two chosen are the top two by static (+ 0.05 log p); ties (identical candidates) may go either way
+        chosen = {id(st) for st in se.lookahead_states}
+        key = {id(n.state): n.static + 0.05 * np.log(max(n.prob, 1e-6)) for n in fin}
+        assert min(key[i] for i in chosen) >= max(key[i] for i in key if i not in chosen) - 1e-12
+        checked += 1
+    assert checked >= 2
+
+
+def test_lookahead_weight_and_apply_lookahead():
+    from catanbot.search import apply_lookahead, lookahead_weight
+    assert lookahead_weight(SearchConfig(opp_roll_samples=12, lookahead_shrink=12.0)) == 0.5
+    assert lookahead_weight(SearchConfig(opp_roll_samples=4, lookahead_shrink=12.0)) == 0.25
+    assert lookahead_weight(SearchConfig(opp_roll_samples=24, lookahead_shrink=0.0)) == 1.0
+    assert lookahead_weight(SearchConfig(opp_roll_samples=0, lookahead_shrink=3.0)) == 0.25   # n floors at 1
+    statics = [0.5, 0.4, 1.0, 0.0]
+    futures = [0.45, 0.30, 1.0, 0.0]
+    terminal = [False, False, True, True]
+    vals, shift = apply_lookahead(statics, futures, terminal, 1.0)
+    assert abs(shift + 0.075) < 1e-12                              # terminal nodes stay out of the mean
+    assert np.allclose(vals, [0.45, 0.30, 1.0, 0.0])              # weight 1: the raw future values
+    vals0, shift0 = apply_lookahead(statics, futures, terminal, 0.0)
+    assert shift0 == shift and np.allclose(vals0, [0.425, 0.325, 1.0, 0.0])   # weight 0: static + mean delta
+    vals_h, _ = apply_lookahead(statics, futures, terminal, 0.5)
+    assert np.allclose(vals_h, [0.4375, 0.3125, 1.0, 0.0])
+    # the mean of (value - static) over the live nodes is the shift whatever the weight
+    for v in (vals, vals0, vals_h):
+        assert abs(np.mean([v[i] - statics[i] for i in range(2)]) - shift) < 1e-12
+    assert apply_lookahead([1.0], [1.0], [True], 0.5) == ([1.0], 0.0)
+    assert apply_lookahead([], [], [], 0.5) == ([], 0.0)
+
+
+def test_lookahead_shrinkage_in_the_search():
+    """``lookahead_shrink=0`` uses the sampled future values raw; a huge k gives every end node the mean delta,
+    so the ranking is the depth-1 one; in between the node keeps ``n / (n + k)`` of its own deviation."""
+    ev = HeuristicEvaluator()
+    base = dict(beam=4, expand=8, trade_proposals=0, opp_roll_samples=12)
+
+    class Noisy(_RootSearcher):
+        def _mock_future(self, states, me):
+            r = random.Random(7)
+            return [float(v) - 0.1 + 0.08 * r.random() for v in self._eval(list(states), [me] * len(states))]
+
+    s = mid_game(seed=13)
+    r1 = Searcher(ev, SearchConfig(depth=1, **base)).search(s, 0, random.Random(1))
+    raw = Noisy(ev, SearchConfig(depth=2, lookahead_shrink=0.0, **base))
+    raw.search(s, 0, random.Random(1))
+    fin_by_state = {id(n.state): n for n in _finished_nodes(raw.root)}
+    for st, v in zip(raw.lookahead_states, raw.lookahead_values):
+        assert fin_by_state[id(st)].value == v
+    flat = Noisy(ev, SearchConfig(depth=2, lookahead_shrink=1e15, **base))
+    r_flat = flat.search(s, 0, random.Random(1))
+    assert [r.action for r in r_flat] == [r.action for r in r1]
+    half = Noisy(ev, SearchConfig(depth=2, lookahead_shrink=12.0, **base))
+    half.search(s, 0, random.Random(1))
+    assert abs(half._shift - raw._shift) < 1e-12
+    fin_half = {id(n.state): n for n in _finished_nodes(half.root)}
+    for st, v in zip(half.lookahead_states, half.lookahead_values):
+        n = fin_half[id(st)]
+        if n.state.phase != PHASE_GAME_OVER:
+            expected = n.static + half._shift + 0.5 * (v - n.static - half._shift)
+            assert abs(n.value - expected) < 1e-12
+
+
+def test_reduced_config_keeps_the_shrinkage_and_native_level_dict_carries_it():
+    from catanbot.search import native_level_dict, reduced_config
+    cfg = SearchConfig(depth=3, beam=6, expand=10, opp_roll_samples=12, lookahead_shrink=7.5)
+    sub = reduced_config(cfg, 2, 3000)
+    assert sub.lookahead_shrink == 7.5 and sub.finished_lookahead == 2 and sub.opp_roll_samples == 4
+    d = native_level_dict(cfg)
+    assert d["lookahead_shrink"] == 7.5 and d["finished_lookahead"] == 0 and d["opp_roll_samples"] == 12
+    assert all(isinstance(d[k], int) for k in d if k != "lookahead_shrink")

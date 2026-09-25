@@ -16,7 +16,12 @@ Structure
   play their turns with a greedy version of the same value function
   (max^n), with dice rolls sampled with common random numbers, until it is
   our turn again; then the leaf is evaluated by the value net (or, for
-  ``depth >= 3``, by a reduced recursive search).
+  ``depth >= 3``, by a reduced recursive search).  Every finished node gets
+  it (``finished_lookahead = 0``), so no candidate is valued at a different
+  horizon than its siblings; the sampled part of the future value (its
+  difference from the static value, minus the mean difference) is shrunk by
+  its reliability ``n / (n + lookahead_shrink)`` because with few roll
+  samples its noise is larger than the margins between candidates.
 * Every state that needs a value is evaluated in a **batch** so a numpy
   value net can be used efficiently.
 
@@ -56,10 +61,13 @@ class SearchConfig:
     expand: int = 10                # actions tried per decision node
     max_actions_per_turn: int = 6   # actions per turn (END_TURN forced afterwards)
     roll_samples: int = 11          # our own roll: 11 = exact expectation, fewer = most likely rolls
-    opp_roll_samples: int = 6       # sampled roll sequences for opponents' turns (common random numbers)
+    opp_roll_samples: int = 12      # sampled roll sequences for opponents' turns (common random numbers)
     opponent_actions: int = 4       # greedy actions per opponent turn
     opponent_expand: int = 6        # candidates evaluated per opponent decision
-    finished_lookahead: int = 4     # end-of-turn nodes that get the expensive future value
+    finished_lookahead: int = 0     # end-of-turn nodes that get the future value: 0 = all of them, N = the top N
+    #                                 by static value (the pre-fix behaviour, which mixes horizons: DESIGN section 4)
+    lookahead_shrink: float = 12.0  # k: a node's sampled lookahead delta counts n / (n + k) with n roll samples
+    #                                 (the rest is the mean delta of all lookahead nodes); 0 = raw future values
     max_nodes: int = 40000
     time_limit: Optional[float] = None
     trade_proposals: int = 3        # PROPOSE_TRADE candidates per node (scaled down late in the game)
@@ -127,6 +135,7 @@ def reduced_config(cfg: SearchConfig, depth: int, budget: int) -> SearchConfig:
                         max_actions_per_turn=4, roll_samples=min(cfg.roll_samples, 5),
                         opp_roll_samples=max(2, cfg.opp_roll_samples // 3),
                         opponent_actions=3, opponent_expand=4, finished_lookahead=2,
+                        lookahead_shrink=cfg.lookahead_shrink,
                         max_nodes=max(500, budget),
                         trade_proposals=1, discard_candidates=2, use_opponent_model=cfg.use_opponent_model,
                         trade_cap_early=cfg.trade_cap_early, trade_cap_late=cfg.trade_cap_late,
@@ -134,8 +143,45 @@ def reduced_config(cfg: SearchConfig, depth: int, budget: int) -> SearchConfig:
                         native_future=cfg.native_future)
 
 
+def lookahead_weight(cfg: SearchConfig) -> float:
+    """``n / (n + k)``: the weight of a node's own sampled lookahead delta (``n`` roll samples, ``k =
+    lookahead_shrink``); the remaining ``1 - weight`` is the mean delta of all lookahead nodes.  1.0 when ``k <= 0``."""
+    k = float(cfg.lookahead_shrink)
+    if k <= 0.0:
+        return 1.0
+    n = float(max(1, cfg.opp_roll_samples))
+    return n / (n + k)
+
+
+def apply_lookahead(statics: Sequence[float], futures: Sequence[float], terminal: Sequence[bool],
+                    weight: float) -> Tuple[List[float], float]:
+    """Values of the lookahead nodes and the mean shift for every other leaf.
+
+    ``shift`` is the mean of ``future - static`` over the non-terminal lookahead nodes (a finished game has an
+    exact value: it keeps it and does not enter the mean).  A non-terminal node gets
+    ``static + shift + weight * (future - static - shift)``: with ``weight = 1`` the raw sampled future value
+    (exactly), with ``weight < 1`` its noisy deviation from the common mean counts less (``lookahead_weight``).  Mirrored by
+    ``apply_lookahead`` in cpp/search.cpp for the native reduced search.
+    """
+    deltas = [f - s for s, f in zip(statics, futures)]
+    live = [d for d, t in zip(deltas, terminal) if not t]
+    shift = sum(live) / len(live) if live else 0.0
+    values = []
+    for s, f, d, t in zip(statics, futures, deltas, terminal):
+        values.append(float(f) if (t or weight >= 1.0) else s + shift + weight * (d - shift))
+    return values, shift
+
+
 _NATIVE_LEVEL_FIELDS = ("opponent_actions", "beam", "expand", "max_actions_per_turn", "roll_samples",
                         "opp_roll_samples", "finished_lookahead", "discard_candidates", "max_nodes")
+_NATIVE_LEVEL_FLOAT_FIELDS = ("lookahead_shrink",)
+
+
+def native_level_dict(cfg: SearchConfig) -> dict:
+    """The ``SearchConfig`` fields the extension reads for one lookahead level (``core.future_values`` levels)."""
+    d = {k: int(getattr(cfg, k)) for k in _NATIVE_LEVEL_FIELDS}
+    d.update({k: float(getattr(cfg, k)) for k in _NATIVE_LEVEL_FLOAT_FIELDS})
+    return d
 
 
 class Searcher:
@@ -233,18 +279,24 @@ class Searcher:
             # action stays in the frontier so its expectation is over real continuations.
             keep_groups = {n.group for n in unfinished[:cfg.beam]}
             frontier = [n for n in unfinished if n.group in keep_groups]
-        # Future values for the most promising end-of-turn nodes; the mean shift between
-        # lookahead and static values is applied to every other leaf so that lines with and
-        # without lookahead are compared at the same horizon.
+        # Future values for the end-of-turn nodes (all of them by default: a candidate valued at the
+        # lookahead horizon next to siblings valued statically is preferred or avoided by that alone).
+        # The mean shift between lookahead and static values is applied to every other leaf (pruned
+        # branches) so that lines with and without lookahead are compared at the same horizon, and a
+        # node's own deviation from that mean is weighted by its sample reliability (apply_lookahead).
         if cfg.depth >= 2 and finished and not self._budget_exhausted():
-            finished.sort(key=lambda n: -(n.static + 0.05 * math.log(max(n.prob, 1e-6))))
-            top = finished[:cfg.finished_lookahead]
+            top = finished
+            if cfg.finished_lookahead > 0:
+                finished.sort(key=lambda n: -(n.static + 0.05 * math.log(max(n.prob, 1e-6))))
+                top = finished[:cfg.finished_lookahead]
             fv = self._future_values([n.state for n in top], me, cfg.depth - 1)
-            for n, v in zip(top, fv):
-                n.value = float(v)
-            if top:
-                self._shift = sum(n.value - n.static for n in top) / len(top)
-        # Backup.
+            vals, self._shift = apply_lookahead([n.static for n in top], [float(v) for v in fv],
+                                                [n.state.phase == PHASE_GAME_OVER for n in top],
+                                                lookahead_weight(cfg))
+            for n, v in zip(top, vals):
+                n.value = v
+        # Backup (unclamped: a shifted static value may leave [0, 1], and clamping it would collapse
+        # the ordering of every leaf below 0); the root values are clamped for the caller after ranking.
         self._backup(root, me)
         results: List[ScoredAction] = []
         for a, kids in root.children:
@@ -254,6 +306,7 @@ class Searcher:
             results.append(ScoredAction(a, v, "", [a] + line, sum(p * k.static for p, k in kids)))
         results.sort(key=lambda r: -r.value)
         for r in results:
+            r.value = min(1.0, max(0.0, r.value))
             r.explanation = self.explain(state, r.action, me)
         return results
 
@@ -283,9 +336,9 @@ class Searcher:
     def _backup(self, node: _Node, me: int) -> float:
         if not node.children:
             if node.value is None:
-                node.value = min(1.0, max(0.0, node.static + self._shift))
+                node.value = node.static + self._shift
             return node.value
-        best = -1.0
+        best = -math.inf
         for a, kids in node.children:
             v = 0.0
             for p, k in kids:
@@ -703,7 +756,7 @@ class Searcher:
             budget = (cfg.max_nodes - self.nodes) // max(1, len(states) * max(1, len(seqs)))
             levels.append(reduced_config(levels[-1], d, budget))
             d -= 1
-        level_dicts = [{k: int(getattr(lv, k)) for k in _NATIVE_LEVEL_FIELDS} for lv in levels]
+        level_dicts = [native_level_dict(lv) for lv in levels]
         model = self.model if cfg.use_opponent_model else None
         robber = _accel.robber_weights_bundle(states[0], self.politics, model)
         res = _accel.future_values(states, me, depth, level_dicts, [list(q) for q in seqs], self._native_ev, robber,

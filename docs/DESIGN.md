@@ -170,13 +170,19 @@ Rules (base game, 3-4 players, Colonist.io defaults):
 ```python
 @dataclass
 class SearchConfig:
-    depth: int = 2            # number of *turns* to look ahead (own turn counts as 1)
-    beam: int = 6             # candidate actions kept per decision node
-    roll_samples: int = 11    # 11 = exact expectation over all rolls; fewer = top-probability rolls
-    max_nodes: int = 20000
+    depth: int = 2                  # number of *turns* to look ahead (own turn counts as 1)
+    beam: int = 6                   # partial action sequences kept per level
+    expand: int = 10                # actions tried per decision node
+    roll_samples: int = 11          # 11 = exact expectation over all rolls; fewer = top-probability rolls
+    opp_roll_samples: int = 12      # sampled dice sequences for the opponents' turns (common random numbers)
+    opponent_actions: int = 4       # greedy actions per simulated opponent turn (opponent_expand candidates each)
+    finished_lookahead: int = 0     # end-of-turn nodes that get the future value: 0 = all, N = the top N by static
+    lookahead_shrink: float = 12.0  # k: a node's own sampled lookahead delta counts n / (n + k); 0 = raw
+    max_nodes: int = 40000
     time_limit: float | None = None
-    opponent_model: str = "maxn"     # "maxn" | "greedy" | "paranoid"
-    trade_acceptance: str = "value"  # opponents accept if their own value increases
+    native_future: bool = True      # opponents' turns simulated by the C++ extension when built (docs/CPP.md)
+    # + trade_proposals / trade_cap_early / trade_cap_late / opponent_proposals / dump_candidates /
+    #   discard_candidates / use_opponent_model (sections 6, 11)
 
 @dataclass
 class ScoredAction:
@@ -204,6 +210,52 @@ robber steals as expectation over the victim's hand, models `PROPOSE_TRADE` by
 asking the opponent model whether the responder would accept, and evaluates
 leaves with the evaluator from each player's own perspective (max^n).
 Depth is in turns.  Discard decisions for opponents use `discard.choose_discard`.
+
+**Lookahead horizon (depth >= 2).**  At depth 1 every leaf is a static value.
+At depth 2 an end-of-turn node's *future value* is the mean, over
+`opp_roll_samples` dice sequences shared by every node (common random
+numbers), of the leaf value after the opponents played their turns greedily
+(one-step lookahead with the same evaluator, discards / robber / knights from
+the strategy modules); at depth 3 the leaf value is a reduced recursive
+search instead.  Three rules keep the horizons consistent
+(`Searcher.search` / `apply_lookahead`, mirrored natively):
+
+1. **Every** finished node gets the future value (`finished_lookahead = 0`).
+   Valuing only the top-N nodes by static value and giving the rest
+   `static + shift` (the pre-fix default, still available with
+   `finished_lookahead = N`) values two candidates with identical static
+   values differently by membership alone, and the selection by static plus
+   the winner's curse leave a residual offset between the two classes that
+   the mean shift cannot remove.
+2. The **mean shift** `mean(future - static)` over the non-terminal
+   lookahead nodes is added to every leaf that has no future value (branches
+   pruned from the beam), so lines with and without lookahead are compared at
+   the same horizon.  A finished game keeps its exact value and stays out of
+   the mean.  The backup is **not clamped**: `static + shift` may leave
+   [0, 1] (the shift is about -0.06 with the heuristic evaluator), and
+   clamping it collapsed the ordering of every leaf below 0 in 7.5 % / 13 % /
+   19 % of mid-game nodes at depth 2 / 3 / 4 (which is why deeper searches
+   diverged from each other).  Only the root's `ScoredAction.value` is
+   clamped, after ranking.
+3. The node's own deviation from the mean is **shrunk by its reliability**:
+   `value = static + shift + w * (future - static - shift)` with
+   `w = n / (n + lookahead_shrink)` (`lookahead_weight`; `n = opp_roll_samples`).
+   Measured on mid-game nodes the sampled delta has a differential standard
+   deviation of ~0.028 win-probability per sample under common random numbers
+   while the depth-1 margin between the best two actions is 0.002-0.008, so
+   with few samples the raw delta is mostly noise (split-half reliability
+   0.40 at 12 samples).  `w` is the posterior weight of the node's own
+   estimate against the common mean; `lookahead_shrink = 0` restores the raw
+   future values, a huge value the depth-1 ranking (plus a constant).
+
+Invariants (tests/test_search.py): a lookahead that adds the same constant to
+every static value never changes the depth-1 ranking; every finished node of
+the tree is handed to `_future_values`; the mean of `value - static` over the
+lookahead nodes equals the shift for any `w`.  Defaults changed with this
+fix: `opp_roll_samples` 6 -> 12, `finished_lookahead` 4 -> 0 (all), and
+`lookahead_shrink` (new) 12.  `selfplay.make_bot`'s spec keys still default
+to `opprolls=4, lookahead=3`; pass `lookahead=0,opprolls=12` for the fixed
+behaviour until those defaults follow.
 
 ## 5. ML contract
 

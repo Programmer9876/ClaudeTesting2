@@ -28,10 +28,11 @@ struct LevelCfg {
     int expand = 10;
     int max_actions_per_turn = 6;
     int roll_samples = 11;
-    int opp_roll_samples = 6;
-    int finished_lookahead = 4;
+    int opp_roll_samples = 12;
+    int finished_lookahead = 0;      // 0 = every end-of-turn node gets the future value, N = the top N
     int discard_candidates = 3;
     long max_nodes = 40000;
+    double lookahead_shrink = 12.0;  // k of search.lookahead_weight: a node's own delta counts n / (n + k)
 };
 
 // One applied action of a simulated opponent turn (trace mode): who acted, the action (rolls as
@@ -82,5 +83,13 @@ double reduced_search(SearchCtx& ctx, const GameStateC& root, int me, int depth,
 
 // search.roll_distribution(samples): totals and renormalised probabilities.
 int roll_distribution(int samples, int* totals, double* probs);
+
+// search.lookahead_weight(cfg): n / (n + k) with n = max(1, opp_roll_samples), k = lookahead_shrink (1 when k <= 0).
+double lookahead_weight(const LevelCfg& cfg);
+
+// search.apply_lookahead: values of the lookahead nodes (static + shift + weight * (future - static - shift);
+// a terminal node keeps its exact future value and stays out of the mean) and the mean shift for the other leaves.
+double apply_lookahead(const std::vector<double>& statics, const std::vector<double>& futures,
+                       const std::vector<bool>& terminal, double weight, std::vector<double>& values);
 
 }  // namespace catanbot

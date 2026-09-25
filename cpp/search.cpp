@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <memory>
 
 namespace catanbot {
@@ -388,16 +389,18 @@ void outcomes(SearchCtx& ctx, const GameStateC& s, const ActionC& a, int me, con
     for (auto& o : outs) autoplay_others(ctx, o.second, me, draw, nullptr);
 }
 
+// Searcher._backup: unclamped (a shifted static value may leave [0, 1]; clamping it would collapse the
+// ordering of every leaf below 0).  reduced_search clamps its root value on return, like ScoredAction.value.
 double backup(std::vector<RNode>& nodes, int i, double shift) {
     RNode& n = nodes[i];
     if (n.children.empty()) {
         if (!n.has_value) {
-            n.value = std::min(1.0, std::max(0.0, n.stat + shift));
+            n.value = n.stat + shift;
             n.has_value = true;
         }
         return n.value;
     }
-    double best = -1.0;
+    double best = -std::numeric_limits<double>::infinity();
     for (const RChild& ch : n.children) {
         double v = 0.0;
         for (const auto& pk : ch.kids) v += pk.first * backup(nodes, pk.second, shift);
@@ -481,34 +484,71 @@ double reduced_search(SearchCtx& ctx, const GameStateC& root, int me, int depth,
                 frontier.push_back(ci);
     }
     if (depth >= 2 && !finished.empty() && !exhausted()) {
-        std::stable_sort(finished.begin(), finished.end(), [&](int x, int y) {
-            const double kx = nodes[x].stat + 0.05 * std::log(std::max(nodes[x].prob, 1e-6));
-            const double ky = nodes[y].stat + 0.05 * std::log(std::max(nodes[y].prob, 1e-6));
-            return kx > ky;
-        });
-        const size_t n_top = std::min(finished.size(), (size_t)std::max(0, cfg.finished_lookahead));
+        // Searcher.search: every finished node (finished_lookahead <= 0) or the top N by static + 0.05 log p.
+        size_t n_top = finished.size();
+        if (cfg.finished_lookahead > 0) {
+            std::stable_sort(finished.begin(), finished.end(), [&](int x, int y) {
+                const double kx = nodes[x].stat + 0.05 * std::log(std::max(nodes[x].prob, 1e-6));
+                const double ky = nodes[y].stat + 0.05 * std::log(std::max(nodes[y].prob, 1e-6));
+                return kx > ky;
+            });
+            n_top = std::min(finished.size(), (size_t)cfg.finished_lookahead);
+        }
         if (n_top > 0) {
             std::vector<GameStateC> top_states;
-            for (size_t k = 0; k < n_top; ++k) top_states.push_back(nodes[finished[k]].state);
+            std::vector<double> statics;
+            std::vector<bool> terminal;
+            for (size_t k = 0; k < n_top; ++k) {
+                const RNode& n = nodes[finished[k]];
+                top_states.push_back(n.state);
+                statics.push_back(n.stat);
+                terminal.push_back(n.state.phase == PHASE_GAME_OVER);
+            }
             const int n_samples = std::max(1, cfg.opp_roll_samples);
             std::vector<std::vector<int>> rolls((size_t)n_samples, std::vector<int>(12, 0));
             for (int k = 0; k < n_samples; ++k)
                 for (int t = 0; t < 12; ++t) rolls[k][t] = draw.randint(1, 6) + draw.randint(1, 6);
-            std::vector<double> fv;
+            std::vector<double> fv, values;
             future_values(ctx, top_states, me, depth - 1, L, rolls, fv, nullptr, nullptr);
-            double acc = 0.0;
+            shift = apply_lookahead(statics, fv, terminal, lookahead_weight(cfg), values);
             for (size_t k = 0; k < n_top; ++k) {
                 RNode& n = nodes[finished[k]];
-                n.value = fv[k];
+                n.value = values[k];
                 n.has_value = true;
-                acc += n.value - n.stat;
             }
-            shift = acc / (double)n_top;
         }
     }
     ctx.trace = saved_trace;
     if (nodes[0].children.empty()) return ctx.ev->evaluate(root, me);
-    return backup(nodes, 0, shift);
+    return std::min(1.0, std::max(0.0, backup(nodes, 0, shift)));  // ScoredAction.value is clamped on output
+}
+
+double lookahead_weight(const LevelCfg& cfg) {
+    const double k = cfg.lookahead_shrink;
+    if (k <= 0.0) return 1.0;
+    const double n = (double)std::max(1, cfg.opp_roll_samples);
+    return n / (n + k);
+}
+
+double apply_lookahead(const std::vector<double>& statics, const std::vector<double>& futures,
+                       const std::vector<bool>& terminal, double weight, std::vector<double>& values) {
+    // search.apply_lookahead, statement by statement (the sum runs in the same order as Python's).
+    const size_t n = statics.size();
+    std::vector<double> deltas(n, 0.0);
+    double acc = 0.0;
+    size_t live = 0;
+    for (size_t i = 0; i < n; ++i) {
+        deltas[i] = futures[i] - statics[i];
+        if (!terminal[i]) {
+            acc += deltas[i];
+            ++live;
+        }
+    }
+    const double shift = live > 0 ? acc / (double)live : 0.0;
+    values.assign(n, 0.0);
+    for (size_t i = 0; i < n; ++i)
+        values[i] = (terminal[i] || weight >= 1.0) ? futures[i] : statics[i] + shift + weight * (deltas[i] - shift);
+    return shift;
 }
 
 // ---------------------------------------------------------------------------

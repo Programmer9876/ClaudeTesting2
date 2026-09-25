@@ -266,3 +266,29 @@ a depth-1 search decision about 25 ms with the C++ evaluator and about 130 ms wi
    with a fresh `--seed` before changing the constant in the module.
 6. Re-run the C++ bit-exactness tests (`tests/test_accel_heuristic.py`) after changing an
    evaluator constant, and mirror the value in `cpp/heuristic.cpp`.
+
+## Sweep 1 (2026-09-25 11:30 UTC): 120 paired games per candidate, depth-1 search bot, 4 players
+
+Base spec `search:depth=1,beam=4,expand=8,evaluator=heuristic`, seed 101,
+2 workers on a loaded machine (decision times not reported for that reason).
+A candidate is seated 2 vs 2 against the default in the same games.
+
+| tunable | default | candidate | games | wins cand / default | delta (pp) | s.e. (pp) |
+|---|---|---|---|---|---|---|
+| coalitions.SCALE | 0.5 | 0.25 | 120 | None / None | +0.8 | 4.6 |
+| coalitions.SCALE | 0.5 | 1.0 | 120 | None / None | +1.7 | 4.6 |
+| danger.BLOCK_NEED | 2.0 | 0.0 | 120 | None / None | +1.7 | 4.6 |
+| danger.BLOCK_NEED | 2.0 | 1.0 | 120 | None / None | +3.3 | 4.6 |
+| danger.TURNS_HALF | 3.0 | 1.5 | 120 | None / None | -1.7 | 4.6 |
+| danger.TURNS_HALF | 3.0 | 2.0 | 120 | None / None | +0.0 | 4.6 |
+| danger.danger_multiplier | True | False | 120 | None / None | +2.5 | 4.6 |
+| politics.MAX_SLACK | 0.3 | 0.0 | 120 | None / None | -3.3 | 4.6 |
+| politics.MAX_SLACK | 0.3 | 0.15 | 120 | None / None | -1.7 | 4.6 |
+
+Reading: none of the five terms moves the self-play win rate by more than
+its standard error at 120 games (detectable effect about +-9 pp).  Switching
+the distance-to-win multiplier off is +2.5 pp (noise), removing the favour
+slack is -3.3 pp (noise).  Self-play between identical bots is a weak test
+bed for targeting and political terms (the opponents share the same logic);
+the next step is the same paired design against the Catanatron stand-ins
+and 500+ games per candidate for the terms that matter for compute.

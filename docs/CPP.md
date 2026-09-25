@@ -517,7 +517,7 @@ Python never sees the simulated states.
 | native (`cpp/search.cpp`, `policy.cpp`, `evaluator.cpp`) | Python, unchanged |
 | --- | --- |
 | `_simulate_until_my_turn`, `_greedy_turn` (forced roll values, discards, robber, TRADE_SELECT shortcut, main-phase greedy one-step lookahead with the same evaluator, END_TURN rules, all guards), `_autoplay_others` inside the simulated turns | `Searcher.search` root loop: `_candidates`, `_candidate_priors`, `action_priors`, arbitrage, surplus dumps, political options, every root chance node (`_outcomes`, `_trade_outcomes`, `_response_outcomes`, `_dev_outcomes`, `_steal_outcomes`), `_backup`, `_shift`, `_principal_line`, `explain`, `search_determinized` |
-| `_reduced_search_values` as a native reduced `search()` over non-trade actions (ROLL / dev / steal chance nodes, beam by group, finished lookahead recursing into the native `future_values`, mean shift, clamped backup, node budget, deadline) | the Python `_future_values` / `_greedy_turn` / `_reduced_search_values` bodies: the reference and the fallback |
+| `_reduced_search_values` as a native reduced `search()` over non-trade actions (ROLL / dev / steal chance nodes, beam by group, the finished lookahead - every end node, or the top N with `finished_lookahead = N` - recursing into the native `future_values`, `apply_lookahead` / `lookahead_weight` (mean shift, reliability-weighted delta, exact terminal values), unclamped backup with the root value clamped on return, node budget, deadline) | the Python `_future_values` / `_greedy_turn` / `_reduced_search_values` bodies: the reference and the fallback |
 | leaf and trial evaluation: `HeuristicEval` (bit-identical), `MlpEval` (float32-precision twin of `ValueNet.predict`), `BlendEval` | `TimedEvaluator`-style wrappers, float64 nets, custom evaluators (they keep the Python path) |
 | `choose_discard` (+ `default_keep_targets`, `_needed_tiers`, `needed_vector`), `danger.win_path` (+ `_vp_sources`, `_expected_hand` prior, `danger_multiplier`, `block_factor`, `steal_factor`, `rob_break_probability`), `robber.threat` / `target_weight` / `hex_damage` / `steal_candidates` / `choose_victim` / `best_robber_move`, `counting.hand_prior_weights` / `dev_pool`, the factor chain of `politics.robber_target_weights` and `OpponentModel.robber_habit_factors` (constants computed once per call in `accel.robber_weights_bundle`, `target_weight` / `threat` and the leader recomputed per simulated state) | `_opponent_proposal` (simulated opponents proposing trades) and `should_accept` for them: **not mirrored** |
 
@@ -614,15 +614,17 @@ core.future_values(states, me, depth, levels, rolls, evaluator, robber=None, rng
 core.reduced_search(state, me, depth, levels, evaluator, robber=None, rng=None, deadline=None, node_budget=None)
 core.choose_discard(state, player, legal=False), core.best_robber_move(state, player, robber=None) -> (hex, victim, score),
 core.win_path(state, player) -> dict, core.robber_weights(state, actor, robber) -> list, core.needed_vector(state, player)
+core.apply_lookahead(statics, futures, terminal, weight) -> (values, shift), core.lookahead_weight(level) -> float
 accel.native_search_available(), accel.native_evaluator(ev), accel.evaluator_key(ev),
 accel.robber_weights_bundle(state, politics, model), accel.future_values(...)
 ```
 
 `levels` are dicts of the `SearchConfig` fields the native side uses
 (`opponent_actions`, `beam`, `expand`, `max_actions_per_turn`, `roll_samples`,
-`opp_roll_samples`, `finished_lookahead`, `discard_candidates`, `max_nodes`),
-one per lookahead level, built with `search.reduced_config` exactly like the
-Python sub-search configs; `rolls` are the sampled dice sequences; `rng` is
+`opp_roll_samples`, `finished_lookahead`, `discard_candidates`, `max_nodes`
+and the float `lookahead_shrink`; `search.native_level_dict(cfg)` builds
+one), one per lookahead level, built with `search.reduced_config` exactly like
+the Python sub-search configs; `rolls` are the sampled dice sequences; `rng` is
 `None` / an int seed (xoshiro per (state, sample)) or a `random.Random`
 (shared, for parity tests); `trace=True` returns per (state, sample) the
 applied `(player, action, draw_index)` list and the leaf as a `CState`, so a
@@ -789,6 +791,19 @@ lose to depth 2: with this searcher, more depth is affordable now (depth 3 at
 reduced sub-search's noise (2 roll samples, 2 lookahead nodes, the mean shift
 applied to every other leaf) is the thing to tune before deeper search pays
 off; that is a search-design question, not an acceleration one.
+
+*Lookahead fix (DESIGN section 4).*  The runs above predate the horizon fix:
+the search now hands every end-of-turn node to `future_values`
+(`finished_lookahead = 0`), weights a node's sampled delta by
+`n / (n + lookahead_shrink)` and no longer clamps the backup; the native
+reduced search mirrors all three (`apply_lookahead` is bitwise, checked by
+`test_apply_lookahead_and_lookahead_weight_are_bitwise_native`).  Cost with
+the SearchBot configuration: 0.07 s per depth-2 decision (12 end nodes on
+average x 12 samples, ~8k nodes) against 0.025 s for the old top-4 x 4
+samples.  Strength after the fix is reported in the results log / the
+diagnosis table (stand-in ladder and same-table runs); depth 3 still gets the
+old top-2 x (n / 3) samples inside each reduced sub-search
+(`search.reduced_config`) for budget reasons.
 
 
 

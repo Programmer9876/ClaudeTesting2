@@ -881,3 +881,49 @@ def test_subclasses_overriding_evaluate_keep_the_python_path(positions):
 
     assert Searcher(Tagged(), SearchConfig(depth=2)).native_active
     assert Searcher(BlendedEvaluator(ValueNet(hidden=(8,), seed=1), 0.5), SearchConfig(depth=2)).native_active
+
+
+# ---------------------------------------------------------------------------
+# lookahead value mixing (search.apply_lookahead / lookahead_weight) - the reduced search's port is bitwise
+# ---------------------------------------------------------------------------
+def test_apply_lookahead_and_lookahead_weight_are_bitwise_native():
+    r = random.Random(11)
+    checked = 0
+    for _ in range(300):
+        n = r.randrange(0, 14)
+        statics = [r.random() for _ in range(n)]
+        futures = [min(1.0, max(0.0, s + r.uniform(-0.3, 0.3))) for s in statics]
+        terminal = [r.random() < 0.2 for _ in range(n)]
+        for i, t in enumerate(terminal):
+            if t:
+                statics[i] = futures[i] = float(r.randrange(2))
+        w = r.choice([1.0, 0.5, 0.25, 0.0, 0.7, 12.0 / 30.0])
+        vp, sp = S.apply_lookahead(statics, futures, terminal, w)
+        vn, sn = core.apply_lookahead(statics, futures, terminal, w)
+        assert sn == sp and list(vn) == list(vp)
+        checked += n
+    assert checked > 1000
+    for n_s, k in ((12, 12.0), (4, 12.0), (1, 0.0), (24, 6.5), (6, 0.0), (0, 3.0)):
+        cfg = SearchConfig(opp_roll_samples=n_s, lookahead_shrink=k)
+        assert core.lookahead_weight(S.native_level_dict(cfg)) == S.lookahead_weight(cfg)
+    # a level dict without the key uses the SearchConfig default
+    assert core.lookahead_weight({"opp_roll_samples": 12}) == S.lookahead_weight(SearchConfig(opp_roll_samples=12))
+
+
+def test_reduced_search_values_every_end_node_by_default(positions):
+    """finished_lookahead=0 (the default) simulates every end-of-turn node of the reduced search; the top-2
+    selection of the old default does less work.  Values stay in [0, 1] (clamped on return, like
+    ScoredAction.value) although the backup itself is no longer clamped."""
+    ev = HeuristicEvaluator()
+    h = accel.native_evaluator(ev)
+    more = 0
+    for s in positions[:8]:
+        me = s.current
+        cfg_all = SearchConfig(depth=2, beam=4, expand=8, opp_roll_samples=4, finished_lookahead=0)
+        cfg_top = SearchConfig(depth=2, beam=4, expand=8, opp_roll_samples=4, finished_lookahead=2)
+        v_all, n_all = core.reduced_search(s, me, 2, [S.native_level_dict(cfg_all)], h, None, 7, None, None)
+        v_top, n_top = core.reduced_search(s, me, 2, [S.native_level_dict(cfg_top)], h, None, 7, None, None)
+        assert 0.0 <= v_all <= 1.0 and 0.0 <= v_top <= 1.0
+        assert n_all >= n_top
+        more += n_all > n_top
+    assert more >= 4

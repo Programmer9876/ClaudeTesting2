@@ -156,6 +156,7 @@ std::vector<LevelCfg> parse_levels(py::handle levels) {
         c.finished_lookahead = dict_int(d, "finished_lookahead", c.finished_lookahead);
         c.discard_candidates = dict_int(d, "discard_candidates", c.discard_candidates);
         if (d.contains("max_nodes")) c.max_nodes = d["max_nodes"].cast<long>();
+        if (d.contains("lookahead_shrink")) c.lookahead_shrink = d["lookahead_shrink"].cast<double>();
         out.push_back(c);
     }
     if (out.empty()) throw py::value_error("levels must contain at least one config");
@@ -407,6 +408,28 @@ void register_search(py::module_& m) {
     m.def("robber_weights", &robber_weights_py, py::arg("state"), py::arg("actor"), py::arg("robber"),
           "politics.robber_target_weights / OpponentModel.robber_habit_weights from the robber bundle.");
     m.def("needed_vector", &needed_vector_py, py::arg("state"), py::arg("player"), "discard.needed_vector.");
+    m.def("lookahead_weight", [](py::handle level) { return lookahead_weight(parse_levels(py::make_tuple(level))[0]); },
+          py::arg("level"), "search.lookahead_weight(cfg) for one SearchConfig dict (opp_roll_samples, lookahead_shrink).");
+    m.def("apply_lookahead",
+          [](py::sequence statics_in, py::sequence futures_in, py::sequence terminal_in, double weight) {
+              const size_t n = (size_t)py::len(statics_in);
+              if ((size_t)py::len(futures_in) != n || (size_t)py::len(terminal_in) != n)
+                  throw py::value_error("apply_lookahead: statics, futures and terminal must have the same length");
+              std::vector<double> statics(n), futures(n), values;
+              std::vector<bool> terminal(n);
+              for (size_t i = 0; i < n; ++i) {
+                  statics[i] = statics_in[i].cast<double>();
+                  futures[i] = futures_in[i].cast<double>();
+                  terminal[i] = terminal_in[i].cast<bool>();
+              }
+              const double shift = apply_lookahead(statics, futures, terminal, weight, values);
+              py::list out;
+              for (double v : values) out.append(v);
+              return py::make_tuple(out, shift);
+          },
+          py::arg("statics"), py::arg("futures"), py::arg("terminal"), py::arg("weight"),
+          "search.apply_lookahead(statics, futures, terminal, weight) -> (values, shift), the native port used by "
+          "the reduced search.");
 }
 
 }  // namespace search_py

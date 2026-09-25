@@ -273,3 +273,20 @@ the same value function (max^n) under common random dice samples, and
 optionally our next turn again (depth 3).  Leaves are evaluated in batches
 by the value net.  Hidden information (screenshots) is handled by averaging
 over sampled determinizations.
+
+The lookahead is a *correction* on top of the static value, and its noise is
+larger than the margins it has to resolve: under common random numbers the
+future values of two end-of-turn candidates still differ by ~0.028
+win-probability per dice sample (the greedy opponents diverge), while the
+best two root actions are typically 0.002-0.008 apart.  So (DESIGN section 4)
+every end-of-turn node gets the lookahead - never only the top few, which
+valued identical candidates differently by membership - the mean
+`future - static` is added to the leaves of pruned branches without clamping,
+and a node's own deviation from that mean is weighted by
+`n / (n + lookahead_shrink)` (0.5 at the default 12 samples).  With the
+heuristic evaluator a de-noised depth 2 plays at depth-1 strength (the
+lookahead's residual signal is small: rollouts rate its choices +0.001 +/-
+0.014 against depth 1); the reference top-4 x 4-sample depth 2 was 6 points
+weaker at the same table.  A gain from lookahead needs an evaluator error the
+simulation can correct (a value net trained on end-of-opponent-round targets,
+or exact one-round threat terms), not more sampled max^n.

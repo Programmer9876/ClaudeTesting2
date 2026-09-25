@@ -4,6 +4,19 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 11:35 UTC - first strategy ablation sweep (5 of 11 tunables)
+
+120 paired games per candidate with the depth-1 search bot (2 vs 2 in the
+same games): danger multiplier off +2.5 pp, danger BLOCK_NEED 0 / 1 +1.7 /
++3.3 pp, TURNS_HALF 1.5 / 2 -1.7 / 0 pp, coalition SCALE 0.25 / 1 +0.8 /
++1.7 pp, favour slack 0 / 0.15 -3.3 / -1.7 pp; standard error 4.6 pp, so
+nothing is significant.  Full table: docs/ABLATIONS.md.  The remaining six
+tunables (feed-the-leader guard, blockability weight, trade proposals,
+dump candidates, knight value, trade-stage drop) run in a second batch.
+Conclusion so far: the targeting / political terms neither help nor hurt
+measurably in self-play among identical bots; they must be tested against
+different opponents (stand-in ladder) before any is cut.
+
 ## 2026-09-25 09:55 UTC - value-net fix landed: regression gone, net at parity with heuristic search
 
 Training-side fix (default on in `catanbot.train`): every generated game
