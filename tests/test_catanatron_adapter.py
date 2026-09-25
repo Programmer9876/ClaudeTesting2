@@ -268,8 +268,12 @@ def test_me_color_must_be_seated():
 # ---------------------------------------------------------------------------
 # Action conversion
 # ---------------------------------------------------------------------------
+PRE_ROLL_ONLY_IN_33 = {ActionType.PLAY_ROAD_BUILDING, ActionType.PLAY_YEAR_OF_PLENTY, ActionType.PLAY_MONOPOLY}
+
+
 def test_action_round_trips_for_every_action_type():
     seen = set()
+    pre_roll_extras = set()
     for seed in range(1, 11):
         g = fresh_game(seed=seed)
         m = AD.mapping_for(g.state.board.map)
@@ -290,10 +294,16 @@ def test_action_round_trips_for_every_action_type():
                 key = AD.catanbot_action_to_key(cb_action, cb, m, st.colors)
                 assert key == AD.playable_key(a)
                 assert index[key] is a
-                # Whatever catanatron offers, catanbot's rules agree it is legal (except the
-                # discards: 3.2.1's is chosen by the engine, 3.3's is one card of the whole discard).
-                if a.action_type not in AD.DISCARD_TYPES:
-                    assert cb_action in legal, (a, cb_action, cb.phase)
+                # Whatever catanatron offers, catanbot's rules agree it is legal, except the
+                # discards (3.2.1's is chosen by the engine, 3.3's is one card of the whole
+                # discard) and, on 3.3, the non-knight dev cards it offers *before* the roll
+                # (catanbot only plays the knight pre-roll; the adapter never picks those).
+                if a.action_type in AD.DISCARD_TYPES:
+                    continue
+                if cb_action not in legal:
+                    assert API_33 and cb.phase == PHASE_ROLL and a.action_type in PRE_ROLL_ONLY_IN_33, (
+                        a, cb_action, cb.phase)
+                    pre_roll_extras.add(a.action_type)
             # ... and every mappable catanbot action catanatron does not offer is one of the
             # two documented rule differences.
             for cb_action in legal:
@@ -304,6 +314,7 @@ def test_action_round_trips_for_every_action_type():
         if seen == ALL_TYPES:
             break
     assert seen == ALL_TYPES
+    assert pre_roll_extras <= PRE_ROLL_ONLY_IN_33 and (API_33 or not pre_roll_extras)
 
 
 def test_logged_actions_convert_with_context():
