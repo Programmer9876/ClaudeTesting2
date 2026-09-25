@@ -179,7 +179,10 @@ logged (about 2.7 KiB per game compressed) and can be replayed.
 
 Disclosed readings of the protocol, fixed before any proof game: alpha
 5.7e-7 is used as registered (the text calls it one-sided 5-sigma; it is
-the two-sided 5-sigma tail, i.e. stricter than one-sided); condition 5
+the two-sided 5-sigma tail, i.e. stricter than one-sided) [correction
+2026-09-25 23:45 UTC: wrong way round - as a one-sided threshold 5.7e-7 is
+4.87 sigma, slightly *less* strict than one-sided 5 sigma (2.87e-7); the
+registered number stands, see docs/SCRUTINY.md Q14]; condition 5
 fails only when the bot is significantly *below* 0.25 against a stand-in
 (its heading), not when it is significantly above; the 99 % bounds are the
 lower ends of the central 99 % intervals (conservative).  Heads-up from
