@@ -383,10 +383,10 @@ already expensive because sunk progress stays in `b`, H shrinks and the waste gr
 thin pool): P ~ 0.98, C ~ 0, one more knight ~0.01 VP.  A race nobody else is in: a
 strong pull (two knights played and one held, rivals on at most one: +1.9 points for
 the next knight, credit 6.2 vs static's 1.35).  A crowded race (three rivals on 9, 9
-and 10 roads, us on 4): P 0.02, the next road < 0.03 VP, the road prior drops below
-action_priors' +8.  An opponent holding with a big lead: our credit ~0 and C cancels
-static's progress credit.  Endgame (vmax 9, H = 2.5): current levels decide, a
-challenger two roads behind has P < 0.1.
+and 10 roads, us on 4): P 0.007 with 3.0 close rivals, the next road is worth 0.006 VP
+and the road priors lose action_priors' +8 (net -7.7 to -7.9).  An opponent holding
+with a big lead: our credit ~0 and C cancels static's progress credit.  Endgame (vmax
+9, H = 2.5): current levels decide, a challenger two roads behind has P 0.008.
 
 **Advisor.**  The CLI's "Win paths" section (always shown, text only) prints the
 horizon, "Your best path: ...; crowded: ...", one line per award (holder, our level,

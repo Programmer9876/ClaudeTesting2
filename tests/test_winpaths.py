@@ -4,7 +4,6 @@ The feature is off by default: the tests in the "default unchanged" section prov
 hashes, that the default bot plays exactly as before the module existed (a subprocess plays the games before
 ``catanbot.winpaths`` is ever imported).
 """
-import hashlib
 import json
 import os
 import random
@@ -27,7 +26,7 @@ from catanbot.heuristic import HeuristicEvaluator, action_priors
 from catanbot.placement import is_free_vertex, player_production
 from catanbot.search import SearchConfig, Searcher
 from catanbot.selfplay import BlendedEvaluator, make_bot, play_game
-from catanbot.state import PHASE_GAME_OVER, PHASE_MAIN, PHASE_ROLL, new_game
+from catanbot.state import PHASE_GAME_OVER, PHASE_MAIN, new_game
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT = tuning.DEFAULT_SEARCH_SPEC

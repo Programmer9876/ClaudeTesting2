@@ -583,3 +583,56 @@ round-trips (hexes, numbers, robber, pieces).  Keep each test < 30 s.
   card may break the build.  The CLI prints a "Threat board" (per player:
   VP, loaded / building / overextended, ~turns to win, the path, the missing
   cards and the rolls that produce them).
+
+## 13. Win-path races: search hooks (`catanbot/winpaths.py`; off by default)
+
+Model and knobs: docs/STRATEGY.md "Win-path races"; experiments: docs/ABLATIONS_WINPATHS.md.
+
+* **Config.**  Five `SearchConfig` fields after `native_future`: `paths = 0` (1 = on),
+  `paths_w = 1.0` (value weight g), `paths_crowd = 1.0` (waste-cost scale),
+  `paths_priors = 1`, `paths_spots = 0`.  `reduced_config` passes them through (depth
+  >= 3 sub-searches); `native_level_dict` does not read them (they never reach C++).
+  `selfplay.make_bot` reads the spec keys `paths`, `paths_w`, `paths_crowd`,
+  `paths_priors`, `paths_spots`, so the Catanatron adapter, `ablate_catanatron
+  --cand-spec` and campaign `cand_spec` strings can switch it on.
+* **Hooks in `Searcher`** (all guarded by `self._paths`, which is `None` unless
+  `config.paths` is set):
+  1. `search()` resets `self._paths = None` with the other per-search caches; after the
+     single-legal-action early return (forced decisions build nothing) and outside the
+     setup phases it builds `winpaths.PathsEvaluator.for_search(self.evaluator, state,
+     me, cfg)` - a lazy import, so with `paths = 0` the module is never imported or run.
+  2. `_eval` evaluates through the wrapper when it exists (every leaf, the lookahead's
+     greedy opponents and the reduced sub-search leaves).
+  3. `_candidate_priors` ends with `ctx.adjust_priors(state, legal, priors)` when
+     `paths_priors` (our own main-phase nodes only; the simulated opponents' priors are
+     untouched).
+  4. `_candidates` hands the wrapper to `political_trade_options` (its "at no cost to
+     us" test then uses the same values as the search).
+  5. `_future_values` takes the C++ lookahead only when `self._paths is None`: the
+     native opponent simulation cannot see the term, so `paths = 1` at depth >= 2 runs
+     the Python lookahead (slower; the feature is budgeted for depth 1 only).
+* **Contract of the wrapper.**  `PathsEvaluator.evaluate(states, players)` has the
+  evaluator interface.  For a `HeuristicEvaluator` base it returns
+  `softmax_i((static_values(s)_i + corr_i) / T)[player]` with `T` the base's temperature
+  and the base's max subtraction; a `BlendedEvaluator` gets the correction in its
+  heuristic half; any other evaluator (a value net) gets
+  `base + softmax((V + corr) / 16)[p] - softmax(V / 16)[p]`.  Finished games return 1 / 0,
+  setup states the base's value; `paths_w = 0` reproduces the base within 1e-12.
+* **Per-decision context.**  `PathsContext` holds the root quantities (horizon, dev pool,
+  bank factor, liveness gates, the opponents' road room) and frozen copies of the module
+  constants (so `ParamBot`'s apply / restore around `decide` is enough), plus memo dicts
+  that live for one `search()` call: supply by (seat, buildings, robber), trail lengths by
+  (buildings, seat, roads), our road room, race solutions by their exact inputs, reach sets
+  and spot scores.  Every memo value is a pure function of its key and no RNG is used, so
+  cold and warm caches give bit-identical values (tested) and the search's RNG streams are
+  untouched.  Opponents cannot build during our turn, so their entries hit on every leaf
+  after the first; the race-solve hit rate is ~96 %.
+* **Invariant (tested).**  With `paths = 0` the default bot plays byte-identical action
+  sequences and root searches return identical values, lines and explanations - before and
+  after `catanbot.winpaths` is imported, with `paths=0` spelled out and with the module's
+  constants overridden (tests/test_winpaths.py,
+  `test_default_unchanged_six_games_and_thirty_searches`).
+* **Cost** (depth 1, beam 4, expand 8): ~26 us per leaf on top of the batched C++
+  evaluation, ~0.12 ms per context; 1.26x the default's mean decision time on 30
+  mid-game positions (1.56x with spots), 1.18x mean / 1.25x p95 on the 281 main-phase
+  roots of one shadow game.

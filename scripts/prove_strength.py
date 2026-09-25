@@ -15,9 +15,9 @@ conformance check reports them as unverifiable).  ``--test ID=PATH`` (repeatable
 comma list) names the test; a positional file's test is inferred from its
 opponent, format and catanatron version.
 
-For every test (T1-T6, R1, R2) the script reports games, wins, win rate, the
-exact one-sided binomial p-value against the protocol null (0.25 in 1v3,
-0.5 for the 2v2 catanbot-win share), 95 % and 99 % Clopper-Pearson
+For every test (T1-T6, R1, R2, T7-T11) the script reports games, wins, win rate, the
+exact one-sided binomial p-value against the protocol null (0.25 in 1v3 and
+1v3-mixed, 0.5 for the 2v2 catanbot-win share), 95 % and 99 % Clopper-Pearson
 intervals, the per-seat (1v3, with the per-seat one-sided p against 0.25) or
 per-arrangement (2v2) breakdown, average VP of catanbot vs the opponents,
 turn-cap games (counted as losses), adapter errors, illegal-action
@@ -31,6 +31,19 @@ T1-T3: one-sided p < 0.05 against 0.25), the zero errors / fallbacks /
 crashes condition over all proof games, and the R1 / R2 condition (two-sided
 exact test against 0.25 has p > 0.01, or the rate is above 0.25), and prints
 PASS / FAIL for both claims with the reason of every failed condition.
+
+The protocol's amendments 2 and 3 add T7-T9 (1v3 against V / A / S with
+Colonist-level information for our bot, ``--info counted``, seed 900201) and
+T10 / T11 (1v3 against a mixed table of one V, one A and one S, format
+``1v3-mixed``, full / counted information, seeds 900301 / 900401).  Claim 3
+(T7-T9) and claim 4 (T10-T11) each require: the registered data (as above,
+plus the information mode with its samples and hidden discards, the mixed
+opponent list and every game's lineup), Holm over the claim's own tests at
+family alpha 5.7e-7, the lower end of the 99 % Clopper-Pearson interval
+>= 0.35 in each test, every seat one-sided p < 0.05 against 0.25, and zero
+adapter errors, fallbacks, crashes, counted-mode tracker errors and belief
+resets.  The readiness verdict needs claims 2, 3 and 4.  Claims 1 and 2 and
+their reading are unchanged (the T7-T11 code paths never touch them).
 ``--markdown PATH`` writes the same as a Markdown body for ``docs/PROOF.md``;
 ``--json PATH`` the full analysis.
 
@@ -54,7 +67,7 @@ import os
 import sys
 from fractions import Fraction
 from functools import lru_cache
-from itertools import combinations
+from itertools import combinations, permutations
 from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 # ---------------------------------------------------------------------------
@@ -71,13 +84,21 @@ ARRANGEMENTS_2V2: Tuple[Tuple[int, int], ...] = tuple(combinations(range(NUM_SEA
 
 class TestDef(NamedTuple):
     tid: str
-    opponent: str          # bench preset
+    opponent: str          # bench preset (mixed table: the bench's comma list)
     opponent_class: str
-    fmt: str               # "1v3" | "2v2"
+    fmt: str               # "1v3" | "2v2" | "1v3-mixed"
     games: int
     seed: int
     engine: str            # catanatron version (exact, as registered)
+    info: str = "full"     # our bot's information mode (amendment 2): "full" | "counted"
+    opponents: Tuple[str, ...] = ()   # the mixed table's presets, in the registered order (amendment 3)
 
+
+#: Amendment 3: the mixed table, one copy each, permuted in this order.
+MIXED_OPPONENTS: Tuple[str, ...] = ("value", "alphabeta", "sameturn")
+MIXED_CLASS = "ValueFunctionPlayer+AlphaBetaPlayer+SameTurnAlphaBetaPlayer"
+#: Amendment 2: "--info counted with default samples" (the bench's --info-samples default), discards hidden.
+PROTOCOL_INFO_SAMPLES = 4
 
 TESTS: Dict[str, TestDef] = {
     "T1": TestDef("T1", "value", "ValueFunctionPlayer", "1v3", 1000, 900001, "3.3.0"),
@@ -88,17 +109,34 @@ TESTS: Dict[str, TestDef] = {
     "T6": TestDef("T6", "sameturn", "SameTurnAlphaBetaPlayer", "2v2", 400, 900001, "3.3.0"),
     "R1": TestDef("R1", "vf", "ValueFunctionPlayer", "1v3", 1000, 900101, "3.2.1"),
     "R2": TestDef("R2", "ab", "AlphaBetaPlayer", "1v3", 400, 900101, "3.2.1"),
+    # amendment 2 (claim 3): Colonist-level information for our bot
+    "T7": TestDef("T7", "value", "ValueFunctionPlayer", "1v3", 1000, 900201, "3.3.0", "counted"),
+    "T8": TestDef("T8", "alphabeta", "AlphaBetaPlayer", "1v3", 400, 900201, "3.3.0", "counted"),
+    "T9": TestDef("T9", "sameturn", "SameTurnAlphaBetaPlayer", "1v3", 400, 900201, "3.3.0", "counted"),
+    # amendment 3 (claim 4): one catanbot seat against one V, one A and one S
+    "T10": TestDef("T10", ",".join(MIXED_OPPONENTS), MIXED_CLASS, "1v3-mixed", 400, 900301, "3.3.0", "full",
+                   MIXED_OPPONENTS),
+    "T11": TestDef("T11", ",".join(MIXED_OPPONENTS), MIXED_CLASS, "1v3-mixed", 400, 900401, "3.3.0", "counted",
+                   MIXED_OPPONENTS),
 }
 T_TESTS = ("T1", "T2", "T3", "T4", "T5", "T6")
 R_TESTS = ("R1", "R2")
-NULL: Dict[str, Fraction] = {"1v3": Fraction(1, 4), "2v2": Fraction(1, 2)}
+C3_TESTS = ("T7", "T8", "T9")
+C4_TESTS = ("T10", "T11")
+AMENDED_TESTS = C3_TESTS + C4_TESTS
+ONE_SEAT_FORMATS = ("1v3", "1v3-mixed")
+NULL: Dict[str, Fraction] = {"1v3": Fraction(1, 4), "2v2": Fraction(1, 2), "1v3-mixed": Fraction(1, 4)}
 CLAIM1_ALPHA = Fraction(1, 100)                 # family-wise, Holm over T1-T6
 CLAIM2_ALPHA = Fraction(57, 10 ** 8)            # 5.7e-7, one-sided 5 sigma, Holm over T1-T6
+CLAIM3_ALPHA = Fraction(57, 10 ** 8)            # 5.7e-7, Holm over T7-T9
+CLAIM4_ALPHA = Fraction(57, 10 ** 8)            # 5.7e-7, Holm over T10-T11
 EFFECT_CONF = 0.99
-EFFECT_LOWER = {"1v3": 0.35, "2v2": 0.55}        # lower 99 % Clopper-Pearson bound
-SEAT_ALPHA = Fraction(5, 100)                   # every seat of T1-T3, one-sided vs 0.25
+EFFECT_LOWER = {"1v3": 0.35, "2v2": 0.55, "1v3-mixed": 0.35}   # lower 99 % Clopper-Pearson bound
+SEAT_ALPHA = Fraction(5, 100)                   # every seat of T1-T3 (T7-T11), one-sided vs 0.25
 R_ALPHA = Fraction(1, 100)                      # R1 / R2 two-sided vs 0.25
 ERROR_KEYS = ("errors", "observe_errors", "fallback")
+INFO_ERROR_KEYS = ("info_errors", "info_resets")   # counted mode's tracker errors and belief resets (claims 3-4)
+CATANBOT = "catanbot"
 
 
 def game_seed(base_seed: int, g: int) -> int:
@@ -107,7 +145,25 @@ def game_seed(base_seed: int, g: int) -> int:
 
 
 def our_seats_for(g: int, fmt: str) -> Tuple[int, ...]:
-    return (g % NUM_SEATS,) if fmt == "1v3" else ARRANGEMENTS_2V2[g % len(ARRANGEMENTS_2V2)]
+    return (g % NUM_SEATS,) if fmt in ONE_SEAT_FORMATS else ARRANGEMENTS_2V2[g % len(ARRANGEMENTS_2V2)]
+
+
+#: The six orders of the mixed table, numbered as ``itertools.permutations`` (lexicographic):
+#: (V, A, S), (V, S, A), (A, V, S), (A, S, V), (S, V, A), (S, A, V).
+MIXED_PERMUTATIONS: Tuple[Tuple[int, ...], ...] = tuple(permutations(range(3)))
+
+
+def mixed_lineup(g: int, names: Sequence[str] = MIXED_OPPONENTS) -> Tuple[str, ...]:
+    """Who sits where in game ``g`` of the mixed table (amendment 3; turn order, seat 0 moves first):
+    catanbot in seat ``g % 4``, and the ``k``-th entry (k = 1, 2, 3) of permutation ``(g // 4) % 6`` of
+    ``names`` in the ``k``-th seat after it in turn order, seat ``(g + k) % 4``.  Written from the
+    protocol text independently of ``scripts/bench_catanatron.py`` (the tests compare the two)."""
+    seat = g % NUM_SEATS
+    perm = MIXED_PERMUTATIONS[(g // NUM_SEATS) % len(MIXED_PERMUTATIONS)]
+    lineup = [CATANBOT] * NUM_SEATS
+    for k in range(1, NUM_SEATS):
+        lineup[(seat + k) % NUM_SEATS] = names[perm[k - 1]]
+    return tuple(lineup)
 
 
 def seat_pattern(seats: Sequence[int]) -> str:
@@ -348,14 +404,28 @@ def load_chunks(path: str) -> List[Chunk]:
     return chunks
 
 
+def _info_mode(meta: Dict[str, object], recs: Sequence[Dict[str, object]]) -> str:
+    """The information mode a chunk says it was played in (bare records: counted iff they carry
+    the counted mode's ``info_stats``; results without the field are the original full mode)."""
+    info = meta.get("info")
+    if isinstance(info, dict) and info.get("mode"):
+        return str(info["mode"])
+    if not meta and any(isinstance(r.get("info_stats"), dict) for r in recs):
+        return "counted"
+    return "full"
+
+
 def infer_test(meta: Dict[str, object], recs: Sequence[Dict[str, object]]) -> Optional[str]:
-    """Test id of a chunk from its opponent, format and catanatron version (``None`` if unknown)."""
-    fmt = meta.get("format") or ("2v2" if any(len(r.get("our_seats") or [0]) == 2 for r in recs) else "1v3")
+    """Test id of a chunk from its opponent, format, catanatron version and information mode
+    (``None`` if unknown); among several matches the one with the chunk's base seed wins."""
+    fmt = meta.get("format") or ("2v2" if any(len(r.get("our_seats") or [0]) == 2 for r in recs)
+                                 else "1v3-mixed" if any(r.get("lineup") for r in recs) else "1v3")
     version = str(meta.get("catanatron", ""))
-    for tid, t in TESTS.items():
-        if meta.get("opponent") == t.opponent and fmt == t.fmt and version.startswith(t.engine):
-            return tid
-    return None
+    mode = _info_mode(meta, recs)
+    hits = [tid for tid, t in TESTS.items()
+            if meta.get("opponent") == t.opponent and fmt == t.fmt and version.startswith(t.engine) and mode == t.info]
+    seeded = [tid for tid in hits if meta.get("seed") == TESTS[tid].seed]
+    return (seeded or hits or [None])[0]
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +467,35 @@ def _meta_problems(t: TestDef, source: str, meta: Dict[str, object]) -> List[str
         probs.append(f"{name}: opponent params {meta.get('opponent_params')}, protocol: defaults")
     want("vps_to_win", PROTOCOL_VPS_TO_WIN, meta.get("vps_to_win"))
     want("discard_limit", PROTOCOL_DISCARD_LIMIT, meta.get("discard_limit"))
+    if t.tid in AMENDED_TESTS:   # T1-T6 / R1-R2 keep exactly the checks above
+        probs.extend(_amended_meta_problems(t, name, meta))
+    return probs
+
+
+def _amended_meta_problems(t: TestDef, name: str, meta: Dict[str, object]) -> List[str]:
+    """The fields amendments 2 and 3 register on top of the T1-T6 ones: our bot's information mode
+    (counted: the default samples and hidden discards) and, at the mixed table, the opponent list in
+    its registered order.  A missing field is a deviation, as above."""
+    probs = []
+    info = meta.get("info")
+    if not isinstance(info, dict) or "mode" not in info:
+        probs.append(f"{name}: information mode missing (info is {info!r}), protocol {t.info!r}")
+    else:
+        if info.get("mode") != t.info:
+            probs.append(f"{name}: information mode is {info.get('mode')!r}, protocol {t.info!r}")
+        if t.info == "counted":
+            if "samples" not in info or info.get("samples") != PROTOCOL_INFO_SAMPLES or isinstance(info.get("samples"), bool):
+                probs.append(f"{name}: info samples is {info.get('samples')!r}, protocol {PROTOCOL_INFO_SAMPLES} "
+                             f"(the default)")
+            if info.get("discards_public", None) is not False:
+                probs.append(f"{name}: discards_public is {info.get('discards_public')!r}, protocol False "
+                             f"(discarded cards hidden)")
+    if t.opponents:
+        got = meta.get("opponents")
+        if not isinstance(got, list) or [str(x) for x in got] != list(t.opponents):
+            probs.append(f"{name}: opponents {got!r}, protocol {list(t.opponents)!r} (in this order)")
+    elif meta.get("opponents") is not None:
+        probs.append(f"{name}: opponents {meta.get('opponents')!r} (a mixed table), protocol 3 x {t.opponent!r}")
     return probs
 
 
@@ -457,6 +556,7 @@ def analyze_test(tid: str, chunks: Sequence[Chunk]) -> Dict[str, object]:
     crashed_games = 0
     crash_attempts = 0
     err = {k: 0 for k in ERROR_KEYS}
+    info_err = {k: 0 for k in INFO_ERROR_KEYS}
     unmapped_top = 0
     opp_trade_errors = 0
     vp_ours: List[float] = []
@@ -464,7 +564,30 @@ def analyze_test(tid: str, chunks: Sequence[Chunk]) -> Dict[str, object]:
     seat_rows = {s: [0, 0] for s in range(NUM_SEATS)}
     arr_rows = {seat_pattern(a): [0, 0] for a in ARRANGEMENTS_2V2}
     bad_seed = bad_seats = bad_won = 0
+    no_info_stats = stray_info_stats = bad_lineup = 0
+    mixed_wins = {k: 0 for k in (CATANBOT,) + t.opponents + ("none",)} if t.opponents else None
     for r in recs:
+        ist = r.get("info_stats")
+        if isinstance(ist, dict):
+            for k in INFO_ERROR_KEYS:
+                info_err[k] += int(ist.get(k, 0) or 0)
+        if tid in AMENDED_TESTS:
+            # the information mode and the lineup are registered per game too (amendments 2 and 3)
+            if t.info == "counted" and not isinstance(ist, dict):
+                no_info_stats += 1
+            if t.info == "full" and ist is not None:
+                stray_info_stats += 1
+            lineup = r.get("lineup")
+            if t.opponents:
+                expected_lineup = list(mixed_lineup(int(r["game"]), t.opponents))
+                if not isinstance(lineup, list) or [str(x) for x in lineup] != expected_lineup:
+                    bad_lineup += 1
+                ws = int(r.get("winner_seat", -1))
+                name = (expected_lineup[ws] if r.get("winner") is not None and 0 <= ws < NUM_SEATS
+                        and not r.get("crashed") else "none")
+                mixed_wins[name] = mixed_wins.get(name, 0) + 1
+            elif lineup is not None:
+                bad_lineup += 1
         g = int(r["game"])
         seats = _record_seats(r)
         if r.get("seed") != game_seed(t.seed, g):
@@ -491,7 +614,7 @@ def analyze_test(tid: str, chunks: Sequence[Chunk]) -> Dict[str, object]:
                 vp_ours.append(sum(vps[s] for s in seats) / len(seats))
                 others = [v for i, v in enumerate(vps) if i not in seats]
                 vp_opp.append(sum(others) / len(others))
-        if t.fmt == "1v3":
+        if t.fmt in ONE_SEAT_FORMATS:
             seat_rows[seats[0]][1] += 1
             seat_rows[seats[0]][0] += won
         else:
@@ -504,8 +627,18 @@ def analyze_test(tid: str, chunks: Sequence[Chunk]) -> Dict[str, object]:
         problems.append(f"{bad_seats} game(s) with catanbot seats other than the protocol rotation")
     if bad_won:
         problems.append(f"{bad_won} record(s) whose 'won' disagrees with the winner seat (recomputed here)")
+    if no_info_stats:
+        problems.append(f"{no_info_stats} game(s) without the counted mode's tracker counters (info_stats): not "
+                        f"played in counted mode, or its tracker errors cannot be verified")
+    if stray_info_stats:
+        problems.append(f"{stray_info_stats} game(s) carry counted-mode tracker counters (info_stats): played in "
+                        f"counted mode, protocol 'full'")
+    if bad_lineup:
+        problems.append(f"{bad_lineup} game(s) whose lineup is not the protocol's "
+                        + ("(catanbot seat g % 4, opponents in permutation (g // 4) % 6 of "
+                           f"{', '.join(t.opponents)})" if t.opponents else "(3 x one opponent, no mixed lineup)"))
     p_one = binom_sf_exact(wins, n, null) if n else Fraction(1)
-    p_two = binom_two_sided_exact(wins, n, NULL["1v3"]) if n and t.fmt == "1v3" else None
+    p_two = binom_two_sided_exact(wins, n, NULL["1v3"]) if n and t.fmt in ONE_SEAT_FORMATS else None
     cp95 = clopper_pearson(wins, n, 0.95) if n else (0.0, 1.0)
     cp99 = clopper_pearson(wins, n, 0.99) if n else (0.0, 1.0)
     out: Dict[str, object] = {

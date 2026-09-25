@@ -638,3 +638,14 @@ machine was otherwise idle, load ~1.9 at 2 workers and ~2.6-2.9 at 3):
 
 3 workers give ~1.45x the 2-worker rate on an idle 4-core machine; with the other benchmark on 2 cores,
 use 2.  The alphabeta row rests on 4-6 games.
+
+## Planned: win-path races with crowding (`search.paths`)
+
+`catanbot/winpaths.py` (docs/STRATEGY.md "Win-path races") replaces static_value's permanent-award credit and flat
+Longest Road / Largest Army progress credit with a race-aware expected value (win probability over projected
+levels, a waste cost for crowded races, a passive floor).  Off by default; switch it on with the tunable
+`search.paths` (values `1`) or the spec key `paths=1`; its knobs are `search.paths_w`, `search.paths_crowd`,
+`search.paths_priors`, `search.paths_spots` and the `winpaths.*` constants (only with `paths=1` in the base spec).
+The staged, pre-registered plan (calibration, shadow diagnostics, E1-E3 main runs, crowding / weight sweeps,
+knock-outs incl. a seat-rotated PLACEBO, held-out confirmation), its gates and decision rules and the Stage 0
+results are in docs/ABLATIONS_WINPATHS.md.  Nothing beyond Stage 0 runs until the strength proof has finished.

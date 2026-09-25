@@ -363,7 +363,6 @@ class PathsContext:
             self.c_la = round(self.crowd * raw, 4)
         else:
             self.c_la = 0.0
-        self._scarcity = None
 
     # --- memo plumbing ------------------------------------------------------------------
     def _put(self, d: dict, key, value):
