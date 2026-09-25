@@ -249,15 +249,14 @@ def offer_response_report(state: GameState, me: int, evaluator, model=None, poli
                  if model is not None else None)
             takers.append((j, p))
     rows = []
-    lookahead_on = cfg.respond_lookahead
     for a, p_acc, edit in options:
-        cfg.respond_lookahead = 0
-        try:
-            mids = searcher._outcomes(s0, a, me)
+        try:     # the outcomes the search sees, at the moment the cards change hands ...
+            raw = (searcher._counter_outcomes(s0, a, me) if a[0] == A.COUNTER_TRADE
+                   else searcher._response_outcomes(s0, a, me))
         except E.IllegalActionError:
             continue
-        finally:
-            cfg.respond_lookahead = lookahead_on
+        mids = [(p, searcher._autoplay_others(m, me)) for p, m in raw]
+        # ... and after the rest of the proposer's turn (respond_lookahead)
         ends = [(p, searcher._finish_proposer_turn(m, me)) for p, m in mids]
         vals = [float(v) for v in evaluator.evaluate([m for _, m in mids] + [e for _, e in ends],
                                                      [me] * (2 * len(mids)))]
@@ -277,9 +276,8 @@ def offer_response_report(state: GameState, me: int, evaluator, model=None, poli
     # Builds the proposer makes anyway (after our reject): a build only counts as "enabled" when it is missing there.
     rej = next((r for r in rows if r["action"][0] == A.REJECT_TRADE), None)
     anyway = set()
-    if rej is not None:
-        for p, e in rej["ends"]:
-            anyway.update(proposer_builds(s0, e, cur))
+    if rej is not None and rej["ends"]:
+        anyway.update(proposer_builds(s0, max(rej["ends"], key=lambda t: t[0])[1], cur))
     lines: List[str] = []
     for r in rows:
         k = r["action"][0]
