@@ -4,6 +4,38 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 11:45 UTC - lookahead diagnosis: noise, not strategy
+
+The 15 % figure was 40-game noise; over 400 games vs the ValueFunction
+stand-in depth 2 scores 24.8 % (7.13 VP) vs depth 1 26.2 % (7.34 VP), and at
+the same table over 528 seats each 22.9 % vs 29.2 % (7.57 vs 7.81 VP): a
+consistent small deficit for 1.5-2x the compute.  Cause, measured on 200
+decision nodes: the sampled opponents'-turn correction has a per-sample
+noise of 0.028 win-prob between two candidates (chaotic divergence of the
+greedy opponents even with common dice), so with 4 roll samples the error
+is 0.014 while the margin between the best two actions is 0.002-0.008; the
+lookahead flips coin-flip decisions (30 % of main-phase top choices, 15 % of
+offer answers), and rollouts rate those flips as neutral.  Two mechanisms
+turn the noise into bias: only the top-4 end-of-turn nodes get the
+lookahead (horizon mixing: identical candidates valued differently by
+membership) and the [0,1] clamp in the backup.  Hypotheses ruled out by
+measurement: hoarding / pessimistic opponents (END_TURN with an affordable
+build 0.0 % at both depths), unrealistic opponent policy (oracle and
+END_TURN-only opponents change nothing), node budget, native vs Python,
+chance-node leaks.
+
+Fix being implemented: lookahead for every finished node, 12-24 roll
+samples with stratified / antithetic sequences, no clamp inside the backup,
+reliability shrinkage of the correction, cheap rolls-only opponents by
+default (the clever greedy opponents add cost but not accuracy), depth >= 3
+off by default.  De-noised depth 2 measured at 26.7 % / 7.35 VP vs vf
+(= depth 1).  Expectation to keep in mind: with the heuristic evaluator a
+de-noised lookahead only reaches parity; a real gain needs an evaluator
+whose error the simulation can correct, i.e. the value net trained on
+end-of-round search targets (task #15).  Benchmark rule from now on: never
+rank search settings on fewer than 400 games; report avg VP with the win
+rate.
+
 ## 2026-09-25 11:35 UTC - first strategy ablation sweep (5 of 11 tunables)
 
 120 paired games per candidate with the depth-1 search bot (2 vs 2 in the
