@@ -284,9 +284,15 @@ valued identical candidates differently by membership - the mean
 `future - static` is added to the leaves of pruned branches without clamping,
 and a node's own deviation from that mean is weighted by
 `n / (n + lookahead_shrink)` (0.5 at the default 12 samples).  With the
-heuristic evaluator a de-noised depth 2 plays at depth-1 strength (the
-lookahead's residual signal is small: rollouts rate its choices +0.001 +/-
-0.014 against depth 1); the reference top-4 x 4-sample depth 2 was 6 points
-weaker at the same table.  A gain from lookahead needs an evaluator error the
-simulation can correct (a value net trained on end-of-opponent-round targets,
-or exact one-round threat terms), not more sampled max^n.
+heuristic evaluator a de-noised depth 2 plays at depth-1 strength against the
+1-ply stand-in (23.9 % vs 24.9 % over 720 games; the pre-fix depth 2 scored
+21.2 %) and still 6-8 points below depth 1 against the alpha-beta stand-in,
+whatever the lookahead's sampling (DESIGN section 4): the lookahead's residual
+signal is small (rollouts rate its choices +0.001 +/- 0.014 against depth 1).
+A gain from lookahead needs an evaluator error the simulation can correct (a
+value net trained on end-of-opponent-round targets, or exact one-round threat
+terms), not more sampled max^n.  Depth 3 scores the lookahead leaves with a
+reduced sub-search for every leaf or for none (500 nodes per leaf must be
+left in `max_nodes` after the opponents' turns, DESIGN section 4 rule 4):
+at the SearchBot budget of 20000 nodes it is therefore exactly depth 2, and
+a real depth 3 costs ~250k nodes and seconds per decision.

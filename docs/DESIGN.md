@@ -248,14 +248,92 @@ search instead.  Three rules keep the horizons consistent
    estimate against the common mean; `lookahead_shrink = 0` restores the raw
    future values, a huge value the depth-1 ranking (plus a constant).
 
+4. At depth >= 3 the lookahead leaves (end nodes x roll samples) are scored
+   by the reduced sub-search **for every leaf or for none**
+   (`Searcher._leaves_affordable`, mirrored in `future_values` natively):
+   the sub-search runs only when `REDUCED_SEARCH_MIN_NODES` (500) nodes per
+   leaf are still left in `max_nodes` after the opponents' turns; otherwise
+   every leaf keeps its static value and depth 3 is exactly depth 2 (same
+   dice).  Before this rule the native path searched the leaves in tree order
+   until the budget ran out, so the shallowest end nodes (END_TURN first)
+   were valued one turn deeper than their siblings - the mixing of rule 1 one
+   level down - while the Python path ignored the global budget altogether
+   (137k nodes and 30 s per decision at `max_nodes = 20000`).  With the
+   defaults (~30 end nodes x 12 samples) a real depth 3 needs
+   `max_nodes >= ~250000` and costs seconds per decision; at the SearchBot
+   budget of 20000 nodes "depth 3" was depth 2 on about half of the mid-game
+   nodes and a tree-order-biased mixture on the rest, which is why the
+   same-table depth-3-vs-depth-2 numbers below are a near-null comparison.
+
 Invariants (tests/test_search.py): a lookahead that adds the same constant to
 every static value never changes the depth-1 ranking; every finished node of
 the tree is handed to `_future_values`; the mean of `value - static` over the
-lookahead nodes equals the shift for any `w`.  Defaults changed with this
+lookahead nodes equals the shift for any `w`; a depth-3 search whose budget
+cannot cover its leaves values and ranks exactly like depth 2, an ample
+budget searches every leaf.  Defaults changed with this
 fix: `opp_roll_samples` 6 -> 12, `finished_lookahead` 4 -> 0 (all), and
-`lookahead_shrink` (new) 12.  `selfplay.make_bot`'s spec keys still default
-to `opprolls=4, lookahead=3`; pass `lookahead=0,opprolls=12` for the fixed
-behaviour until those defaults follow.
+`lookahead_shrink` (new) 12 (the split-half reliability of the centred delta
+on 200 mid-game nodes is 0.50 at 12 vs 12 samples, i.e. a single-sample
+reliability of 0.077 and `k = (1 - r) / r = 12`; with `opponent_actions = 0`
+the per-sample differential noise falls from 0.028 to 0.008 but the signal
+from 0.020 to 0.005, and the measured `k` is 3).  `selfplay.make_bot`'s
+spec keys still default to `opprolls=4, lookahead=3`; pass
+`lookahead=0,opprolls=12` for the fixed behaviour until those defaults follow.
+
+Measured (catanatron 3.2.1 stand-ins, `scripts/bench_catanatron.py`, seat
+rotation, 2 workers; `vf` = 1-ply value function, `ab` = depth-2 alpha-beta;
+all bots `beam=4,expand=8,rolls=11,nodes=20000`, heuristic evaluator; win %
+with 95 % Wilson intervals, then average VP):
+
+| bot | vs vf, seeds 31+32 (120 games) | vs ab, seeds 31+32 (120) | vs vf, seeds 31-34 (720) | vs ab, seeds 31-33 (240) | s / searched decision |
+| --- | --- | --- | --- | --- | --- |
+| depth 1 | 22.5 (16-31), 6.97 | 26.7 (20-35), 7.20 | 24.9 (22-28), 7.27 | 28.8 (23-35), 7.34 | 0.015 |
+| depth 2 before the fix (top-4 end nodes, 4 samples, raw, clamped) | 19.2 (13-27), 7.01 | 19.2 (13-27), 6.79 | 21.2 (18-25), 7.02 (420) | 17.9 (14-23), 6.85 | 0.021 |
+| depth 2 after the fix (all end nodes, 12 samples, `k = 12`, unclamped) | 27.5 (20-36), 7.28 | 23.3 (17-32), 7.08 | 23.9 (21-27), 7.18 | 20.4 (16-26), 7.03 | 0.069 |
+| same, `lookahead_shrink = 0` (raw deltas) | - | - | 21.7 (19-25), 7.13 (600) | 15.8 (10-23), 6.84 (120) | 0.068 |
+| same, 24 samples | - | - | 23.3 (19-28), 7.30 (300) | 22.5 (16-31), 7.05 (120) | 0.125 |
+| same, `opponent_actions = 0` (rolls / discards / robber only), 24 samples | 20.0 (13-30), 6.98 | 22.5 (14-34), 6.96 | 23.9 (21-27), 7.20 | 20.8 (17-25), 6.86 (360) | 0.021 |
+
+The fix recovers the whole deficit against `vf` (parity with depth 1 within
++/-2.3 points over 720 games) and about a third of it against `ab`, where
+every depth-2 variant, fixed or not, stays 6-8 points below depth 1 (the 95 %
+intervals barely overlap).  The shrinkage matters (raw deltas are 2-5 points
+worse on the same seeds), 24 samples add nothing measurable over 12 at twice
+the cost, and simulating the opponents' builds adds nothing over rolls only
+(`opponent_actions = 0`) at three times the cost - the max^n opponents are
+kept as the default because they are the documented, parity-tested
+semantics, not because they earn their time.  Same table, 4 players, 32
+games, 2 seats each (`python3 -m catanbot eval`): depth 3 (same lookahead
+defaults; each leaf's reduced sub-search still uses the old top-2 x 4-sample
+lookahead, `search.reduced_config`) wins 12/64 seats = 18.8 % (11-30), 7.20
+VP against depth 2's 20/64 = 31.2 % (21-43), 8.23 VP.  That run predates
+rule 4: at `nodes = 20000` its "depth 3" bot was depth 2 on about half of
+its decisions (the budget was gone after the simulations) and a tree-order
+mixture on the rest, so the gap is mostly the noise of 32 games between two
+nearly identical bots, not evidence about depth 3 (see "Adversarial re-run"
+below).  The remaining lever is the
+evaluator: a de-noised lookahead only reaches depth-1 strength because its
+residual signal (0.01 win-probability across candidates) is what the static
+evaluator already knows.
+
+**Adversarial re-run** (new seeds 41 and 42, 60 games per cell, the same
+commands and specs as the table above).  Against `vf`: depth 2 after the fix
+24/120 = 20.0 % (14-28), 7.10 VP; depth 1 31/120 = 25.8 % (19-34), 7.47 VP
+(-5.8 points, s.e. 5.4).  Against `ab`: depth 2 after the fix 20/120 =
+16.7 % (11-24), 6.71 VP; depth 1 30/120 = 25.0 % (18-33), 6.92 VP (-8.3
+points, s.e. 5.2).  Pooled over every seed (31-34 and 41-42): vs `vf` depth
+2 196/840 = 23.3 % (21-26), 7.17 VP against depth 1 210/840 = 25.0 %
+(22-28), 7.30 VP (-1.7 +/- 2.1 points); vs `ab` depth 2 69/360 = 19.2 %
+(15-24), 6.92 VP against depth 1 99/360 = 27.5 % (23-32), 7.20 VP (-8.3 +/-
+3.1 points).  The +5.0 points vs `vf` on seeds 31+32 were seed noise: the
+fixed depth 2 is at best at parity with depth 1 against the 1-ply stand-in
+and clearly weaker against the alpha-beta one, for 4-5x the search time.
+Against the pre-fix depth 2 (21.2 % / 17.9 %) the fix gains 1-2 points,
+inside the noise.  On 276 decision nodes from real search-bot games the
+fixed depth 2 still disagrees with *itself* under different dice on 16 % of
+its top choices (main phase 23 %, discards 31 %) - almost as often as it
+disagrees with depth 1 (20 %) - so the sampled lookahead remains mostly
+noise at 12 samples.  ADVERSARIAL_TABLE_PLACEHOLDER
 
 ## 5. ML contract
 

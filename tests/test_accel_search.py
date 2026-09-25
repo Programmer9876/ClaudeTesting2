@@ -927,3 +927,63 @@ def test_reduced_search_values_every_end_node_by_default(positions):
         assert n_all >= n_top
         more += n_all > n_top
     assert more >= 4
+
+
+def test_native_depth3_sub_search_is_all_or_none(positions):
+    """future_values(depth >= 2) runs the reduced sub-search for every leaf or for none (Searcher._leaves_affordable
+    natively): with REDUCED_SEARCH_MIN_NODES x leaves - 1 nodes left after the simulations the values are exactly
+    the depth-1 ones, with one node more every leaf is searched; a Searcher at depth 3 whose budget cannot cover
+    its leaves ranks and values exactly like depth 2 (same dice)."""
+    ev = HeuristicEvaluator()
+    h = accel.native_evaluator(ev)
+    cfg = SearchConfig(depth=3, beam=4, expand=8)
+    lv = [S.native_level_dict(cfg), S.native_level_dict(reduced_config(cfg, 2, 5000))]
+    checked = 0
+    for s in positions[:8]:
+        me = s.current
+        eot = _end_of_turn_states(s, me, k=3)
+        if not eot:
+            continue
+        rolls = [[6, 8, 7, 5, 9, 4, 10, 3, 11, 2, 12, 6], [8, 6, 5, 9, 7, 10, 4, 3, 11, 12, 2, 6]]
+        leaves = len(eot) * len(rolls)
+        v1, n1 = core.future_values(eot, me, 1, lv[:1], rolls, h, None, 3, None, None, False)
+        need = n1 + S.REDUCED_SEARCH_MIN_NODES * leaves
+        v_no, n_no = core.future_values(eot, me, 2, lv, rolls, h, None, 3, None, need - 1, False)
+        np.testing.assert_array_equal(np.asarray(v_no), np.asarray(v1))
+        assert n_no == n1
+        v_all, n_all = core.future_values(eot, me, 2, lv, rolls, h, None, 3, None, need, False)
+        assert n_all > n1 and np.all((np.asarray(v_all) >= 0.0) & (np.asarray(v_all) <= 1.0))
+        checked += 1
+    assert checked >= 4
+    # the Searcher: depth 3 at the SearchBot budget is exactly depth 2 when the leaves are not affordable (the
+    # budget left after the depth-2 search's tree and simulations is what the depth-3 gate sees)
+    same = 0
+    real = accel.future_values
+    seen = []
+
+    def spy(states, *args, **kw):
+        seen.append(len(states))
+        return real(states, *args, **kw)
+
+    for s in positions[:6]:
+        me = s.current
+        seen.clear()
+        se2 = Searcher(ev, SearchConfig(depth=2, beam=4, expand=8, max_nodes=20000))
+        accel.future_values = spy
+        try:
+            r2 = se2.search(s, me, random.Random(5))
+        finally:
+            accel.future_values = real
+        if not seen:
+            continue
+        leaves = seen[0] * 12
+        se3 = Searcher(ev, SearchConfig(depth=3, beam=4, expand=8, max_nodes=20000))
+        r3 = se3.search(s, me, random.Random(5))
+        assert se3.native_active
+        if 20000 - se2.nodes >= S.REDUCED_SEARCH_MIN_NODES * leaves:
+            assert se3.nodes > se2.nodes  # a small tree: every leaf was searched
+            continue
+        assert se3.nodes == se2.nodes
+        assert [(r.action, r.value) for r in r3] == [(r.action, r.value) for r in r2]
+        same += 1
+    assert same >= 3

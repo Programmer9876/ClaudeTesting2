@@ -413,12 +413,14 @@ double backup(std::vector<RNode>& nodes, int i, double shift) {
 
 }  // namespace
 
-double reduced_search(SearchCtx& ctx, const GameStateC& root, int me, int depth, int L, DrawSource& draw) {
+double reduced_search(SearchCtx& ctx, const GameStateC& root, int me, int depth, int L, DrawSource& draw,
+                      long node_cap) {
     const std::vector<LevelCfg>& levels = *ctx.levels;
     if (L >= (int)levels.size()) return ctx.ev->evaluate(root, me);
     const LevelCfg& cfg = levels[L];
     const long nodes_start = ctx.nodes;
-    auto exhausted = [&]() { return budget_exhausted(ctx) || (ctx.nodes - nodes_start) >= cfg.max_nodes; };
+    const long max_nodes = node_cap > 0 ? node_cap : cfg.max_nodes;
+    auto exhausted = [&]() { return budget_exhausted(ctx) || (ctx.nodes - nodes_start) >= max_nodes; };
     {
         std::unique_ptr<ActionList> legal(new ActionList());
         legal_actions(root, *legal);
@@ -577,7 +579,14 @@ void future_values(SearchCtx& ctx, const std::vector<GameStateC>& states, int me
         }
     }
     std::vector<double> vals(leaves.size(), 0.0);
-    if (depth >= 2 && !budget_exhausted(ctx)) {
+    // Searcher._leaves_affordable: the reduced sub-search runs for every leaf or for none.  `remaining` is the
+    // budget left after the simulations above (Python: max_nodes - self.nodes), the per-leaf cap is
+    // search.reduced_config's max(REDUCED_SEARCH_MIN_NODES, budget) recomputed on it.
+    const long n_leaves = (long)std::max<size_t>(1, leaves.size());
+    const long remaining = ctx.node_budget < 0 ? std::numeric_limits<long>::max() : ctx.node_budget - ctx.nodes;
+    const bool affordable = remaining >= REDUCED_SEARCH_MIN_NODES * n_leaves;
+    const long per_leaf = ctx.node_budget < 0 ? -1L : std::max(REDUCED_SEARCH_MIN_NODES, remaining / n_leaves);
+    if (depth >= 2 && !budget_exhausted(ctx) && affordable) {
         for (size_t k = 0; k < leaves.size(); ++k) {
             const GameStateC& leaf = leaves[k];
             if (leaf.phase == PHASE_GAME_OVER || acting_player(leaf) != me) {
@@ -586,7 +595,7 @@ void future_values(SearchCtx& ctx, const std::vector<GameStateC>& states, int me
             }
             Xoshiro xo(mix_seed(ctx.seed, L + 64, (int)(k / (size_t)n_samples), (int)(k % (size_t)n_samples)));
             DrawSource& draw = ctx.shared_rng != nullptr ? *ctx.shared_rng : static_cast<DrawSource&>(xo);
-            vals[k] = reduced_search(ctx, leaf, me, depth, L + 1, draw);
+            vals[k] = reduced_search(ctx, leaf, me, depth, L + 1, draw, per_leaf);
         }
     } else {
         for (size_t k = 0; k < leaves.size(); ++k) vals[k] = ctx.ev->evaluate(leaves[k], me);

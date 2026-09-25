@@ -629,3 +629,41 @@ def test_reduced_config_keeps_the_shrinkage_and_native_level_dict_carries_it():
     d = native_level_dict(cfg)
     assert d["lookahead_shrink"] == 7.5 and d["finished_lookahead"] == 0 and d["opp_roll_samples"] == 12
     assert all(isinstance(d[k], int) for k in d if k != "lookahead_shrink")
+
+
+def test_depth3_sub_search_runs_for_every_lookahead_leaf_or_for_none():
+    """The depth-3 leaves (end nodes x roll samples) are searched one turn deeper only when ``max_nodes`` still
+    covers ``REDUCED_SEARCH_MIN_NODES`` for each of them after the opponents' turns; otherwise every leaf keeps the
+    static value and depth 3 is exactly depth 2 (same dice).  A partial set would value the first end nodes of the
+    tree deeper than their siblings."""
+    from catanbot.search import REDUCED_SEARCH_MIN_NODES
+    ev = HeuristicEvaluator()
+    base = dict(beam=2, expand=4, trade_proposals=0, opp_roll_samples=2, roll_samples=5, native_future=False)
+
+    class Spy(Searcher):
+        def _reduced_search_values(self, leaves, me, depth):
+            self.sub_leaves = len(leaves)
+            self.sub_remaining = self.config.max_nodes - self.nodes
+            return super()._reduced_search_values(leaves, me, depth)
+
+    s = mid_game(seed=13)
+    d2 = Searcher(ev, SearchConfig(depth=2, max_nodes=4000, **base))
+    r2 = d2.search(s, 0, random.Random(1))
+    tight = Spy(ev, SearchConfig(depth=3, max_nodes=4000, **base))
+    r3 = tight.search(s, 0, random.Random(1))
+    assert not hasattr(tight, "sub_leaves")                      # not affordable: no leaf was searched ...
+    assert tight.nodes == d2.nodes                               # ... and nothing else changed
+    assert [(r.action, r.value) for r in r3] == [(r.action, r.value) for r in r2]
+    ample = Spy(ev, SearchConfig(depth=3, max_nodes=10 ** 6, **base))
+    r3a = ample.search(s, 0, random.Random(1))
+    assert ample.sub_leaves > 0                                  # affordable: every leaf, in one call
+    assert ample.sub_remaining >= REDUCED_SEARCH_MIN_NODES * ample.sub_leaves
+    assert ample.nodes > d2.nodes
+    assert [r.action for r in r3a] and any(abs(a.value - b.value) > 1e-9 for a, b in zip(r3a, r2)
+                                           if a.action == b.action) or [r.action for r in r3a] != [r.action for r in r2]
+    # the rule itself, on the accounting the searcher keeps
+    se = Searcher(ev, SearchConfig(depth=3, max_nodes=2000, **base))
+    se.nodes = 0
+    assert se._leaves_affordable(4) and not se._leaves_affordable(5)
+    se.nodes = 1
+    assert not se._leaves_affordable(4)

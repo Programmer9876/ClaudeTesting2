@@ -800,10 +800,32 @@ reduced search mirrors all three (`apply_lookahead` is bitwise, checked by
 `test_apply_lookahead_and_lookahead_weight_are_bitwise_native`).  Cost with
 the SearchBot configuration: 0.07 s per depth-2 decision (12 end nodes on
 average x 12 samples, ~8k nodes) against 0.025 s for the old top-4 x 4
-samples.  Strength after the fix is reported in the results log / the
-diagnosis table (stand-in ladder and same-table runs); depth 3 still gets the
-old top-2 x (n / 3) samples inside each reduced sub-search
-(`search.reduced_config`) for budget reasons.
+samples.  Strength after the fix (DESIGN section 4, measured table): against
+the catanatron stand-ins depth 2 rises from 21.2 % / 7.02 VP to 23.9 % /
+7.18 VP vs `vf` (parity with depth 1's 24.9 % over 720 games) and from 17.9 %
+to 20.4 % vs `ab` (depth 1: 28.8 %, 240 games); at the same table depth 3
+(12/64 seats, 7.20 VP) still loses to depth 2 (20/64, 8.23 VP) over 32
+games.  Depth 3 still gets the old top-2 x (n / 3) samples inside each
+reduced sub-search (`search.reduced_config`) for budget reasons, and the
+`opponent_actions = 0` variant (rolls, discards and the robber only, 24
+samples) plays exactly as strongly as the greedy opponents at 0.021 s per
+decision.
+
+That depth-3 table is a near-null comparison: with every end node x 12
+samples the depth-3 lookahead has ~370 leaves per decision, the opponents'
+simulations alone use 7-37k nodes, and at `max_nodes = 20000` the global
+budget was exhausted before (9 of 20 mid-game nodes: depth 3 bitwise equal to
+depth 2) or shortly after the first leaves' sub-searches, which were scored
+in tree order (the shallowest END_TURN lines first) - the horizon mixing of
+DESIGN section 4 rule 1 one level down - while the Python path ignored the
+global budget (137k nodes, 30 s per decision).  `future_values` now mirrors
+`Searcher._leaves_affordable` (DESIGN rule 4): the sub-search runs for every
+leaf or for none (`REDUCED_SEARCH_MIN_NODES` = 500 nodes per leaf must be
+left after the simulations), the per-leaf cap is recomputed on the budget
+left at that point like `search.reduced_config`'s, and a depth-3 Searcher
+whose budget cannot cover its leaves ranks and values exactly like depth 2
+(`test_native_depth3_sub_search_is_all_or_none`).  A real depth 3 with the
+defaults needs `max_nodes >= ~250000` (seconds per decision).
 
 
 

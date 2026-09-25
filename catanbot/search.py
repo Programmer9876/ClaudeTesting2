@@ -16,7 +16,8 @@ Structure
   play their turns with a greedy version of the same value function
   (max^n), with dice rolls sampled with common random numbers, until it is
   our turn again; then the leaf is evaluated by the value net (or, for
-  ``depth >= 3``, by a reduced recursive search).  Every finished node gets
+  ``depth >= 3``, by a reduced recursive search - for every leaf or for
+  none, ``_leaves_affordable``).  Every finished node gets
   it (``finished_lookahead = 0``), so no candidate is valued at a different
   horizon than its siblings; the sampled part of the future value (its
   difference from the static value, minus the mean difference) is shrunk by
@@ -115,6 +116,12 @@ class _Node:
 
 _ROLL_ORDER = sorted(B.ROLL_PROB.items(), key=lambda kv: -kv[1])
 
+# Node budget one leaf of the depth >= 3 lookahead needs for its reduced sub-search (``reduced_config``'s floor).
+# ``_future_values`` runs the sub-search for every leaf or for none (``REDUCED_SEARCH_MIN_NODES`` x leaves must be
+# left in ``max_nodes`` after the opponents' turns): a partial set, valued one turn deeper than the rest, would
+# rank the end-of-turn nodes by their order in the tree.  Mirrored by cpp/search.cpp (future_values).
+REDUCED_SEARCH_MIN_NODES = 500
+
 
 def roll_distribution(samples: int) -> List[Tuple[int, float]]:
     """Most likely ``samples`` roll totals, renormalised."""
@@ -129,14 +136,14 @@ def reduced_config(cfg: SearchConfig, depth: int, budget: int) -> SearchConfig:
     """The config of the reduced sub-search that scores the leaves of ``_future_values`` at ``depth >= 2``.
 
     Shared by the Python path (``_reduced_search_values``) and the native one (one entry per lookahead level).
-    ``budget`` is the node budget left per leaf; the sub-search gets at least 500 nodes.
+    ``budget`` is the node budget left per leaf; the sub-search gets at least ``REDUCED_SEARCH_MIN_NODES`` nodes.
     """
     return SearchConfig(depth=depth, beam=max(2, cfg.beam // 3), expand=max(4, cfg.expand // 2),
                         max_actions_per_turn=4, roll_samples=min(cfg.roll_samples, 5),
                         opp_roll_samples=max(2, cfg.opp_roll_samples // 3),
                         opponent_actions=3, opponent_expand=4, finished_lookahead=2,
                         lookahead_shrink=cfg.lookahead_shrink,
-                        max_nodes=max(500, budget),
+                        max_nodes=max(REDUCED_SEARCH_MIN_NODES, budget),
                         trade_proposals=1, discard_candidates=2, use_opponent_model=cfg.use_opponent_model,
                         trade_cap_early=cfg.trade_cap_early, trade_cap_late=cfg.trade_cap_late,
                         opponent_proposals=0, dump_candidates=min(2, cfg.dump_candidates),
@@ -723,7 +730,7 @@ class Searcher:
                 s = self._simulate_until_my_turn(s0, me, seq)
                 leaves.append(s)
                 owner.append(si)
-        if depth >= 2 and not self._budget_exhausted():
+        if depth >= 2 and not self._budget_exhausted() and self._leaves_affordable(len(leaves)):
             vals = self._reduced_search_values(leaves, me, depth)
         else:
             vals = list(self._eval(leaves, [me] * len(leaves)))
@@ -733,6 +740,15 @@ class Searcher:
             out[o] += float(v)
             cnt[o] += 1
         return [out[i] / max(1, cnt[i]) for i in range(len(states))]
+
+    def _leaves_affordable(self, n_leaves: int) -> bool:
+        """depth >= 3: the reduced sub-search runs for every lookahead leaf or for none of them.
+
+        ``REDUCED_SEARCH_MIN_NODES`` nodes per leaf must be left in ``max_nodes`` after the opponents' turns were
+        simulated (``self.nodes`` counts them).  Searching only the leaves the budget still covers would value the
+        first end-of-turn nodes of the tree one turn deeper than their siblings, i.e. rank them by tree order.
+        """
+        return self.config.max_nodes - self.nodes >= REDUCED_SEARCH_MIN_NODES * max(1, n_leaves)
 
     def _native_rng(self):
         """The ``rng`` argument of the native call: a seed drawn from our stream (tests may return a Random)."""

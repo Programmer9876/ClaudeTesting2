@@ -77,9 +77,16 @@ void future_values(SearchCtx& ctx, const std::vector<GameStateC>& states, int me
                    const std::vector<std::vector<int>>& rolls, std::vector<double>& out,
                    std::vector<GameStateC>* leaves, std::vector<double>* leaf_values);
 
+// search.REDUCED_SEARCH_MIN_NODES: the node budget one lookahead leaf's reduced sub-search needs.  future_values
+// runs the sub-search for every leaf or for none (Searcher._leaves_affordable): a partial set, valued one turn
+// deeper than the rest, would rank the end-of-turn nodes by their order in the tree.
+constexpr long REDUCED_SEARCH_MIN_NODES = 500;
+
 // Searcher.search(state, me)[0].value for a reduced searcher configured with levels[L]
-// (no trade candidates); `depth` is that searcher's cfg.depth.
-double reduced_search(SearchCtx& ctx, const GameStateC& root, int me, int depth, int L, DrawSource& draw);
+// (no trade candidates); `depth` is that searcher's cfg.depth.  `node_cap` > 0 replaces levels[L].max_nodes
+// (the per-leaf budget future_values computes at run time, like search.reduced_config's ``budget``).
+double reduced_search(SearchCtx& ctx, const GameStateC& root, int me, int depth, int L, DrawSource& draw,
+                      long node_cap = -1);
 
 // search.roll_distribution(samples): totals and renormalised probabilities.
 int roll_distribution(int samples, int* totals, double* probs);
