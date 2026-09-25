@@ -621,6 +621,11 @@ def state_to_catanbot(st: State, vps_to_win: int = 10, mapping: Optional[BoardMa
         if ps[f"{cur_key}_HAS_ROLLED"]:
             s.phase = PHASE_MAIN
             s.dice = _last_roll_this_turn(action_log(st))
+        elif s.free_roads > 0:
+            # 3.3 lets Road Building be played before the roll and then prompts the free
+            # roads first: place them in a PHASE_MAIN state (dice 0); the ROLL prompt follows.
+            s.phase = PHASE_MAIN
+            s.dice = 0
         else:
             s.phase = PHASE_ROLL
             s.dice = 0

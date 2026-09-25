@@ -228,9 +228,13 @@ def _check_conversion(g, m):
     elif prompt == ActionPrompt.MOVE_ROBBER:
         assert cb.phase == PHASE_ROBBER
     else:
-        assert cb.phase == (PHASE_MAIN if ps[f"{cur}_HAS_ROLLED"] else PHASE_ROLL)
+        free = st.free_roads_available if st.is_road_building else 0
+        if free and not ps[f"{cur}_HAS_ROLLED"]:   # 3.3: Road Building played before the roll
+            assert API_33 and cb.phase == PHASE_MAIN and cb.dice == 0
+        else:
+            assert cb.phase == (PHASE_MAIN if ps[f"{cur}_HAS_ROLLED"] else PHASE_ROLL)
         assert (cb.dice > 0) == bool(ps[f"{cur}_HAS_ROLLED"])
-        assert cb.free_roads == (st.free_roads_available if st.is_road_building else 0)
+        assert cb.free_roads == free
     legal = E.legal_actions(cb)
     assert legal, cb.phase
     assert not any(a[0] == A.PROPOSE_TRADE for a in legal)

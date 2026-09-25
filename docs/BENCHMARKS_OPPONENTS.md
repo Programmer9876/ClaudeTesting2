@@ -156,6 +156,8 @@ PYTHONPATH=. python3 scripts/catanatron_ladder.py --games 24 --types F,V,V,V # o
 PYTHONPATH=. python3 scripts/catanatron_ladder.py --games 12 --stock-discard --json out.jsonl  # control: stock loop
 # catanatron 3.3 controls (X, Y) from the GitHub checkout without changing the install:
 PYTHONPATH=/home/user/bcollazo/catanatron/catanatron:. python3 scripts/catanatron_ladder.py --games 24 --types X,Y,F,A
+# the same players as opponents of the catanbot search bot (presets vf / ab of the adapter bench, both versions):
+PYTHONPATH=. python3 scripts/bench_catanatron.py --ladder standins --games 40 --workers 2
 ```
 
 Every 4-subset of `--types` plays `--games` games; the seat order rotates

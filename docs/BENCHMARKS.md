@@ -1,29 +1,50 @@
 # Benchmarks against catanatron
 
-[catanatron](https://pypi.org/project/catanatron/) (PyPI, version 3.2.1 here)
-is an independent Python Catan engine with its own rules implementation and a
-few built-in players.  `catanbot/bench/catanatron_adapter.py` lets a catanbot
-bot sit at a catanatron table: it converts catanatron's state into a
-`GameState`, runs the catanbot search on it and hands catanatron back one of
-its own `playable_actions`.  `scripts/bench_catanatron.py` plays batches of
-games against catanatron's players and prints win rates.  This gives an
-*external* yardstick that does not share any code with our engine, heuristics
-or value net.
+[catanatron](https://pypi.org/project/catanatron/) is an independent Python
+Catan engine with its own rules implementation and a few built-in players.
+`catanbot/bench/catanatron_adapter.py` lets a catanbot bot sit at a
+catanatron table: it converts catanatron's state into a `GameState`, runs the
+catanbot search on it and hands catanatron back one of its own
+`playable_actions`.  `scripts/bench_catanatron.py` plays batches of games
+against catanatron's players and prints win rates.  This gives an *external*
+yardstick that does not share any code with our engine, heuristics or value
+net.
+
+Two catanatron generations are supported and tested, selected by whichever
+interpreter runs the script: the **3.2.1 PyPI wheel** (system `python3`
+here: only the weak stock bots) and the **3.3.0 engine of the GitHub
+checkout** (`/home/user/venv_cat33/bin/python`, `pip install -e
+/home/user/bcollazo/catanatron`: ships the strong `ValueFunctionPlayer`,
+`AlphaBetaPlayer`, `SameTurnAlphaBetaPlayer`, `GreedyPlayoutsPlayer` and
+`MCTSPlayer`).  The adapter detects the API by feature
+(`catanatron_adapter.API_33`): 3.3 keeps the log as
+`State.action_records` of `ActionRecord(action, result)`, the playable
+actions on the `Game`, `apply_action` in its own module (and it must be
+given the record to replay a logged roll / robbery exactly), discards one
+`DISCARD_RESOURCE` per prompt with `State.discard_counts`, uses 2-tuple
+robber values, follows the official "dev cards are not playable the turn
+they are bought" rule and adds domestic-trade prompts.  See
+"Running the full ladder" below for the commands on each version.
 
 ```bash
-pip install catanatron                     # only needed for this benchmark (pulls networkx)
+pip install catanatron                     # 3.2.1 wheel; only needed for this benchmark (pulls networkx)
 python3 scripts/bench_catanatron.py --games 20 --opponent vp \
     --spec "search:depth=1,evaluator=heuristic" [--workers 2] [--seed 0] [--json out.json] [--verbose] \
     [--vps-to-win 10] [--discard-limit 7]
-python3 -m pytest tests/test_catanatron_adapter.py -q      # adapter tests (skipped without catanatron)
+python3 scripts/bench_catanatron.py --list-opponents       # which presets resolve on the running catanatron
+python3 -m pytest tests/test_catanatron_adapter.py tests/test_bench_script.py -q   # adapter tests (skipped without catanatron)
 ```
 
 * `--opponent vp` = `VictoryPointPlayer` (greedy one-ply VP maximiser, the
-  strongest player in the core `catanatron` package), `weighted` =
+  strongest player in the core `catanatron` 3.2.1 package), `weighted` =
   `WeightedRandomPlayer` (random, biased towards cities > settlements > dev
-  cards), `random` = `RandomPlayer` (uniform).  catanatron's stronger
-  `AlphaBetaPlayer` / MCTS players live in `catanatron_experimental`, which is
-  not installed here.
+  cards), `random` = `RandomPlayer` (uniform); `vf` / `ab` are our own
+  stand-in players built inside the engine (`docs/BENCHMARKS_OPPONENTS.md`,
+  both versions); `value`, `alphabeta`, `sameturn`, `playouts`, `mcts` are
+  catanatron's own strong players (3.3 only).  A preset the running
+  catanatron does not ship fails with a one-line
+  `... is not available on catanatron 3.2.1 ...` message and exit code 2
+  (inside a comma list or a `--ladder` it is skipped with the same line).
 * `--spec` is any `catanbot.selfplay.make_bot` spec (`search:...`,
   `heuristic`, `random`, `search:model=models/value_net.npz,...`).
 * Every game seats one catanbot player against three copies of the opponent;
@@ -136,7 +157,7 @@ h7=t13 (-2,2,0)   h8=t4 (-1,1,0)    h9=t0 (0,0,0)     h10=t1 (1,-1,0)   h11=t7 (
 | `map.port_nodes` (`None` = 3:1) | `ports = {vertex: type}` (18 vertices) |
 | `state.colors` (seating order) | `players[i]`, colour names `red/blue/orange/white` |
 | `P{i}_{RES}_IN_HAND` | `resources` |
-| `P{i}_{DEV}_IN_HAND` | `dev_cards` (all playable, see limitation 4); `dev_cards_new = 0` |
+| `P{i}_{DEV}_IN_HAND` | 3.2.1: `dev_cards` (all playable, see limitation 4), `dev_cards_new = 0`.  3.3: a type with `P{i}_{DEV}_OWNED_AT_START` set (playable) goes to `dev_cards`, a type bought this turn to `dev_cards_new`; VP cards always to `dev_cards` |
 | `P{i}_PLAYED_KNIGHT` | `played_knights` |
 | `buildings_by_color[c][SETTLEMENT / CITY / ROAD]` | `settlements / cities / roads` |
 | `P{i}_HAS_ROAD` + `LONGEST_ROAD_LENGTH`, `P{i}_HAS_ARMY` | `longest_road_owner / len`, `largest_army_owner` |
@@ -147,8 +168,9 @@ h7=t13 (-2,2,0)   h8=t4 (-1,1,0)    h9=t0 (0,0,0)     h10=t1 (1,-1,0)   h11=t7 (
 | `is_road_building` / `free_roads_available` | `free_roads` |
 | prompt `BUILD_INITIAL_SETTLEMENT` / `BUILD_INITIAL_ROAD` | `PHASE_SETUP_SETTLEMENT` / `PHASE_SETUP_ROAD` (+ `setup_round`, `setup_last_settlement`) |
 | prompt `PLAY_TURN`, not rolled / rolled | `PHASE_ROLL` / `PHASE_MAIN` (`dice` from the turn's logged `ROLL`) |
-| prompt `DISCARD` | `PHASE_DISCARD`, `discard_queue` = current discarder + later seats holding > 7 cards (catanatron's hard-coded rule for the later discarders, limitation 12) |
+| prompt `DISCARD` | `PHASE_DISCARD`, `discard_queue` = current discarder + later seats holding > 7 cards (3.2.1, catanatron's hard-coded rule for the later discarders, limitation 12) / + later seats with `discard_counts > 0` (3.3, which also prompts each seat once per card: mid-way the hand is already reduced) |
 | prompt `MOVE_ROBBER` | `PHASE_ROBBER` |
+| prompt `DECIDE_TRADE` / `DECIDE_ACCEPTEES` (3.3 domestic trades) | the turn player's `PHASE_MAIN` (no catanbot phase; the player declines, limitation 13) |
 | `ACTUAL_VICTORY_POINTS >= vps_to_win` | `winner`, `PHASE_GAME_OVER` |
 
 `total_vp(i)` of the converted state equals catanatron's
@@ -172,27 +194,37 @@ the search runs with `SearchConfig.trade_proposals = 0`.
 | `(SETUP_ROAD / BUILD_ROAD, e)` | `BUILD_ROAD`, `(node_a, node_b)` with `a < b` |
 | `(BUILD_CITY, v)` | `BUILD_CITY`, node id |
 | `(ROLL,)` | `ROLL`, `None` (the log stores the two dice) |
-| `(MOVE_ROBBER, hex, victim)` | `MOVE_ROBBER`, `(cube_coordinate, Color or None, None)` (the log fills the stolen card) |
+| `(MOVE_ROBBER, hex, victim)` | `MOVE_ROBBER`, `(cube_coordinate, Color or None, None)` on 3.2.1 (the log fills the stolen card), `(cube_coordinate, Color or None)` on 3.3 (the stolen card is the `ActionRecord.result`) |
 | `(PLAY_KNIGHT, hex, victim)` | `PLAY_KNIGHT_CARD`, `None`; the `(hex, victim)` is remembered and answered at the following `MOVE_ROBBER` prompt |
 | `(BUY_DEV,)` | `BUY_DEVELOPMENT_CARD`, `None` (log: the card) |
 | `(PLAY_ROAD_BUILDING,)` | `PLAY_ROAD_BUILDING`, `None` |
 | `(PLAY_YEAR_OF_PLENTY, r1, r2)` | `PLAY_YEAR_OF_PLENTY`, `("WOOD", "ORE")`-style pair (single-card picks exist only in catanatron) |
 | `(PLAY_MONOPOLY, r)` | `PLAY_MONOPOLY`, resource string |
 | `(BANK_TRADE, give, get)` | `MARITIME_TRADE`, 5-tuple: `ratio` copies of the given resource, `None` padding to four, then the asked resource, e.g. `("WHEAT","WHEAT","WHEAT",None,"BRICK")` |
-| `(DISCARD, counts)` | `DISCARD`, `None` (catanatron discards randomly; log: list of cards) |
+| `(DISCARD, counts)` | 3.2.1: `DISCARD`, `None` (catanatron discards randomly; log: list of cards).  3.3: `DISCARD_RESOURCE`, the plan's first card; `CatanbotPlayer` queues the other cards for the engine's following one-card prompts, and merges a logged run of one player's `DISCARD_RESOURCE`s back into one `(DISCARD, counts)` observation |
 | `(END_TURN,)` | `END_TURN`, `None` |
 | `PROPOSE_TRADE` and the other player-trade actions, forced `(ROLL, v)` | no equivalent |
 
 `test_action_round_trips_for_every_action_type` checks, over whole random
 games, that every catanatron playable action converts to a catanbot action
 that converts back to the same key, that catanbot's `legal_actions` on the
-converted state contains it (except the engine-chosen discard), and that
-every mappable catanbot action catanatron does *not* offer is one of the two
-documented rule differences below.
+converted state contains it (except the discards and, on 3.3, the non-knight
+dev cards offered before the roll, limitation 14), and that every mappable
+catanbot action catanatron does *not* offer is one of the two documented
+rule differences below.  The 3.3 domestic-trade actions (`OFFER_TRADE`,
+`ACCEPT_TRADE`, `REJECT_TRADE`, `CONFIRM_TRADE`, `CANCEL_TRADE`) have no
+catanbot equivalent and never appear in a stock game.
 
 ### `CatanbotPlayer.decide`
 
-1. One playable action (roll-only turns, the `DISCARD None` prompt): return it.
+0. 3.3 only: a `DISCARD` prompt runs the bot once, on the full hand, over
+   catanbot's `(DISCARD, counts)` options whose size is the engine's
+   `discard_counts`; the first card is played and the rest are queued for the
+   following one-card prompts (`stats["pending_discard"]`; if the queue no
+   longer matches the hand the bot plans again).  A `DECIDE_TRADE` /
+   `DECIDE_ACCEPTEES` prompt is answered with `REJECT_TRADE` /
+   `CANCEL_TRADE` (`stats["trade_prompts"]`).
+1. One playable action (roll-only turns, the 3.2.1 `DISCARD None` prompt): return it.
 2. `MOVE_ROBBER` prompt right after our `PLAY_KNIGHT_CARD`: execute the
    remembered `(hex, victim)`; if catanatron no longer offers it, fall through.
 3. Convert the state, take `engine.legal_actions`, keep the actions that map
@@ -207,37 +239,49 @@ documented rule differences below.
    end turn) are used.  With `strict=False` (the default) any adapter
    exception also ends in `fallback_action`, so a benchmark never crashes;
    the tests run with `strict=True`.
-5. Between decisions every action catanatron logged (`game.state.actions`,
-   fully specified: dice, stolen card, drawn dev card, discarded cards) is
-   replayed on a private *shadow* copy of catanatron's state, converting the
-   state before each action and calling `bot.observe(state, action, seat)` -
-   the same hook the self-play runner uses - so the opponent model and the
-   political tracker see the whole game.  `PLAY_KNIGHT_CARD` + `MOVE_ROBBER`
-   are merged into one `PLAY_KNIGHT` observation, delivered with the state
-   the *card* was played in (`PHASE_ROLL` / `PHASE_MAIN`, knight still in
-   hand) rather than the `PHASE_ROBBER` state after it, so that
-   `SearchBot.observe` predicts the decision from the same legal-action set
-   the observed `(PLAY_KNIGHT, hex, victim)` came from (tested).
+5. Between decisions every action catanatron logged (`game.state.actions`
+   on 3.2.1, `game.state.action_records` on 3.3; fully specified: dice,
+   stolen card, drawn dev card, discarded cards) is replayed on a private
+   *shadow* copy of catanatron's state (on 3.3 together with its
+   `ActionRecord`, because `apply_action` would otherwise roll fresh dice /
+   steal a fresh card from the `random.Random` the state shares with its
+   copies), converting the state before each action and calling
+   `bot.observe(state, action, seat)` - the same hook the self-play runner
+   uses - so the opponent model and the political tracker see the whole
+   game.  `PLAY_KNIGHT_CARD` + `MOVE_ROBBER` are merged into one
+   `PLAY_KNIGHT` observation, delivered with the state the *card* was played
+   in (`PHASE_ROLL` / `PHASE_MAIN`, knight still in hand) rather than the
+   `PHASE_ROBBER` state after it, so that `SearchBot.observe` predicts the
+   decision from the same legal-action set the observed
+   `(PLAY_KNIGHT, hex, victim)` came from (tested).  Likewise a 3.3 run of
+   one player's `DISCARD_RESOURCE` actions is one `(DISCARD, counts)`
+   observation with the state before the first card, where it is a legal
+   half-hand discard (tested on both versions).
 
 ## Limitations and rule differences
 
-1. **No player trading.**  catanatron has no domestic trades, so
+1. **No player trading.**  catanatron 3.2.1 has no domestic trades (3.3 has
+   them, but no stock player offers one and the adapter never does), so
    `PROPOSE_TRADE` never enters the search (`trades_this_turn` = max,
    `trade_proposals = 0`) and the trade-related parts of the opponent model
    keep their priors.  Feature `trades_this_turn` reads 4/4 for a value net.
-2. **Discards are random.**  catanatron's only `DISCARD` action has value
+2. **Discards are random on 3.2.1.**  Its only `DISCARD` action has value
    `None`; the engine samples the cards.  Our 7-protection (dumping surplus
-   before the roll) still applies, our discard *choice* does not.
+   before the roll) still applies, our discard *choice* does not.  On 3.3
+   the bot chooses its discard (one search on the full hand, handed over
+   card by card).
 3. **Road Building needs wood + brick in catanatron** (`road_building_possibilities`
    checks the road cost even for the free roads), and during the free roads
    only `BUILD_ROAD` is offered (no `END_TURN`).  catanbot may rank
    `PLAY_ROAD_BUILDING` first without the resources; it is then skipped for
    the next-ranked action (about 0.4 % of searched decisions; counted as
    `unmapped_top`, reported per kind by the script).
-4. **Dev cards are playable the turn they are bought** in catanatron (official
-   rules and catanbot: next turn).  All held cards go into `dev_cards`; the
-   search still assumes a card bought *during* the search is playable next
-   turn only, which only makes it slightly pessimistic about `BUY_DEV`.
+4. **Dev cards are playable the turn they are bought** in catanatron 3.2.1
+   (official rules and catanbot: next turn).  All held cards go into
+   `dev_cards`; the search still assumes a card bought *during* the search is
+   playable next turn only, which only makes it slightly pessimistic about
+   `BUY_DEV`.  3.3 follows the official rule (`{DEV}_OWNED_AT_START`) and the
+   adapter converts it exactly (`dev_cards` / `dev_cards_new`).
 5. **Knight before rolling** is two catanatron decisions; the robber target is
    carried over.  If the search is re-run at the `MOVE_ROBBER` prompt before
    the roll, the converted state is `PHASE_ROBBER` with `dice = 0` and the
@@ -284,36 +328,96 @@ documented rule differences below.
     the fifth road, catanatron scores the path 4 and awards nothing) and
     `test_longest_road_lengths_never_differ_by_more_than_one_through_games`
     checks the `cat in (cb, cb - 1)` invariant through whole games.
-12. **`discard_limit` only governs the first discarder.**  On a 7 catanatron
-    picks the first player to discard with `state.discard_limit` (default 7)
-    but advances to the *later* discarders with a hard-coded `> 7`
-    (`apply_action`'s `DISCARD` branch).  `state_to_catanbot` builds the
-    `discard_queue` with the same `> 7` rule for the later seats so it lists
-    exactly the seats catanatron goes on to prompt; with the default limit
-    the two rules coincide (every benchmark game), with a non-default
-    `--discard-limit` they do not (e.g. limit 9, hands `[10, 8, 6, 9]`:
-    catanatron prompts seats 0, 1 and 3 although only seats 0 and 3 exceed
-    9; limit 5, hands `[6, 6, 8, 3]`: only seats 0 and 2 are prompted).
-    `test_discard_queue_mirrors_catanatron_hard_coded_limit` replays these.
+12. **`discard_limit` only governs the first discarder (3.2.1).**  On a 7
+    catanatron 3.2.1 picks the first player to discard with
+    `state.discard_limit` (default 7) but advances to the *later* discarders
+    with a hard-coded `> 7` (`apply_action`'s `DISCARD` branch).
+    `state_to_catanbot` builds the `discard_queue` with the same `> 7` rule
+    for the later seats so it lists exactly the seats catanatron goes on to
+    prompt; with the default limit the two rules coincide (every benchmark
+    game), with a non-default `--discard-limit` they do not (e.g. limit 9,
+    hands `[10, 8, 6, 9]`: catanatron prompts seats 0, 1 and 3 although only
+    seats 0 and 3 exceed 9; limit 5, hands `[6, 6, 8, 3]`: only seats 0 and
+    2 are prompted).  `test_discard_queue_mirrors_catanatron_hard_coded_limit`
+    replays these.  3.3 applies the limit to everyone and fixes the counts at
+    the roll (`State.discard_counts`), which the queue follows
+    (`test_discard_queue_follows_discard_counts`).
+13. **3.3 domestic-trade prompts are declined.**  catanbot's trade logic
+    (`PROPOSE_TRADE` / `ACCEPT_TRADE` / ...) is not wired to catanatron
+    3.3's `OFFER_TRADE` protocol: our player never offers, answers a
+    `DECIDE_TRADE` prompt with `REJECT_TRADE` and a `DECIDE_ACCEPTEES`
+    prompt with `CANCEL_TRADE` (counted in `stats["trade_prompts"]`), and
+    the converted state of those prompts is the turn player's `PHASE_MAIN`.
+    No stock catanatron player offers trades, so this never triggers in the
+    ladder (`test_trade_prompts_are_declined` exercises it by hand).
+14. **3.3 offers Year of Plenty, Monopoly and Road Building before the
+    roll** (3.2.1 and catanbot: only the knight).  Those pre-roll options
+    have no legal catanbot counterpart in `PHASE_ROLL`, so they are never
+    chosen; the same card is played after the roll instead.  An opponent's
+    logged pre-roll play is observed with the `PHASE_ROLL` state (not a
+    legal action there; `SearchBot.observe` makes no prediction for those
+    kinds, so nothing breaks).  When Road Building was played before the
+    roll, 3.3 prompts the two free roads first: `state_to_catanbot` converts
+    that (`is_road_building` while not rolled) to a `PHASE_MAIN` state with
+    `free_roads` set and `dice = 0`, where the roads are legal.
+15. **`GreedyPlayoutsPlayer` runs its playouts in-process.**  catanatron
+    3.3's `playouts` preset opens a `multiprocessing.Pool(cpu_count())` per
+    decision; the bench script sets its `USE_MULTIPROCESSING` flag off when
+    it resolves the preset (the seeded playouts give the same result), so
+    `--workers` stays the only parallelism and the preset also works inside
+    the worker processes (which may not spawn children).
 
 ## Running the full ladder (strong Catanatron players)
 
-The PyPI release of Catanatron ships only the weak stock bots.  The strong
-players live in the GitHub checkout; install it into the same Python:
+The PyPI release of Catanatron (3.2.1) ships only the weak stock bots.  The
+strong players live in the GitHub checkout (3.3.0 engine); install it into
+its own interpreter (a venv, so the wheel stays available as well):
 
 ```bash
-git clone https://github.com/bcollazo/catanatron.git
-pip install -e catanatron
-python -c "from catanatron.players.minimax import AlphaBetaPlayer; print('ok')"
+git clone https://github.com/bcollazo/catanatron.git        # here: /home/user/bcollazo/catanatron
+python3 -m venv /home/user/venv_cat33 && /home/user/venv_cat33/bin/python -m pip install -e catanatron numpy pillow pytest
+/home/user/venv_cat33/bin/python scripts/bench_catanatron.py --list-opponents   # value/alphabeta/... "available"
 ```
 
-Then run our bot against every opponent family with one command (opponents
-that are not installed are skipped; the stock bots are the control group):
+The same script and adapter run on both versions (`--list-opponents` says
+which presets resolve on the interpreter in use; a preset that is not
+available is a one-line error with exit code 2 when asked for alone, and
+skipped inside a list or ladder).  Always run from the repository root with
+`PYTHONPATH` set; keep to `--workers 2` on this 4-core machine.
+
+Stand-in ladder on catanatron 3.2.1 (system `python3`; our `vf` / `ab`
+players plus the stock controls):
 
 ```bash
-python scripts/bench_catanatron.py --ladder full --games 100 --workers 4 \
-    --spec "search:depth=1,model=models/value_net.npz,blend=0.6" --json ladder.json
+cd /home/user/ClaudeTesting2
+PYTHONPATH=/home/user/ClaudeTesting2 python3 scripts/bench_catanatron.py --list-opponents
+PYTHONPATH=/home/user/ClaudeTesting2 python3 scripts/bench_catanatron.py --ladder controls --games 100 --workers 2 --seed 0 \
+    --spec "search:depth=1,evaluator=heuristic" --json ladder_321_controls.json      # ~0.4-0.5 s/game: ~1.5 min
+PYTHONPATH=/home/user/ClaudeTesting2 python3 scripts/bench_catanatron.py --ladder standins --games 100 --workers 2 --seed 0 \
+    --spec "search:depth=1,evaluator=heuristic" --json ladder_321_standins.json      # vf ~1.3 s/game, ab ~7 s/game: ~7 min
+# or both at once: --opponent random,weighted,vp,vf,ab
 ```
+
+Strong ladder on catanatron 3.3.0 (the venv; catanatron's own players):
+
+```bash
+cd /home/user/ClaudeTesting2
+PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/bench_catanatron.py --list-opponents
+PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/bench_catanatron.py \
+    --opponent value,alphabeta,sameturn --games 40 --workers 2 --seed 0 \
+    --spec "search:depth=1,evaluator=heuristic" --json ladder_330_strong.json
+PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/bench_catanatron.py \
+    --opponent mcts --games 4 --workers 2 --seed 0 --json ladder_330_mcts.json
+PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/bench_catanatron.py \
+    --opponent playouts --games 2 --workers 2 --seed 0 --json ladder_330_playouts.json
+# --ladder strong runs all five in this order: value, alphabeta, sameturn, playouts, mcts (mind the slow two)
+```
+
+Per-game cost of the 3.3 opponents with the depth-1 heuristic bot on this
+machine (one game, one worker, `--seed 1`): `value` 1.1 s, `alphabeta` 19 s,
+`sameturn` 22 s, so with two workers 20 minutes cover roughly 1000 / 120 /
+110 games of those; PLAYOUTS_MCTS_TIMING.  The stand-ins on 3.2.1 cost 1.3 s
+(`vf`) and 6.8 s (`ab`) per game, the stock controls 0.4-0.5 s.
 
 Presets: `random`, `weighted`, `vp` (stock controls), `vf`, `ab` (our
 stand-in value-function / alpha-beta players built inside the Catanatron
@@ -322,3 +426,13 @@ own strong players).  Any other opponent can be given as an import path,
 e.g. `--opponent mypkg.bots:MyPlayer`, and several as a comma list.  In
 4-player games the seat baseline is 25%; use at least 100 games per
 opponent for a win rate of 40%+ to be statistically clear.
+
+Smoke results of the dual-version work (2026-09-25, `--games 2 --workers 1
+--seed 1`, depth-1 heuristic bot; far too few games to be a benchmark, they
+only show both paths run cleanly): 3.2.1 vs `random` 2/2 wins, 0.40 s/game,
+0 adapter errors / fallbacks / observe errors; 3.3.0 vs `value` 0/2 wins
+(4.5 vs 6.8 VP), 1.1 s/game, 0 errors, 3 planned discard cards handed over
+card by card.  One game each vs `alphabeta` (9 VP, lost 9-10) and
+`sameturn` (3 VP) on 3.3.0 also ran with 0 errors.  catanatron 3.3's
+players are a real opponent, unlike the 3.2.1 stock bots: a proper
+strong-ladder run (40+ games per opponent) is the next step.
