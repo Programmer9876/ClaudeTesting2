@@ -400,7 +400,7 @@ def _event_from_match(ph: Phrase, m: "re.Match[str]", line: str) -> LogEvent:
             r = _CARD_WORDS.get((g.get("res") or "").lower())
         ev.resource = r
         if r is None:
-            ev.problem = f"monopoly resource '{g.get('res')}' not readable"
+            ev.problem = f"monopoly resource '{g['res']}' not readable" if g.get("res") else "monopoly resource missing"
     elif kind == "steal":
         cp = parse_cards(g.get("cards"))
         r = _single_card(cp)
@@ -414,7 +414,7 @@ def _event_from_match(ph: Phrase, m: "re.Match[str]", line: str) -> LogEvent:
             ev.cards = list(cp.counts)
         elif cp.ok and cp.unknown and not any(cp.counts):
             ev.count = cp.unknown
-        else:
+        elif not cp.empty:     # nothing at all: the count is half the hand (the tracker knows its size)
             ev.problem = "discarded cards not readable" + (f" (not cards: {', '.join(cp.bad)})" if cp.bad else "")
     elif kind in ("bank_trade", "player_trade", "offer", "counter"):
         _cards_or_problem(ev, g.get("cards"), "given cards")
@@ -748,6 +748,8 @@ class ColonistLogTracker(PublicBelief):
         self._state: Optional[GameState] = None
         self._rest: Sequence[LogEvent] = ()
         self._target: Optional[List[int]] = None
+        self._window_bank: Optional[List[int]] = None
+        self._hidden_7: Dict[int, int] = {}          # hidden discards of the 7 being resolved (seat -> cards)
         self._unknown_names: List[str] = []
 
     # --- identities -------------------------------------------------------------------
@@ -873,14 +875,18 @@ class ColonistLogTracker(PublicBelief):
         target = [self._screen_size(state, j) for j in range(self.n)]
         try:
             for k, events in enumerate(windows):
-                self._consume(list(events), target if k == len(windows) - 1 else None)
-            if self.counter is None:
+                last = k == len(windows) - 1
+                self._window_bank = [int(x) for x in bank] if (last and bank is not None) else None
+                self._consume(list(events), target if last else None)
+            if self.counter is None:          # no log yet: estimates from the screenshot alone
+                self._window_bank = [int(x) for x in bank] if bank is not None else None
                 self._start([], [], target)
             self.reconcile(state, bank)
         finally:
             self._state = None
             self._rest = ()
             self._target = None
+            self._window_bank = None
 
     @staticmethod
     def _screen_size(state: GameState, j: int) -> int:
@@ -1098,6 +1104,8 @@ class ColonistLogTracker(PublicBelief):
 
     def _apply_all(self, events: Sequence[LogEvent], keys: Sequence[str], target: Optional[List[int]]) -> None:
         for i, (ev, key) in enumerate(zip(events, keys)):
+            if self._hidden_7 and ev.kind != "discard":
+                self._flush_discards(events[i:])
             self._rest = events[i + 1:]
             self._target = target
             self.apply(ev)
@@ -1105,6 +1113,8 @@ class ColonistLogTracker(PublicBelief):
             self.entries += 1
             self.new_entries += 1
             self.stats["entries"] += 1
+        if self._hidden_7:
+            self._flush_discards([])
         if len(self.tail) > self.MAX_TAIL:
             del self.tail[:len(self.tail) - self.MAX_TAIL]
         self._rest = ()
@@ -1148,7 +1158,12 @@ class ColonistLogTracker(PublicBelief):
             s = len(events)
             sizes = list(end)
             my_start = mine_end
-        self.counter = self._prior(sizes, my_start)
+        bank = None
+        if self._window_bank is not None:     # the bank when the prior applies: before the stretch's changes
+            d_bank = self._bank_net(events[s:])
+            if d_bank is not None and min(self._window_bank[r] - d_bank[r] for r in range(5)) >= 0:
+                bank = [self._window_bank[r] - d_bank[r] for r in range(5)]
+        self.counter = self._prior(sizes, my_start, bank)
         self.estimated = [j != self.me and sizes[j] > 0 for j in range(n)]
         for j in range(n):
             if self.estimated[j]:
@@ -1159,28 +1174,55 @@ class ColonistLogTracker(PublicBelief):
             self.entries += 1
         self._apply_all(events[s:], keys[s:], target)
 
-    def _prior(self, sizes: Sequence[int], my_hand: Optional[Sequence[int]]) -> CardCounter:
+    def _prior(self, sizes: Sequence[int], my_hand: Optional[Sequence[int]],
+               bank: Optional[Sequence[int]] = None) -> CardCounter:
         """Joint hand hypotheses for a mid-game start: every opponent's ``sizes[j]`` cards drawn
         from its production-weighted prior (:func:`catanbot.counting.hand_prior_weights`), the most
-        likely combinations whose per-resource totals the 19-card decks allow."""
+        likely combinations whose per-resource totals the 19-card decks allow.  With the ``bank``
+        (at that point) the totals are exact: the last opponent's hand is what the others leave."""
         n = self.n
         dists: List[List[Tuple[Tuple[int, ...], float]]] = []
-        fixed = [0] * 5
+        weights: Dict[int, List[float]] = {}
         for j in range(n):
             if j == self.me and my_hand is not None:
-                h = tuple(int(x) for x in my_hand)
-                dists.append([(h, 1.0)])
-                fixed = [fixed[r] + h[r] for r in range(5)]
+                dists.append([(tuple(int(x) for x in my_hand), 1.0)])
             elif sizes[j] <= 0:
                 dists.append([((0,) * 5, 1.0)])
             else:
-                dists.append(_compositions(sizes[j], self._weights(j), top=self.PRIOR_TOP))
+                weights[j] = self._weights(j)
+                dists.append(_compositions(sizes[j], weights[j], top=self.PRIOR_TOP))
+        cap = min(self.PRIOR_JOINT, self.max_hypotheses)
+        joint: List[Tuple[Tuple[Tuple[int, ...], ...], float]] = []
+        free = [j for j in range(n) if len(dists[j]) > 1]
+        if bank is not None and free:
+            cols = [B.BANK_PER_RESOURCE - int(bank[r]) for r in range(5)]
+            last = free[-1]
+            w_last = weights[last]
+            tot_last = sum(w_last)
+            rest = [j for j in range(n) if j != last]
+
+            def forced(part) -> Optional[Tuple[int, ...]]:
+                h = [cols[r] - sum(x[r] for x in part) for r in range(5)]
+                return tuple(h) if min(h) >= 0 and sum(h) == sizes[last] else None
+
+            for part, w in _best_first([dists[j] for j in rest], 4 * cap, lambda part: forced(part) is not None,
+                                       max_scan=50 * cap):
+                h = forced(part)
+                full = list(part)
+                full.insert(last, h)
+                joint.append((tuple(full), w * _multinomial(h, [x / tot_last for x in w_last])))
+            joint = sorted(joint, key=lambda jw: -jw[1])[:cap]
+            if not joint:
+                self._warn("the bank on screen fits no estimate of the hands (a misread hand size or bank?): "
+                           "the estimate ignores it")
 
         def fits(joint) -> bool:
             return all(sum(h[r] for h in joint) <= B.BANK_PER_RESOURCE for r in range(5))
 
-        joint = _best_first(dists, min(self.PRIOR_JOINT, self.max_hypotheses), fits, max_scan=50 * self.PRIOR_JOINT)
+        if not joint:
+            joint = _best_first(dists, cap, fits, max_scan=50 * self.PRIOR_JOINT)
         c = CardCounter([[0] * 5] * n, max_hypotheses=self.max_hypotheses)
+        joint = [(jt, w) for jt, w in joint if w > 0]
         if joint:
             tot = sum(w for _, w in joint)
             c.hyps = {jt: w / tot for jt, w in joint}
@@ -1396,8 +1438,8 @@ class ColonistLogTracker(PublicBelief):
                        "missed or misread log entry")
         self.stats["hidden_steals"] += 1
         c.observe_steal(victim, thief, None)
-        self._mark(thief, f"a hidden steal from {self.label(victim)}")
-        self._mark(victim, f"a hidden steal by {self.label(thief)}")
+        self._mark(thief, f"a hidden steal with {self.label(victim)}")
+        self._mark(victim, f"a hidden steal with {self.label(thief)}")
 
     def _discard(self, p: int, ev: LogEvent) -> None:
         c = self.counter
@@ -1420,8 +1462,74 @@ class ColonistLogTracker(PublicBelief):
             self._warn(f"{self.label(p)} discarded {k} cards but held only {held} by the count: a missed or misread "
                        "log entry")
         self.stats["hidden_discards"] += 1
-        c.observe_discard(p, n=k)
-        self._mark(p, "a hidden discard")
+        self._hidden_7[p] = self._hidden_7.get(p, 0) + k
+
+    def _flush_discards(self, after: Sequence[LogEvent]) -> None:
+        """Apply the 7's hidden discards together (Colonist's discards are simultaneous).  With the
+        bank right after them - the bank on screen minus the public bank changes of the entries
+        ``after`` them - only the combinations matching it are kept (a single discarder is then
+        pinned down, several keep only their split open), as :class:`PublicInfoTracker` does."""
+        hidden, self._hidden_7 = self._hidden_7, {}
+        c = self.counter
+        bank = None
+        if self._window_bank is not None:
+            d = self._bank_net(after)
+            if d is not None:
+                bank = [self._window_bank[r] - d[r] for r in range(5)]
+                if min(bank) < 0:
+                    bank = None
+        if bank is not None:
+            saved = (dict(c.hyps), list(c.size), c.stats["resets"])
+            c.observe_discards(hidden, bank)
+            if c.stats["resets"] > saved[2]:
+                c.hyps, c.size, c.stats["resets"] = saved[0], saved[1], saved[2]
+                c._marg = None
+                bank = None
+                self._warn("the cards discarded on the 7 do not fit the bank on screen (a missed entry, or a misread "
+                           "bank): the discards were resolved without it")
+        if bank is None:
+            for p, k in sorted(hidden.items()):
+                c.observe_discard(p, n=k)
+        for p in hidden:
+            self._mark(p, "a hidden discard")
+
+    def _bank_net(self, events: Sequence[LogEvent]) -> Optional[List[int]]:
+        """Public change of the bank over ``events`` (``None`` when one of them is not readable)."""
+        d = [0] * 5
+        setup = self.setup
+        free = list(self.free_roads)
+        for ev in events:
+            k = ev.kind
+            p = self.seat_of(ev.player)
+            if k in ("roll", "turn"):
+                setup = setup and k != "roll"
+                free = [0] * self.n
+            elif k in ("gain", "year_of_plenty"):
+                if ev.cards is None:
+                    return None
+                d = [d[r] - ev.cards[r] for r in range(5)]
+            elif k == "build":
+                if ev.free or setup:
+                    continue
+                if ev.item == "road" and p is not None and free[p] > 0:
+                    free[p] -= 1
+                elif ev.item in BUILD_COSTS:
+                    d = [d[r] + BUILD_COSTS[ev.item][r] for r in range(5)]
+                else:
+                    return None
+            elif k == "buy_dev":
+                d = [d[r] + B.COST_DEV[r] for r in range(5)]
+            elif k == "play_dev" and ev.item == "road_building" and p is not None:
+                free[p] = 2
+            elif k == "bank_trade":
+                if ev.cards is None or ev.get is None:
+                    return None
+                d = [d[r] + ev.cards[r] - ev.get[r] for r in range(5)]
+            elif k == "discard":
+                if ev.cards is None:
+                    return None
+                d = [d[r] + ev.cards[r] for r in range(5)]
+        return d
 
     def _monopoly(self, p: int, ev: LogEvent) -> None:
         c = self.counter
@@ -1617,12 +1725,26 @@ class ColonistLogTracker(PublicBelief):
         dist = " / ".join(f"{B.RESOURCE_NAMES[r]} {p:.0%}" for p, r in probs)
         best = f"most likely {_counts_text(s['most_likely'])} ({s['most_likely_p']:.0%})"
         if s["estimated"]:
-            return f"{who}: {size} card(s), estimated (the session started mid-game): {dist}; {best}"
+            return f"{who}: {_cards(size)}, estimated (the session started mid-game): " + (f"{dist}; " if dist else "") + best
         if s["uncertain"] == 0:
-            return f"{who}: {_counts_text(s['certain'])} (exact, {size} card(s))"
-        why = f" from {', '.join(s['reasons'])}" if s["reasons"] else ""
+            return f"{who}: {_counts_text(s['certain'])} (exact, {_cards(size)})"
+        why = f" from {_reasons_text(s['reasons'])}" if s["reasons"] else ""
         cert = _counts_text(s["certain"]) + " certain" if any(s["certain"]) else "nothing certain"
-        return f"{who}: {cert}; {s['uncertain']} card(s) uncertain{why}: {dist}; {best}"
+        return f"{who}: {cert}; {_cards(s['uncertain'])} uncertain{why}: {dist}; {best}"
+
+
+def _cards(n: int) -> str:
+    return f"{n} card" + ("" if n == 1 else "s")
+
+
+def _reasons_text(reasons: Sequence[str]) -> str:
+    """The causes of a hand's uncertainty, steals merged: 'hidden steals with blue, green'."""
+    steals = [r[len("a hidden steal with "):] for r in reasons if r.startswith("a hidden steal with ")]
+    rest = [r for r in reasons if not r.startswith("a hidden steal with ")]
+    parts = []
+    if steals:
+        parts.append(("a hidden steal with " if len(steals) == 1 else "hidden steals with ") + ", ".join(steals))
+    return ", ".join(parts + rest)
 
 
 def _named(counts: Sequence[int]) -> Dict[str, int]:
@@ -1652,20 +1774,23 @@ class LogRenderer:
     ``render(pre, action, post)`` diffs the hands around one engine action and returns its log
     lines (the wording of :data:`PHRASES`): hidden information stays hidden - a steal shows its
     card only to the thief and the victim ("You stole ..." / "... from you"), a discard only its
-    count unless it is ours (or ``discards_public``).  ``style`` picks the card notation
-    (:data:`STYLES`, or ``"mixed"``: a random one per line, from ``rng``).
+    count unless it is ours (or ``discards_public``).  ``reveal_hidden`` (tests / diagnostics)
+    shows every stolen and discarded card: a count fed with it must equal the true hands.
+    ``style`` picks the card notation (:data:`STYLES`, or ``"mixed"``: a random one per line,
+    from ``rng``).
     """
 
     STYLES = ("counts", "words", "letters", "colonist")
 
     def __init__(self, me: int, names: Sequence[str], rng=None, style: str = "counts",
-                 discards_public: bool = False):
+                 discards_public: bool = False, reveal_hidden: bool = False):
         import random as _random
         self.me = int(me)
         self.names = list(names)
         self.rng = rng or _random.Random(0)
         self.style = style
         self.discards_public = bool(discards_public)
+        self.reveal_hidden = bool(reveal_hidden)
 
     def cards(self, counts: Sequence[int]) -> str:
         style = self.rng.choice(self.STYLES) if self.style == "mixed" else self.style
@@ -1704,7 +1829,7 @@ class LogRenderer:
         if kind == A.DISCARD:
             i = pre.discard_queue[0]
             d = [-x for x in delta(i)]
-            if i == self.me or self.discards_public:
+            if i == self.me or self.discards_public or self.reveal_hidden:
                 return [f"{nm[i]} discarded {self.cards(d)}"]
             return [f"{nm[i]} discarded {sum(d)} cards"]
         if kind in (A.MOVE_ROBBER, A.PLAY_KNIGHT):
@@ -1715,7 +1840,7 @@ class LogRenderer:
             if v >= 0:
                 got = [max(0, x) for x in delta(cur)]
                 if any(got):
-                    if self.me in (cur, v):
+                    if self.me in (cur, v) or self.reveal_hidden:
                         thief = "You" if cur == self.me else a
                         victim = "you" if v == self.me else nm[v]
                         out.append(f"{thief} stole {self.cards(got)} from {victim}")

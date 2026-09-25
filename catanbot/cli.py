@@ -218,6 +218,12 @@ def apply_fix(parsed: dict, fix: str) -> None:
         if attr == "cards":
             p["cards"] = _parse_int(vl, f"{color} card count", 0)
             return
+        if attr == "name":
+            # the player's name as the Colonist log writes it (card counting, --session / --game-log)
+            if not value.strip():
+                raise UsageError(f"{color}.name needs a name, e.g. '{color}.name=Kelsey'")
+            p["name"] = value.strip()
+            return
         if attr in ("dev", "dev_cards"):
             p["dev_cards"] = _parse_int(vl, f"{color} dev card count", 0, sum(B.DEV_DECK_COUNTS))
             return
@@ -575,10 +581,46 @@ def offer_affordability_warnings(state: GameState, me: int, proposer: int, give:
     return out
 
 
-def run_search(state: GameState, me: int, evaluator, cfg, args, model=None, politics=None, rng=None):
+def _read_game_log(path: str) -> str:
+    if path == "-":
+        return sys.stdin.read()
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def card_count_tracker(state: GameState, me: int, args, parsed: Optional[dict], report: Dict[str, Any]):
+    """``--session`` / ``--game-log``: the card-counting tracker (:mod:`catanbot.colonist_log`) of this
+    call - the session file's tracker (or a new one), fed this call's log windows (the log the
+    screenshot parser transcribed into ``parsed["log"]``, then the ``--game-log`` text), reconciled
+    with ``state`` (hand sizes, our hand, the bank when the parse shows it) and saved back."""
+    from .colonist_log import ColonistLogTracker, SessionError, events_from_json, parse_log_text
+    windows = []
+    if parsed is not None and parsed.get("log") is not None:
+        events, warns = events_from_json(parsed.get("log"))
+        windows.append(events)
+        report["warnings"].extend(f"game log in the parse: {w}" for w in warns)
+    game_log = getattr(args, "game_log", None)
+    if game_log:
+        windows.append(parse_log_text(_read_game_log(game_log)))
+    session = getattr(args, "session", None)
+    try:
+        tracker = ColonistLogTracker.open_session(session, state, me)
+    except SessionError as ex:
+        raise UsageError(str(ex))
+    bank = list(state.bank) if parsed is not None and parsed.get("bank") else None
+    tracker.update(windows, state, bank)
+    if session:
+        tracker.save(session)
+    return tracker
+
+
+def run_search(state: GameState, me: int, evaluator, cfg, args, model=None, politics=None, rng=None,
+               sampler=None):
     """Search ``state`` for ``me``.  Hidden hands are averaged over ``args.samples``
     determinizations that share one ``--time`` budget: the remaining time is split over
     the samples still to run and no new sample starts once the budget is spent.
+    ``sampler(rng)`` draws one determinization (card counting: the tracker's posterior); by
+    default :func:`catanbot.inference.sample_states` fills the hidden hands from the priors.
 
     Returns ``(ranked ScoredActions, info)`` with ``info = {seconds, samples, samples_done,
     time_limit, budget_hit}``.
@@ -595,7 +637,7 @@ def run_search(state: GameState, me: int, evaluator, cfg, args, model=None, poli
     elif is_fully_known(state):
         results = Searcher(evaluator, _dc_replace(cfg, time_limit=time_limit), model, None, politics).search(state, me, rng)
     else:
-        states = sample_states(state, me, n, rng)
+        states = [sampler(rng) for _ in range(n)] if sampler is not None else sample_states(state, me, n, rng)
         agg: Dict[Any, List[float]] = {}
         expl: Dict[Any, str] = {}
         lines: Dict[Any, List[Any]] = {}
@@ -641,6 +683,10 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
     report["evaluator"] = ev_name
     original = state
     state = state.copy()
+    tracker = None
+    if getattr(args, "session", None) or getattr(args, "game_log", None):
+        # card counting from the Colonist log (off by default): updated on the position as shown
+        tracker = card_count_tracker(original, me, args, parsed, report)
     model, politics = load_profiles(getattr(args, "profiles", None), state)
     for ev in getattr(args, "event", None) or []:
         err = model.observe_event(state, ev)
@@ -686,7 +732,12 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
         cfg.paths = 1
         cfg.paths_w = paths_w
     rng = random.Random(getattr(args, "seed", 0) or 0)
-    results, sinfo = run_search(state, me, evaluator, cfg, args, model, politics, rng)
+    if tracker is not None:
+        pub = tracker.public_view(state)
+        results, sinfo = run_search(state, me, evaluator, cfg, args, model, politics, rng,
+                                    sampler=lambda r: tracker.determinize(pub, r))
+    else:
+        results, sinfo = run_search(state, me, evaluator, cfg, args, model, politics, rng)
     report["search_seconds"] = sinfo["seconds"]
     report["search"] = sinfo
     if sinfo["budget_hit"]:
@@ -759,6 +810,14 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
         advice["win_paths"] = race_lines(state, me)
     except Exception as ex:  # pragma: no cover
         advice["win_paths"] = [f"(win paths unavailable: {ex})"]
+    if tracker is not None:
+        from .inference import is_fully_known
+        cc = tracker.report()
+        how = ("Every hand is known in this position: the search uses them." if is_fully_known(state) else
+               f"The search samples the opponents' hands from this count ({sinfo['samples']} determinization(s), "
+               "--samples).")
+        advice["card_count"] = cc["lines"][:1] + [how] + cc["lines"][1:]
+        report["card_count"] = cc
     report["advice"] = advice
     report["me"] = me
     report["state"] = original.to_dict()
@@ -821,7 +880,8 @@ def print_report(state: GameState, me: int, report: Dict[str, Any], parse_warnin
             print(f"     why: {a['explanation']}")
         if len(a["line"]) > 1:
             print(f"     line: {line}")
-    titles = [("offer", "Offer response (accept / reject / counter, after the proposer's turn)"),
+    titles = [("card_count", "Card count"),
+              ("offer", "Offer response (accept / reject / counter, after the proposer's turn)"),
               ("trading", "Trading"), ("seven_risk", "7-protection"), ("robber", "Knight / robber"),
               ("dev_cards", "Development cards"), ("politics", "Politics"), ("win_paths", "Win paths"),
               ("opponents", "Opponents")]
@@ -861,7 +921,10 @@ def cmd_analyze(args) -> int:
     if parser_kind == "llm":
         try:
             from .vision.llm import parse_with_claude
-            result = parse_with_claude(args.image, me=args.me)
+            if getattr(args, "session", None):
+                result = parse_with_claude(args.image, me=args.me, read_log=True)   # card counting
+            else:
+                result = parse_with_claude(args.image, me=args.me)
         except RuntimeError as ex:
             print(f"LLM parser unavailable: {ex}\nFalling back to the computer-vision parser.", file=sys.stderr)
             parser_kind = "cv"
@@ -1260,6 +1323,12 @@ def _add_recommend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--ids", action="store_true", help="also print the vertex / edge id numbering (for --fix pieces and ports)")
     p.add_argument("--log", help="append this position's win estimate to a JSONL log (for `calibrate`)")
     p.add_argument("--game", help="game id used with --log / outcome")
+    p.add_argument("--session", metavar="FILE",
+                   help="card counting: follow the Colonist game log across calls in this session file (created if "
+                        "missing; the LLM parser then also reads the log panel); see docs/USAGE.md 'Card counting'")
+    p.add_argument("--game-log", metavar="FILE",
+                   help="card counting from Colonist game-log text (pasted or typed, one entry per line; '-' = stdin); "
+                        "see docs/USAGE.md 'Card counting' for the accepted wording")
     p.add_argument("--paths", type=float, default=0.0, metavar="W",
                    help="search with the win-path race term at weight W (0 = off, the default; see docs/STRATEGY.md "
                         "'Win-path races'); the 'Win paths' advice section is shown either way")
