@@ -650,11 +650,16 @@ def analyze_test(tid: str, chunks: Sequence[Chunk]) -> Dict[str, object]:
         "avg_vp_opp": sum(vp_opp) / len(vp_opp) if vp_opp else 0.0,
         "turn_cap_games": capped, "crashed_games": crashed_games, "crash_attempts": crash_attempts,
         "errors": err["errors"], "observe_errors": err["observe_errors"], "fallbacks": err["fallback"],
+        "info_errors": info_err["info_errors"], "info_resets": info_err["info_resets"],
         "unmapped_top": unmapped_top, "opp_trade_errors": opp_trade_errors,
         "problems": problems, "conforms": not problems, "notes": notes, "sources": sorted({c[0] for c in chunks}),
         "engines_seen": sorted(engines), "opponents_seen": sorted(opponents),
+        "info": t.info, "opponents": list(t.opponents),
+        "info_seen": sorted({_info_mode(c[1], c[2]) for c in chunks if c[1]}),
     }
-    if t.fmt == "1v3":
+    if mixed_wins is not None:
+        out["mixed_wins"] = mixed_wins
+    if t.fmt in ONE_SEAT_FORMATS:
         out["seats"] = {s: {"games": g_, "wins": w, "rate": w / g_ if g_ else 0.0,
                             "p_one_sided": binom_sf_exact(w, g_, NULL["1v3"]) if g_ else Fraction(1)}
                         for s, (w, g_) in seat_rows.items()}
@@ -681,8 +686,85 @@ def _cond(name: str, ok: bool, detail: str, failures: List[str]) -> Dict[str, ob
     return {"name": name, "pass": bool(ok), "detail": detail, "failures": failures}
 
 
+def _span(tests: Sequence[str]) -> str:
+    return f"{tests[0]}-{tests[-1]}"
+
+
+def amended_claim(analysis: Dict[str, Dict[str, object]], tests: Sequence[str],
+                  alpha: Fraction, alpha_label: str) -> Tuple[Dict[str, object], Dict[str, object]]:
+    """Claim 3 (``tests`` = T7-T9) or claim 4 (T10-T11) of the amendments: the claim's tests are the
+    registered data, reject their nulls at family-wise ``alpha`` (Holm over these tests only; a test
+    without results enters with p = 1), each has the lower end of its central 99 % Clopper-Pearson
+    interval >= 0.35, every seat of each has one-sided exact p < 0.05 against 0.25, and they have
+    zero adapter errors, fallbacks, crashes, counted-mode tracker errors and belief resets.
+    Returns ``(holm table, {"pass", "conditions"})``."""
+    span = _span(tests)
+    present = [t for t in tests if t in analysis and analysis[t]["games"] > 0]
+    pvals = {t: (analysis[t]["p_one_sided"] if t in present else Fraction(1)) for t in tests}
+    h = holm(pvals, alpha)
+
+    conf_fails: List[str] = []
+    for t in tests:
+        if t not in present:
+            conf_fails.append(f"{t}: no results")
+        else:
+            conf_fails.extend(f"{t}: {p}" for p in analysis[t]["problems"])
+
+    holm_fails: List[str] = []
+    for t in h["order"]:
+        if t not in present:
+            holm_fails.append(f"{t}: no results (enters Holm with p = 1)")
+        elif not h["rejected"][t]:
+            why = ("> Holm threshold" if pvals[t] > h["threshold"][t]
+                   else "<= its threshold, but an earlier step already accepted; Holm threshold")
+            holm_fails.append(f"{t}: p = {fmt_p(pvals[t])} {why} {fmt_frac(h['threshold'][t])}")
+
+    effect_fails: List[str] = []
+    seat_fails: List[str] = []
+    err_fails: List[str] = []
+    for t in tests:
+        if t not in present:
+            for lst in (effect_fails, seat_fails, err_fails):
+                lst.append(f"{t}: no results")
+            continue
+        a = analysis[t]
+        need = EFFECT_LOWER[a["format"]]
+        if a["cp99"][0] < need:
+            effect_fails.append(f"{t}: lower 99 % bound {a['cp99'][0]:.4f} < {need} "
+                                f"(win rate {a['win_rate']:.3f}, {a['wins']}/{a['games']})")
+        for s, row in a["seats"].items():
+            if row["games"] == 0 or not (row["p_one_sided"] < SEAT_ALPHA):
+                seat_fails.append(f"{t} seat {s}: {row['wins']}/{row['games']} = {row['rate']:.3f}, "
+                                  f"one-sided p = {fmt_p(row['p_one_sided'])} >= 0.05")
+        bits = [f"{a[k]} {label}" for k, label in (("errors", "adapter errors"), ("observe_errors", "observe errors"),
+                                                   ("fallbacks", "illegal-action fallbacks"),
+                                                   ("crash_attempts", "crashed attempts"),
+                                                   ("crashed_games", "games crashed twice"),
+                                                   ("info_errors", "counted-mode tracker errors"),
+                                                   ("info_resets", "belief resets")) if a[k]]
+        if bits:
+            err_fails.append(f"{t}: " + ", ".join(bits))
+
+    conds = [
+        _cond(f"results of {', '.join(tests)} complete and as pre-registered", not conf_fails,
+              "opponent(s), format, information mode, engine, seeds, seats and lineups, spec, trades off, "
+              "PYTHONHASHSEED=0, games 0..N-1", conf_fails),
+        _cond(f"{span} reject their nulls at family-wise alpha = {alpha_label} (Holm over {span})",
+              not holm_fails and h["all_rejected"],
+              f"max Holm-adjusted p = {fmt_p(max(h['adjusted'].values())) if h['adjusted'] else 'n/a'}", holm_fails),
+        _cond(f"effect size: lower 99 % Clopper-Pearson bound >= 0.35 in each of {span}", not effect_fails,
+              "; ".join(f"{t} {analysis[t]['cp99'][0]:.3f}" for t in present), effect_fails),
+        _cond(f"seat robustness: every seat of {span} above 0.25 (one-sided exact p < 0.05)", not seat_fails, "",
+              seat_fails),
+        _cond(f"zero adapter errors, illegal-action fallbacks, crashes and counted-mode tracker errors / belief "
+              f"resets over {span}", not err_fails, "", err_fails),
+    ]
+    return h, {"pass": all(c["pass"] for c in conds), "conditions": conds}
+
+
 def evaluate(analysis: Dict[str, Dict[str, object]]) -> Dict[str, object]:
-    """Holm tables and the claim 1 / claim 2 verdicts (every failed condition with its reasons)."""
+    """Holm tables and the claim 1 / claim 2 verdicts (every failed condition with its reasons), the
+    amendments' claims 3 and 4 (:func:`amended_claim`) and the readiness verdict (claims 2, 3, 4)."""
     present_t = [t for t in T_TESTS if t in analysis and analysis[t]["games"] > 0]
     missing_t = [t for t in T_TESTS if t not in present_t]
     # Holm is always over the six registered tests: a test without results enters with p = 1.
@@ -772,11 +854,19 @@ def evaluate(analysis: Dict[str, Dict[str, object]]) -> Dict[str, object]:
               "; ".join(f"{t} {analysis[t]['win_rate']:.3f} (p = {fmt_p(analysis[t]['p_two_sided_vs_025'])})"
                         for t in R_TESTS if t in analysis and analysis[t]["games"]), r_fails),
     ]
-    return {
+    out = {
         "holm_claim1": holm1, "holm_claim2": holm2,
         "claim1": {"pass": all(c["pass"] for c in c1), "conditions": c1},
         "claim2": {"pass": all(c["pass"] for c in c2), "conditions": c2},
     }
+    # Amendments 2 and 3: claims 3 and 4 (computed apart; claims 1 and 2 above are unchanged).
+    out["holm_claim3"], out["claim3"] = amended_claim(analysis, C3_TESTS, CLAIM3_ALPHA, "5.7e-7")
+    out["holm_claim4"], out["claim4"] = amended_claim(analysis, C4_TESTS, CLAIM4_ALPHA, "5.7e-7")
+    needed = ("claim2", "claim3", "claim4")
+    out["readiness"] = {"pass": all(out[c]["pass"] for c in needed),
+                        "claims": {c: out[c]["pass"] for c in needed},
+                        "failed": [c for c in needed if not out[c]["pass"]]}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -787,16 +877,36 @@ def _cp(ci: Tuple[float, float]) -> str:
 
 
 def _errs(a: Dict[str, object]) -> str:
-    return f"{a['errors'] + a['observe_errors']}/{a['fallbacks']}/{a['crash_attempts']}"
+    return (f"{a['errors'] + a['observe_errors'] + a.get('info_errors', 0) + a.get('info_resets', 0)}/"
+            f"{a['fallbacks']}/{a['crash_attempts']}")
+
+
+_HOLM_TABLES = (("holm_claim1", "T1-T6", "0.01 (claim 1)"), ("holm_claim2", "T1-T6", "5.7e-7 (claim 2)"),
+                ("holm_claim3", "T7-T9", "5.7e-7 (claim 3)"), ("holm_claim4", "T10-T11", "5.7e-7 (claim 4)"))
+_CLAIM_LABELS = (("claim1", "CLAIM 1 - better than Catanatron's strong bots"),
+                 ("claim2", "CLAIM 2 - ready for (supervised) human testing"),
+                 ("claim3", "CLAIM 3 - strong under Colonist information (T7-T9)"),
+                 ("claim4", "CLAIM 4 - beats a mixed Catanatron table (T10-T11)"))
+
+
+def _opp_label(tid: str) -> str:
+    return "mixed" if TESTS[tid].opponents else TESTS[tid].opponent
+
+
+def _readiness_line(verdict: Dict[str, object]) -> str:
+    r = verdict["readiness"]
+    failed = ", ".join(c.replace("claim", "claim ") for c in r["failed"])
+    return (f"READINESS for (supervised) human testing = claims 2, 3 and 4 (amendments 2 and 3): "
+            f"{'PASS' if r['pass'] else 'FAIL'}" + (f" (failed: {failed})" if failed else ""))
 
 
 def report_text(analysis: Dict[str, Dict[str, object]], verdict: Dict[str, object]) -> str:
     L: List[str] = []
-    L.append("Strength proof (docs/PROOF_PROTOCOL.md, pre-registered 2026-09-25)")
+    L.append("Strength proof (docs/PROOF_PROTOCOL.md, pre-registered 2026-09-25, amendments 2 and 3)")
     L.append(f'bot "{PROTOCOL_SPEC}"; trades {PROTOCOL_TRADES}; PYTHONHASHSEED={PROTOCOL_HASH_SEED}; '
              f"turn-cap games count as losses")
     L.append("")
-    L.append(f"{'test':<4} {'opponent':<10} {'fmt':<4} {'games':>10} {'wins':>5} {'rate':>6} {'null':>5} "
+    L.append(f"{'test':<4} {'opponent':<10} {'fmt':<9} {'info':<7} {'games':>10} {'wins':>5} {'rate':>6} {'null':>5} "
              f"{'p one-sided':>11} {'CP 95 %':>16} {'CP 99 %':>16} {'VP ours/opp':>12} {'cap':>4} "
              f"{'err/fb/crash':>12}  protocol")
     for tid in TESTS:
@@ -804,38 +914,41 @@ def report_text(analysis: Dict[str, Dict[str, object]], verdict: Dict[str, objec
             L.append(f"{tid:<4} (no results)")
             continue
         a = analysis[tid]
-        L.append(f"{tid:<4} {a['opponent']:<10} {a['format']:<4} {a['games']:>5}/{a['protocol_games']:<4} "
+        L.append(f"{tid:<4} {_opp_label(tid):<10} {a['format']:<9} {a['info']:<7} {a['games']:>5}/{a['protocol_games']:<4} "
                  f"{a['wins']:>5} {a['win_rate']:>6.3f} {to_float(a['null']):>5.2f} {fmt_p(a['p_one_sided']):>11} "
                  f"{_cp(a['cp95']):>16} {_cp(a['cp99']):>16} {a['avg_vp_ours']:>5.2f}/{a['avg_vp_opp']:<5.2f} "
                  f"{a['turn_cap_games']:>5} {_errs(a):>12}  {'ok' if a['conforms'] else 'DEVIATES'}")
-    L.append("  (err = adapter + observe errors, fb = illegal-action fallbacks, crash = crashed attempts)")
+    L.append("  (err = adapter + observe errors + counted-mode tracker errors and belief resets, fb = illegal-action "
+             "fallbacks, crash = crashed attempts; mixed = one each of " + ", ".join(MIXED_OPPONENTS) + ")")
     L.append("")
     for tid, a in analysis.items():
-        if a["format"] == "1v3":
+        if a["format"] in ONE_SEAT_FORMATS:
             cells = ", ".join(f"seat{s} {r['wins']}/{r['games']} = {r['rate']:.3f} (p {fmt_p(r['p_one_sided'])})"
                               for s, r in a["seats"].items())
             L.append(f"{tid} by seat (one-sided p vs 0.25): {cells}")
         else:
             cells = ", ".join(f"{k} {r['wins']}/{r['games']} = {r['rate']:.3f}" for k, r in a["arrangements"].items())
             L.append(f"{tid} by arrangement (C = catanbot, turn order): {cells}")
+        if a.get("mixed_wins"):
+            L.append(f"{tid} wins by player (none = turn cap / crashed): "
+                     + ", ".join(f"{k} {v}" for k, v in a["mixed_wins"].items()))
         if a["format"] == "1v3" and a["p_two_sided_vs_025"] is not None and tid in R_TESTS:
             L.append(f"{tid} two-sided exact p vs 0.25: {fmt_p(a['p_two_sided_vs_025'])}")
         for note in a.get("notes", []):
             L.append(f"{tid} note: {note}")
     L.append("")
-    for key, label in (("holm_claim1", "0.01 (claim 1)"), ("holm_claim2", "5.7e-7 (claim 2)")):
+    for key, span, label in _HOLM_TABLES:
         h = verdict[key]
-        L.append(f"Holm-Bonferroni over T1-T6 at family alpha {label}:")
+        L.append(f"Holm-Bonferroni over {span} at family alpha {label}:")
         for i, t in enumerate(h["order"]):
             pt = fmt_p(analysis[t]["p_one_sided"]) if t in analysis and analysis[t]["games"] else "1 (none)"
-            L.append(f"  {i + 1}. {t} p = {pt:>10}  threshold alpha/{len(h['order']) - i}"
+            L.append(f"  {i + 1}. {t:<3} p = {pt:>10}  threshold alpha/{len(h['order']) - i}"
                      f" = {fmt_frac(h['threshold'][t]):>9}  adjusted p = {fmt_p(h['adjusted'][t]):>10}  "
                      f"{'reject' if h['rejected'][t] else 'ACCEPT'}")
         if not h["order"]:
             L.append("  (no T results)")
     L.append("")
-    for key, label in (("claim1", "CLAIM 1 - better than Catanatron's strong bots"),
-                       ("claim2", "CLAIM 2 - ready for (supervised) human testing")):
+    for key, label in _CLAIM_LABELS:
         c = verdict[key]
         L.append(f"{label}: {'PASS' if c['pass'] else 'FAIL'}")
         for i, cond in enumerate(c["conditions"]):
@@ -845,6 +958,8 @@ def report_text(analysis: Dict[str, Dict[str, object]], verdict: Dict[str, objec
                 L.append(f"         - {f}")
             if len(cond["failures"]) > 12:
                 L.append(f"         - ... {len(cond['failures']) - 12} more")
+    L.append("")
+    L.append(_readiness_line(verdict))
     diffs = [a["scipy_max_rel_diff"] for a in analysis.values() if "scipy_max_rel_diff" in a]
     L.append("")
     L.append(f"exact pure-Python statistics; scipy cross-check: max relative difference {max(diffs):.1e}" if diffs
@@ -858,52 +973,69 @@ def report_markdown(analysis: Dict[str, Dict[str, object]], verdict: Dict[str, o
     L.append("# Strength proof results")
     L.append("")
     L.append(f"Generated {today} by `scripts/prove_strength.py` from the bench results of the pre-registered "
-             "protocol `docs/PROOF_PROTOCOL.md` (2026-09-25).  Bot under test: "
+             "protocol `docs/PROOF_PROTOCOL.md` (2026-09-25, with its amendments).  Bot under test: "
              f"`{PROTOCOL_SPEC}`; domestic trading off in every game (catanatron 3.3's players never answer "
              "offers with their own evaluation, see the protocol's tooling amendment); `PYTHONHASHSEED=0`; "
-             "games that hit the turn cap count as losses.")
+             "games that hit the turn cap count as losses.  In T7-T9 and T11 the bot sees only what a "
+             f"Colonist player sees (`--info counted`, {PROTOCOL_INFO_SAMPLES} determinizations per searched "
+             "decision, discarded cards hidden; Catanatron's bots keep the full view); T10-T11 seat one catanbot "
+             "against one ValueFunctionPlayer, one AlphaBetaPlayer and one SameTurnAlphaBetaPlayer (format "
+             "`1v3-mixed`).")
     L.append("")
     L.append("## Verdict")
     L.append("")
     L.append("| claim | verdict | failed conditions |")
     L.append("|---|---|---|")
     for key, label in (("claim1", "1 - better than Catanatron's strong bots"),
-                       ("claim2", "2 - ready for supervised human testing")):
+                       ("claim2", "2 - ready for supervised human testing"),
+                       ("claim3", "3 - strong under Colonist information (T7-T9)"),
+                       ("claim4", "4 - beats a mixed Catanatron table (T10-T11)")):
         c = verdict[key]
         failed = "; ".join(cond["name"] for cond in c["conditions"] if not cond["pass"]) or "-"
         L.append(f"| {label} | **{'PASS' if c['pass'] else 'FAIL'}** | {failed} |")
+    r = verdict["readiness"]
+    L.append(f"| readiness for supervised human testing (claims 2, 3 and 4) | **{'PASS' if r['pass'] else 'FAIL'}** | "
+             f"{', '.join(c.replace('claim', 'claim ') for c in r['failed']) or '-'} |")
     L.append("")
     L.append("## Tests")
     L.append("")
-    L.append("| test | opponent | format | games | wins | win rate | null | one-sided p | 95 % CP | 99 % CP | "
-             "avg VP ours / opp | turn cap | errors / fallbacks / crashes | as registered |")
-    L.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    L.append("| test | opponent | format | information | games | wins | win rate | null | one-sided p | 95 % CP | "
+             "99 % CP | avg VP ours / opp | turn cap | errors / fallbacks / crashes | as registered |")
+    L.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for tid in TESTS:
+        t = TESTS[tid]
         if tid not in analysis:
-            L.append(f"| {tid} | {TESTS[tid].opponent} | {TESTS[tid].fmt} | - | | | | | | | | | | no results |")
+            L.append(f"| {tid} | {t.opponent} | {t.fmt} | {t.info} | - | | | | | | | | | | no results |")
             continue
         a = analysis[tid]
         seen = ", ".join(a["opponents_seen"]) or a["opponent"]
         eng = ", ".join(a["engines_seen"]) or "?"
+        info = a["info"] + (f" (K = {PROTOCOL_INFO_SAMPLES}, discards hidden)" if a["info"] == "counted" else "")
         L.append(f"| {tid} | `{seen}` (protocol `{a['opponent']}` = {a['opponent_class']}; catanatron {eng}) | {a['format']} | "
-                 f"{a['games']} / {a['protocol_games']} | {a['wins']} | {a['win_rate']:.3f} | {to_float(a['null']):.2f} | "
-                 f"{fmt_p(a['p_one_sided'])} | {_cp(a['cp95'])} | {_cp(a['cp99'])} | "
+                 f"{info} | {a['games']} / {a['protocol_games']} | {a['wins']} | {a['win_rate']:.3f} | "
+                 f"{to_float(a['null']):.2f} | {fmt_p(a['p_one_sided'])} | {_cp(a['cp95'])} | {_cp(a['cp99'])} | "
                  f"{a['avg_vp_ours']:.2f} / {a['avg_vp_opp']:.2f} | {a['turn_cap_games']} | "
-                 f"{a['errors'] + a['observe_errors']} / {a['fallbacks']} / {a['crash_attempts']} | "
-                 f"{'yes' if a['conforms'] else 'NO'} |")
+                 f"{a['errors'] + a['observe_errors'] + a['info_errors'] + a['info_resets']} / {a['fallbacks']} / "
+                 f"{a['crash_attempts']} | {'yes' if a['conforms'] else 'NO'} |")
+    L.append("")
+    L.append("Errors include the counted mode's tracker errors and belief resets (T7-T9, T11).")
     L.append("")
     L.append("## Seats (1v3) and arrangements (2v2)")
     L.append("")
     for tid, a in analysis.items():
-        if a["format"] == "1v3":
+        if a["format"] in ONE_SEAT_FORMATS:
             L.append(f"* {tid}: " + ", ".join(f"seat {s} {r['wins']}/{r['games']} = {r['rate']:.3f} "
                                               f"(p {fmt_p(r['p_one_sided'])})" for s, r in a["seats"].items()))
+            if a.get("mixed_wins"):
+                L.append("  * wins by player: " + ", ".join(f"{k} {v}" for k, v in a["mixed_wins"].items())
+                         + " (none = turn cap or crashed)")
         else:
             L.append(f"* {tid}: " + ", ".join(f"`{k}` {r['wins']}/{r['games']} = {r['rate']:.3f}"
                                               for k, r in a["arrangements"].items()))
     L.append("")
     L.append("Seat 0 moves first; one-sided exact p against 0.25 per seat.  2v2 patterns list the turn order "
-             "(`C` = catanbot, `o` = opponent).")
+             "(`C` = catanbot, `o` = opponent).  In the mixed table catanbot sits in seat `g % 4` and the three "
+             "opponents follow it in turn order in permutation `(g // 4) % 6` of (value, alphabeta, sameturn).")
     L.append("")
     L.append("## Holm-Bonferroni over T1-T6")
     L.append("")
@@ -916,9 +1048,20 @@ def report_markdown(analysis: Dict[str, Dict[str, object]], verdict: Dict[str, o
                  f"{'reject' if h1['rejected'][t] else 'accept'} | {fmt_frac(h2['threshold'][t])} | "
                  f"{'reject' if h2['rejected'][t] else 'accept'} |")
     L.append("")
+    for key, span, claim in (("holm_claim3", "T7-T9", "claim 3"), ("holm_claim4", "T10-T11", "claim 4")):
+        L.append(f"## Holm-Bonferroni over {span} ({claim})")
+        L.append("")
+        L.append(f"| step | test | p | threshold (5.7e-7) | adjusted p | {claim} |")
+        L.append("|---|---|---|---|---|---|")
+        h = verdict[key]
+        for i, t in enumerate(h["order"]):
+            pt = fmt_p(analysis[t]["p_one_sided"]) if t in analysis and analysis[t]["games"] else "1 (no results)"
+            L.append(f"| {i + 1} | {t} | {pt} | {fmt_frac(h['threshold'][t])} | {fmt_p(h['adjusted'][t])} | "
+                     f"{'reject' if h['rejected'][t] else 'accept'} |")
+        L.append("")
     L.append("## Conditions")
     L.append("")
-    for key, label in (("claim1", "Claim 1"), ("claim2", "Claim 2")):
+    for key, label in (("claim1", "Claim 1"), ("claim2", "Claim 2"), ("claim3", "Claim 3"), ("claim4", "Claim 4")):
         L.append(f"**{label}: {'PASS' if verdict[key]['pass'] else 'FAIL'}**")
         L.append("")
         for cond in verdict[key]["conditions"]:
@@ -927,13 +1070,18 @@ def report_markdown(analysis: Dict[str, Dict[str, object]], verdict: Dict[str, o
             for f in cond["failures"]:
                 L.append(f"  * {f}")
         L.append("")
+    L.append(f"**{_readiness_line(verdict)}**")
+    L.append("")
     L.append("## Method")
     L.append("")
     L.append("Exact one-sided binomial tests against the protocol nulls (1v3 win rate 0.25, 2v2 catanbot-win "
              "share 0.5), computed in rational arithmetic; Clopper-Pearson intervals are the central two-sided "
              "ones (the \"lower 99 % bound\" is the lower end of the 99 % interval, 0.5 % per tail); R1 / R2 use "
              "the exact two-sided test (minlike rule, as scipy / R).  Holm-Bonferroni step-down over the six "
-             "T tests.  Every game is replayable from the action logs (`scripts/replay_catanatron.py`).")
+             "T tests.  Claims 3 and 4 (amendments 2 and 3): Holm over T7-T9 and over T10-T11 at 5.7e-7, lower "
+             "99 % bound >= 0.35 and every seat above 0.25 (one-sided p < 0.05) in each test, and zero errors, "
+             "fallbacks and crashes including the counted mode's tracker errors and belief resets.  Every game is "
+             "replayable from the action logs (`scripts/replay_catanatron.py`).")
     diffs = [a["scipy_max_rel_diff"] for a in analysis.values() if "scipy_max_rel_diff" in a]
     if diffs:
         L.append(f"scipy cross-check of every p-value and interval: largest relative difference {max(diffs):.1e}.")
@@ -988,7 +1136,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("results", nargs="*", help="bench JSON / JSONL files or directories (test id inferred)")
     ap.add_argument("--test", action="append", default=[], metavar="ID=PATH",
-                    help="results of test ID (T1..T6, R1, R2); PATH is a file, directory, glob or comma list")
+                    help="results of test ID (T1..T6, R1, R2, T7..T11); PATH is a file, directory, glob or comma list")
     ap.add_argument("--markdown", default=None, metavar="PATH", help="write the docs/PROOF.md body here")
     ap.add_argument("--json", default=None, metavar="PATH", help="write the full analysis as JSON")
     args = ap.parse_args(argv)
