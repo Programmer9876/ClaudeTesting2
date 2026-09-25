@@ -836,7 +836,6 @@ long long_of(PyObject* v_new_ref, long dflt) {  // consumes the reference
 void state_to_python_inplace(const GameStateC& s, PyObject* o, bool rolled) {
     const Names& N = names();
     const EngineNames& E = enames();
-    const StateClasses& C = classes();
     Writer w(o);
     store_scalars(w, s);
     {

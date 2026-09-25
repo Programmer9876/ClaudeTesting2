@@ -2,12 +2,13 @@
 
 `catanbot_core` is an optional pybind11 extension that ports the hot,
 low-level code of the bot to C++.  Today it contains **feature extraction**
-(`catanbot/features.py::extract` / `extract_batch`), `longest_road_length`
-and the **heuristic evaluator** (`catanbot/heuristic.py::static_value` /
-`HeuristicEvaluator.evaluate`, see the section at the end).  The Python
-modules stay the tested reference implementation and the fallback: with the
-extension missing (or disabled) everything works exactly as before, only
-slower.
+(`catanbot/features.py::extract` / `extract_batch`), `longest_road_length`,
+the **heuristic evaluator** (`catanbot/heuristic.py::static_value` /
+`HeuristicEvaluator.evaluate`) and the **rules engine**
+(`catanbot/engine.py::legal_actions` / `apply` / `apply_inplace` /
+`random_playout`, see the last section; opt-in).  The Python modules stay
+the tested reference implementation and the fallback: with the extension
+missing (or disabled) everything works exactly as before, only slower.
 
 The output is bit-identical to the numpy reference (the differential test
 compares 4000+ game states from every phase at `atol=1e-6`; they match
@@ -40,11 +41,13 @@ The `.so` and `build/` are build artefacts (do not commit them).
 | `cpp/state.hpp` | `GameStateC` / `PlayerC` / `TradeC`: plain C++ mirror of `catanbot.state.GameState` + `state_from_python()` converter |
 | `cpp/features.hpp`, `cpp/features.cpp` | the port of `features.py` (`analyse`, `assemble`, `longest_road_length`) |
 | `cpp/heuristic.hpp`, `cpp/heuristic.cpp` | the port of `heuristic.py::static_value` + the placement / counting helpers it uses |
-| `cpp/module.cpp` | pybind11 bindings (`PYBIND11_MODULE(catanbot_core)`) |
+| `cpp/engine.hpp`, `cpp/engine.cpp` | the port of `engine.py` (legal actions, every action handler, production, awards, win detection, random playout) |
+| `cpp/module.cpp` | pybind11 bindings (`PYBIND11_MODULE(catanbot_core)`), incl. action tuple <-> `ActionC`, `GameStateC` -> `GameState` and the `CState` handle |
 | `setup_cpp.py`, `scripts/build_cpp.sh` | build |
-| `catanbot/accel.py` | loader / switch used by `features.py` and `heuristic.py` |
+| `catanbot/accel.py` | loader / switch used by `features.py`, `heuristic.py` and `engine.py` |
 | `tests/test_accel_features.py` | differential tests + benchmark (features) |
 | `tests/test_accel_heuristic.py` | differential tests + benchmark (heuristic) |
+| `tests/test_accel_engine.py` | differential tests + benchmark (engine) |
 | `scripts/bench_search.py` | `Searcher.search` timings, Python vs C++ |
 
 Never edit the generated headers: change `board.py` / `features.py` and
@@ -165,9 +168,8 @@ engine port) rather than from the feature code itself.
 
 ## Limitations / notes
 
-* Feature extraction and the heuristic evaluator only; the engine, the move
-  ordering (`action_priors`) and the search are still Python (they can reuse
-  `state.hpp` and `board_tables.hpp`).
+* Feature extraction, the heuristic evaluator and (opt-in) the rules engine;
+  the move ordering (`action_priors`) and the search itself are still Python.
 * At most 4 players (the feature layout pads to 3 opponents anyway) and
   32-bit integer fields.  Calling `core.*` directly on such a state (or on
   resource lists that are not length 5, ids out of range, > 64 road entries
