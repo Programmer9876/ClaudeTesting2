@@ -28,7 +28,8 @@ Contents
   scarcity, road toward the best free spot), robber targeting, discard
   planning (:func:`plan_discard`) and :func:`play_game`, a ``Game.play``
   replacement that lets players choose their discards on catanatron 3.2.1
-  (whose engine loop discards at random).
+  (whose engine loop discards at random; ``scripts/catanatron_ladder.py``
+  plays its games through it by default).
 
 Notes on the engine
 -------------------

@@ -138,12 +138,14 @@ def partner_likelihood(state: GameState, player: int, partner: int, res: int,
 
 def plan_trades(state: GameState, player: int, target_cost: Sequence[int],
                 belief: Optional[HandBelief] = None, max_steps: int = 4,
-                model: Optional[OpponentModel] = None) -> List[dict]:
+                model: Optional[OpponentModel] = None, politics=None) -> List[dict]:
     """Ordered plan to turn the hand into ``target_cost``.
 
     Returns steps ``{"action": Action, "kind": "bank"|"player", "reason": str,
     "fallback": Action | None}``; ``fallback`` is the bank action to use if
-    a proposed player trade gets rejected.
+    a proposed player trade gets rejected.  With ``model`` (and optionally
+    ``politics``) the partner choice uses the exploitative acceptance
+    prediction instead of the plain "do they hold it" likelihood.
     """
     p = state.players[player]
     hand = list(p.resources)
@@ -197,7 +199,7 @@ def plan_trades(state: GameState, player: int, target_cost: Sequence[int],
                         pa = model.predict_accept(state, j,
                                                   [1 if r == give else 0 for r in range(5)],
                                                   [1 if r == get else 0 for r in range(5)],
-                                                  proposer=player, belief=belief)
+                                                  proposer=player, belief=belief, politics=politics)
                         score = pa
                         prob = pa
                     else:
@@ -244,8 +246,12 @@ def plan_trades(state: GameState, player: int, target_cost: Sequence[int],
 
 def candidate_offers(state: GameState, player: int, needed: Sequence[int],
                      belief: Optional[HandBelief] = None, max_offers: int = 6,
-                     model: Optional[OpponentModel] = None) -> List[Action]:
-    """Bounded list of promising PROPOSE_TRADE actions (1:1 and 2:1) for the search."""
+                     model: Optional[OpponentModel] = None, politics=None) -> List[Action]:
+    """Bounded list of promising PROPOSE_TRADE actions (1:1 and 2:1) for the search.
+
+    With ``model`` the offers are ordered by ``model.rank_offers`` (P(accept)
+    from the opponents' profiles x our gain, ``politics`` adds favour slack).
+    """
     p = state.players[player]
     hand = p.resources
     missing = missing_for(hand, needed)
@@ -278,18 +284,21 @@ def candidate_offers(state: GameState, player: int, needed: Sequence[int],
         seen.add(a)
         out.append(a)
     if model is not None and out:
-        ranked = model.rank_offers(state, player, out, needed, belief)
+        ranked = model.rank_offers(state, player, out, needed, belief, politics=politics)
         out = [d["action"] for d in ranked if d["p_accept"] > 0.05] or out
     return out[:max_offers]
 
 
 def should_accept(state: GameState, responder: int, offer: TradeOffer, evaluator=None,
                   margin: float = 0.002, model: Optional[OpponentModel] = None,
-                  politics=None) -> Tuple[bool, str]:
+                  politics=None, accept_bias: float = 0.0) -> Tuple[bool, str]:
     """Accept/reject an incoming offer (``offer.give`` is what we would receive).
 
     The required gain rises with the game stage: early trades grow both
     economies, late trades mostly help whoever is closer to 10 VP.
+    ``accept_bias`` (about -0.3 .. 0.3, used to randomise self-play styles)
+    shifts the threshold: positive = generous, negative = stingy.  It never
+    overrides the leader-feeding rules.
     """
     p = state.players[responder]
     proposer = offer.proposer
@@ -299,6 +308,8 @@ def should_accept(state: GameState, responder: int, offer: TradeOffer, evaluator
     margin = margin + 0.03 * stage * stage
     slack = politics.favor_slack(state, responder, proposer) if politics is not None else 0.0
     margin -= 0.01 * slack          # friends get a little slack, the leader pays a premium
+    margin -= 0.02 * accept_bias
+    slack += accept_bias            # the rule-based thresholds below treat the bias like goodwill
     pvp = estimated_vp(state, proposer)
     if stage >= 0.6 and pvp >= estimated_vp(state, responder) and pvp >= 7:
         return False, f"late game: no trades with a player ahead of us ({pvp:.0f} VP)"
@@ -351,13 +362,18 @@ def should_accept(state: GameState, responder: int, offer: TradeOffer, evaluator
     gain_scarce = sum(offer.give[r] * (1.0 / (1.0 + 8 * prod[r])) for r in range(5))
     lose_scarce = sum(offer.get[r] * (1.0 / (1.0 + 8 * prod[r])) for r in range(5))
     if net == 0 and gain_scarce > lose_scarce + 0.15 + 0.3 * stage - 0.5 * slack:
-        return True, "swaps a surplus card for one we need" + (" (floating a friend a little)" if slack > 0.05 else "")
+        return True, "swaps a surplus card for one we need" + (" (floating a friend a little)"
+                                                                if slack - accept_bias > 0.05 else "")
     return False, "no clear benefit" + (" (late game: trades must pay off immediately)" if stage >= 0.6 else "")
 
 
 def trade_advice(state: GameState, player: int, belief: Optional[HandBelief] = None,
-                 model: Optional[OpponentModel] = None) -> List[str]:
-    """Human readable trade plan for the most sensible target build."""
+                 model: Optional[OpponentModel] = None, politics=None) -> List[str]:
+    """Human readable trade plan for the most sensible target build.
+
+    ``politics`` (a ``politics.PoliticalState``) makes the printed acceptance
+    probabilities include favour slack, like the search's own estimates.
+    """
     p = state.players[player]
     lines: List[str] = []
     stage = game_stage(state)
@@ -377,7 +393,7 @@ def trade_advice(state: GameState, player: int, belief: Optional[HandBelief] = N
         if sum(missing) == 0:
             lines.append(f"You can already afford a {name}.")
             continue
-        steps = plan_trades(state, player, cost, belief, model=model)
+        steps = plan_trades(state, player, cost, belief, model=model, politics=politics)
         if not steps:
             lines.append(f"No sensible trade reaches a {name} this turn (missing "
                          + ", ".join(f"{missing[r]} {B.RESOURCE_NAMES[r]}" for r in range(5) if missing[r]) + ").")
@@ -391,7 +407,7 @@ def trade_advice(state: GameState, player: int, belief: Optional[HandBelief] = N
     if short:
         lines.append("Bank is nearly out of: " + ", ".join(short) + " (player trades are the only source).")
     if model is not None:
-        arbs = model.arbitrage_opportunities(state, player, belief=belief)
+        arbs = model.arbitrage_opportunities(state, player, belief=belief, politics=politics)
         if arbs:
             lines.append("Exploitable trades (by opponents' revealed valuations):")
             for d in arbs[:3]:

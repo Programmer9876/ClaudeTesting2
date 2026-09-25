@@ -51,22 +51,33 @@ def build_pool(best_path: Optional[str], archive: List[str], depth: int, beam: i
                rng: random.Random, blend: float = 1.0) -> List[str]:
     base = BASE_SEARCH.format(depth=depth, beam=beam, expand=expand)
     pool: List[str] = []
+    # Trading styles are randomised too (DESIGN section 11): a per-game acceptance bias, a
+    # temperature over the offer ranking and random proposals / responses, so the value net sees
+    # generous, stingy and erratic traders instead of one deterministic acceptance policy.
     if best_path:
         pool += [_model_spec(base, best_path, blend),
-                 _model_spec(base, best_path, blend, ",eps=0.03,temp=0.3"),
-                 _model_spec(base, best_path, blend, ",eps=0.08,temp=0.7"),
-                 _model_spec(base, best_path, blend, ",temp=1.0")]
+                 _model_spec(base, best_path, blend, ",eps=0.03,temp=0.3,accept_bias=0.3"),
+                 _model_spec(base, best_path, blend, ",eps=0.08,temp=0.7,offer_temp=0.5,trade_eps=0.05"),
+                 _model_spec(base, best_path, blend, ",temp=1.0,accept_bias=0.2,offer_temp=0.3")]
     else:
-        pool += [base, f"{base},eps=0.03,temp=0.3", f"{base},eps=0.08,temp=0.7"]
-    pool += ["heuristic:temp=0.4,eps=0.05", "heuristic:temp=0.15"]
+        pool += [base, f"{base},eps=0.03,temp=0.3,accept_bias=0.3",
+                 f"{base},eps=0.08,temp=0.7,offer_temp=0.5,trade_eps=0.05"]
+    pool += ["heuristic:temp=0.4,eps=0.05,accept_bias=0.3", "heuristic:temp=0.15,offer_temp=0.5,trade_eps=0.03"]
     for old in archive[-2:]:
         if old != best_path:
-            pool.append(_model_spec(base, old, blend, ",eps=0.03,temp=0.3"))
+            pool.append(_model_spec(base, old, blend, ",eps=0.03,temp=0.3,accept_bias=0.2"))
     return pool
 
 
-HEURISTIC_POOL = ["heuristic:temp=0.5,eps=0.08", "heuristic:temp=0.3,eps=0.03", "heuristic:temp=0.15",
-                  "heuristic:temp=0.8,eps=0.1"]
+HEURISTIC_POOL = ["heuristic:temp=0.5,eps=0.08,accept_bias=0.3", "heuristic:temp=0.3,eps=0.03,offer_temp=0.5",
+                  "heuristic:temp=0.15,accept_bias=0.2,trade_eps=0.03",
+                  "heuristic:temp=0.8,eps=0.1,accept_bias=0.3,offer_temp=0.8,trade_eps=0.05"]
+
+
+def _bias_of(results) -> np.ndarray:
+    """Per-sample acceptance bias of the recording bots (0 when a bot has none)."""
+    parts = [r.bias if r.bias is not None else np.zeros(len(r.y), np.float32) for r in results if r.y is not None]
+    return np.concatenate(parts) if parts else np.zeros(0, np.float32)
 
 
 def train(args: argparse.Namespace) -> Dict[str, object]:
@@ -90,12 +101,14 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
     X_buf = np.zeros((0, NUM_FEATURES), np.float16)
     y_buf = np.zeros(0, np.float32)
     g_buf = np.zeros(0, np.int32)          # game id of every sample (validation is split by game)
+    b_buf = np.zeros(0, np.float32)        # acceptance bias of the sample's bot (trading-style metadata)
     buffer_path = os.path.splitext(args.out)[0] + "_replay.npz"
     if args.resume and os.path.exists(buffer_path):
         try:
             d = np.load(buffer_path)
             X_buf, y_buf = d["X"], d["y"]
             g_buf = d["g"] if "g" in d else np.arange(len(y_buf), dtype=np.int32)
+            b_buf = d["bias"] if "bias" in d else np.zeros(len(y_buf), np.float32)
             _log(f"loaded replay buffer with {len(y_buf)} samples", fh)
         except Exception:
             pass
@@ -137,10 +150,17 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
              f"win rates: " + ", ".join(f"{s}: {w:.2f} ({n})" for s, (w, n) in gen_stats.items()), fh)
         gids = np.concatenate([np.full(len(r.y), it * 100000 + k, dtype=np.int32)
                                for k, r in enumerate(results) if r.y is not None]) if len(y) else np.zeros(0, np.int32)
+        bias = _bias_of(results) if len(y) else np.zeros(0, np.float32)
+        if len(bias) != len(y):
+            bias = np.zeros(len(y), np.float32)
         X_buf = np.concatenate([X_buf, X])[-args.buffer:]
         y_buf = np.concatenate([y_buf, y])[-args.buffer:]
         g_buf = np.concatenate([g_buf, gids])[-args.buffer:]
-        np.savez_compressed(buffer_path, X=X_buf, y=y_buf, g=g_buf)
+        b_buf = np.concatenate([b_buf, bias])[-args.buffer:]
+        np.savez_compressed(buffer_path, X=X_buf, y=y_buf, g=g_buf, bias=b_buf)
+        if len(bias):
+            _log(f"  trading styles: {float((bias != 0).mean()):.0%} of samples from biased traders, "
+                 f"mean |bias| {float(np.abs(bias).mean()):.3f}", fh)
 
         # ---- fit (validation = 10 % of whole games, never positions of a training game) ----
         n = len(y_buf)
@@ -186,6 +206,7 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
             best_path = args.out
         history.append({"iter": it, "samples": int(n), "avg_turns": avg_turns, "gen_win_rates": gen_stats,
                         "fit": last, "eval_candidate": cw, "eval_best": bw, "promoted": bool(promoted),
+                        "trade_bias_abs_mean": float(np.abs(bias).mean()) if len(bias) else 0.0,
                         "seconds": time.time() - t_it})
         with open(log_json, "w") as f:
             json.dump({"iterations": history, "best": best_path}, f, indent=1)

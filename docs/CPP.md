@@ -103,7 +103,7 @@ the pure-Python reference in the same process).
 
 * **Conversion, not serialisation.**  `state_from_python` reads the
   `GameState` attributes with the raw CPython API (interned attribute
-  names, `PySequence_Fast`, `PyLong_AsLong`) and never calls `to_dict()`.
+  names, `PySequence_Fast`, `PyLong_AsLongAndOverflow`) and never calls `to_dict()`.
   Converting a 4-player state costs ~4 µs; the analysis itself ~1 µs, so
   ~5 µs per state in total.  The GIL is held (the work is too small to be worth releasing it).
 * **`GameStateC`** is POD-like (fixed arrays, ~1.3 KB, `memcpy`-able):

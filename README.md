@@ -33,7 +33,7 @@ contracts.
 | module | what |
 | --- | --- |
 | `catanbot/board.py`, `state.py`, `actions.py`, `engine.py` | complete base-game rules (setup, production, robber, dev cards, awards, bank/port/player trades) |
-| `heuristic.py`, `placement.py`, `trading.py`, `discard.py`, `robber.py`, `devcards.py`, `counting.py`, `inference.py` | strategy modules and card counting / determinization |
+| `heuristic.py`, `placement.py`, `trading.py`, `discard.py`, `robber.py`, `danger.py`, `devcards.py`, `counting.py`, `inference.py` | strategy modules (incl. distance-to-win targeting and steal exposure) and card counting / determinization |
 | `opponent_model.py`, `politics.py` | exploitative opponent profiles, political capital, coalitions |
 | `features.py`, `model.py`, `selfplay.py`, `train.py` | 302-dim features, numpy value net, self-play data + training loop |
 | `search.py`, `agents/` | expectimax + beam search, the bots |

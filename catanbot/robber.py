@@ -12,10 +12,12 @@ the explanations shown to the user):
 """
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import board as B
 from .counting import dev_pool, expected_hidden_vp
+from .danger import WinPath, block_factor, danger_multiplier, rob_break_probability, steal_factor, win_paths
+from .discard import needed_vector
 from .placement import RESOURCE_DEMAND, player_production, resource_scarcity
 from .state import GameState, PHASE_ROLL, PHASE_MAIN
 
@@ -34,6 +36,27 @@ def threat(state: GameState, i: int) -> float:
     elif vp >= 7:
         t *= 1.3
     return t
+
+
+def target_weight(state: GameState, i: int, paths: Optional[Dict[int, WinPath]] = None) -> float:
+    """How much we want to hit player ``i``: VP threat x distance-to-win multiplier.
+
+    The leader stays the default target, but a runner-up who is loaded (the
+    cards for their next builds in hand, the rolls to finish them) outranks a
+    leader who is overextended (no spots, no cards, a long way to 10).
+    """
+    if paths is None:
+        paths = win_paths(state)
+    return threat(state, i) * danger_multiplier(paths.get(i))
+
+
+def our_need_indicator(state: GameState, player: int) -> List[float]:
+    """1.0 for each resource we are short of for our own next builds, else 0.0."""
+    p = state.players[player]
+    if not p.hand_known:
+        return [0.0] * 5
+    needed = needed_vector(state, player)
+    return [1.0 if needed[r] > p.resources[r] else 0.0 for r in range(5)]
 
 
 def hex_pips_for_player(state: GameState, h: int, i: int) -> int:
@@ -64,16 +87,23 @@ def production_blocked(state: GameState, player: int) -> float:
 
 
 def hex_damage(state: GameState, h: int, player: int,
-               target_weights: Optional[List[float]] = None) -> Tuple[float, float]:
-    """(damage to opponents weighted by threat, damage to ourselves) for the robber on ``h``.
+               target_weights: Optional[List[float]] = None,
+               paths: Optional[Dict[int, WinPath]] = None) -> Tuple[float, float]:
+    """(damage to opponents weighted by target weight, damage to ourselves) for the robber on ``h``.
 
-    ``target_weights`` (per player) replaces the plain ``threat`` weighting,
-    e.g. from ``politics.PoliticalState.robber_target_weights`` (grudges,
-    friends, coalition against the leader).
+    ``target_weights`` (per player) replaces the default :func:`target_weight`
+    (VP threat x distance to win), e.g. from
+    ``politics.PoliticalState.robber_target_weights`` (grudges, friends,
+    coalition against the leader).  Each opponent's pips are further scaled by
+    :func:`danger.block_factor`: blocking a resource they need for their win
+    path - and cannot replace from their hand, other hexes or a port - hurts
+    far more than blocking one they are swimming in.
     """
     res, num = state.hexes[h]
     if res == B.DESERT or num == 0:
         return 0.0, 0.0
+    if paths is None:
+        paths = win_paths(state)
     scarcity = resource_scarcity(state)
     w = RESOURCE_DEMAND[res] * (scarcity[res] ** 0.5)
     opp = 0.0
@@ -85,8 +115,9 @@ def hex_damage(state: GameState, h: int, player: int,
         if i == player:
             own += pips * w
         else:
-            tw = target_weights[i] if target_weights is not None else threat(state, i)
-            opp += pips * w * tw
+            wp = paths.get(i)
+            tw = target_weights[i] if target_weights is not None else threat(state, i) * danger_multiplier(wp)
+            opp += pips * w * tw * block_factor(wp, res, pips)
     return opp, own
 
 
@@ -104,44 +135,65 @@ def steal_candidates(state: GameState, h: int, player: int) -> List[int]:
     return out
 
 
-def choose_victim(state: GameState, h: int, player: int, target_weights: Optional[List[float]] = None) -> int:
-    """Leader first (biggest threat / grudge), then the fattest hand; -1 if nobody."""
+def choose_victim(state: GameState, h: int, player: int, target_weights: Optional[List[float]] = None,
+                  paths: Optional[Dict[int, WinPath]] = None,
+                  our_need: Optional[Sequence[float]] = None) -> int:
+    """Most dangerous player first, weighted by what their hand likely holds; then the fattest hand.
+
+    A card from a hand that holds what its owner needs to win (or what we
+    need) is worth more than a random card; a player who can win on their
+    turn gets a big bonus because the steal may break the build.
+    """
     cands = steal_candidates(state, h, player)
     if not cands:
         return -1
+    if paths is None:
+        paths = win_paths(state)
+    if our_need is None:
+        our_need = our_need_indicator(state, player)
 
     def key(i):
         p = state.players[i]
         cards = p.total_resources if p.hand_known else p.hand_size
-        tw = target_weights[i] if target_weights is not None else threat(state, i)
-        return (round(tw, 3), min(cards, 8), cards)
+        wp = paths.get(i)
+        tw = target_weights[i] if target_weights is not None else threat(state, i) * danger_multiplier(wp)
+        val = tw * steal_factor(wp, our_need) + 3.0 * rob_break_probability(wp)
+        return (round(val, 3), min(cards, 8), cards)
 
     return max(cands, key=key)
 
 
 def best_robber_move(state: GameState, player: int, evaluator=None,
                      exclude: Optional[int] = None,
-                     target_weights: Optional[List[float]] = None) -> Tuple[int, int, str]:
+                     target_weights: Optional[List[float]] = None,
+                     belief=None) -> Tuple[int, int, str]:
     """Best ``(hex, victim, reason)`` for moving the robber.
 
     ``exclude`` defaults to the current robber hex (it must move).  Hexes
     where we produce are penalised heavily; hexes with a steal target get a
     bonus because a stolen card is worth roughly 1 pip-equivalent per roll.
+    Targets are weighted by distance to win (``danger.win_paths``), blocking
+    by how much of a *needed* resource the hex removes, stealing by what the
+    hand likely holds; ``belief`` (a ``HandBelief``) refines hidden hands.
     """
     exclude = state.robber if exclude is None else exclude
+    paths = win_paths(state, belief)
+    our_need = our_need_indicator(state, player)
     best = (-1, -1, "")
     best_score = -1e9
     for h in range(B.NUM_HEXES):
         if h == exclude:
             continue
-        opp, own = hex_damage(state, h, player, target_weights)
-        victim = choose_victim(state, h, player, target_weights)
+        opp, own = hex_damage(state, h, player, target_weights, paths)
+        victim = choose_victim(state, h, player, target_weights, paths, our_need)
         score = opp - 1.6 * own
         if victim >= 0:
             vp = state.players[victim]
             cards = vp.total_resources if vp.hand_known else vp.hand_size
-            tw = target_weights[victim] if target_weights is not None else threat(state, victim)
-            score += 1.5 + 0.35 * min(cards, 6) + 0.8 * (tw - 1.0)
+            wp = paths.get(victim)
+            tw = target_weights[victim] if target_weights is not None else threat(state, victim) * danger_multiplier(wp)
+            score += 1.5 + 0.35 * min(cards, 6) * steal_factor(wp, our_need) + 0.8 * (tw - 1.0) \
+                + 4.0 * rob_break_probability(wp)
         # tiny preference for the desert over blocking nothing while hurting us
         if score > best_score:
             best_score = score
@@ -153,13 +205,26 @@ def best_robber_move(state: GameState, player: int, evaluator=None,
         hurt = [(i, hex_pips_for_player(state, h, i)) for i in range(state.num_players) if i != player]
         hurt = [(i, x) for i, x in hurt if x]
         if hurt:
-            names = ", ".join(f"{state.players[i].name or state.players[i].color} (-{x} pips)" for i, x in hurt)
+            def tag(i):
+                wp = paths.get(i)
+                if wp is None:
+                    return ""
+                if wp.need_share[res] >= 0.15:
+                    return ", needs it"
+                if wp.eff_need[res] >= 0.15:
+                    return ", their port currency"
+                return ""
+            names = ", ".join(f"{state.players[i].name or state.players[i].color} (-{x} pips{tag(i)})" for i, x in hurt)
             parts.append(f"blocks {B.RESOURCE_NAMES[res]} {num}: {names}")
     if victim >= 0:
         v = state.players[victim]
+        wp = paths.get(victim)
+        dist = ""
+        if wp is not None and wp.need_vp > 0:
+            dist = ", can win on their turn" if wp.can_win_now else f", ~{wp.turns:.0f} turns from a win"
         parts.append(f"steal from {v.name or v.color} ({estimated_vp(state, victim):.0f} VP, "
-                     f"{v.total_resources if v.hand_known else v.hand_size} cards)")
-    _, own = hex_damage(state, h, player)
+                     f"{v.total_resources if v.hand_known else v.hand_size} cards{dist})")
+    _, own = hex_damage(state, h, player, None, paths)
     if own > 0:
         parts.append("(also blocks some of our own production)")
     return h, victim, "; ".join(parts) if parts else "nothing better available"

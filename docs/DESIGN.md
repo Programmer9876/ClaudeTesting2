@@ -56,7 +56,8 @@ catanbot/
   placement.py    settlement / city / road scoring helpers
   trading.py      bank vs player trade logic, offer generation, accept/reject
   discard.py      7-protection: surplus dumping and discard choice
-  robber.py       knight timing, robber target + victim selection
+  robber.py       knight timing, robber target + victim selection, out-of-turn steal exposure
+  danger.py       distance-to-win model per player (win path, missing cards, rolls, turns)
   devcards.py     dev card buying / playing policy, monopoly & YOP timing
   counting.py     card counting: bank, dev deck, opponent hand beliefs
   inference.py    determinization of hidden information (sample full states)
@@ -272,8 +273,19 @@ and `models/train_log.json`.
   `should_accept(state, responder, offer, evaluator) -> bool`, `offer_is_feeding_leader(...)`.
 * `discard.py`: `choose_discard(state, player, keep_for=None) -> Action`, `seven_risk(state, player) -> float`,
   `surplus_dump_actions(state, player) -> list[Action]`.
-* `robber.py`: `best_robber_move(state, player, evaluator=None) -> (hex, victim, reason)`,
-  `should_play_knight(state, player) -> (bool, reason)`, `production_blocked(state, player) -> float`.
+* `robber.py`: `best_robber_move(state, player, evaluator=None, target_weights=None, belief=None) -> (hex, victim, reason)`,
+  `should_play_knight(state, player) -> (bool, reason)`, `production_blocked(state, player) -> float`,
+  `target_weight(state, i)` (= VP `threat` x `danger.danger_multiplier`), `hex_damage(..., paths=None)`
+  (need-aware blocking), `choose_victim(..., paths=None, our_need=None)` (resource-aware stealing),
+  `steal_exposure(state, player, politics=None) -> (p_robbed, expected_loss, detail)` and the O(n^2)
+  `steal_exposure_fast` used by `heuristic.static_value` (mirrored in `cpp/heuristic.cpp`).
+* `danger.py`: `win_paths(state, belief=None) -> {player: WinPath}` (cached per identical state) and
+  `win_path(state, i, belief=None)`: the cheapest builds to 10 VP given the hand (city upgrades,
+  settlements on spots <= 2 roads away, Longest Road, Largest Army, VP cards), `missing` cards,
+  `need_share` / `eff_need` (direct need plus use as port currency for a needed resource), per-resource
+  `supply` (production + surplus traded through the best port), the `rolls` that feed the path, `turns`
+  to afford it, `can_win_now` and `danger` in 0..1 (`1 / (1 + turns / 3)`).  `block_factor(wp, res, pips)`,
+  `steal_factor(wp, our_need)`, `rob_break_probability(wp)`, `danger_lines(state, me)` (advice).
 * `devcards.py`: `should_buy_dev(state, player) -> (bool, reason)`, `monopoly_value(state, player, res) -> float`,
   `best_year_of_plenty(state, player) -> (r1, r2)`.
 * `counting.py`: `BankTracker`, `DevDeckTracker(state) -> probabilities of next card`,
@@ -408,3 +420,30 @@ round-trips (hexes, numbers, robber, pieces).  Keep each test < 30 s.
   temperature over offer ranking, random per-game acceptance bias) so the
   value net sees varied trading styles instead of one deterministic
   policy.  Player count is sampled from {3, 4} per game.
+
+## 12. Out-of-turn risk and distance-to-win targeting (added requirements)
+
+* **Steal exposure** (`robber.steal_exposure`): every opponent who rolls before
+  our next roll can rob us with a 7 (1/6) or a plausible knight (deck odds x
+  their dev cards, 50% they play it); whether they *target* us comes from
+  their best robber move (politics-weighted).  Expected loss = P(robbed) x
+  the average value of our cards (demand x sqrt(scarcity)).  The static
+  evaluator subtracts `0.25 x loss` (hands of 3+ cards) via the O(n^2)
+  `steal_exposure_fast`, so the search prefers spending a valuable hand or
+  keeping cheap cards when we are the natural target; the 7-risk advice
+  reports it (`explain_seven_risk(state, me, politics)`).
+* **Danger, not rank** (`danger.py`): robber / knight targets, the political
+  target weights and the priors weight each player by VP threat x
+  `(0.4 + 1.6 x danger)`, where danger comes from the estimated turns until
+  their cheapest win path is affordable.  A loaded runner-up (cards in hand,
+  a spot, the rolls to finish) outranks an overextended leader (all cities
+  built, no spot, empty hand).  Blocking is need-aware: a hex counts for the
+  share of the target's supply of a *needed* resource it removes, so
+  blocking sheep is worth little when they hold sheep, produce it elsewhere
+  or turn a surplus into what they need through a 2:1 / 3:1 port (the port
+  currency itself becomes worth blocking).  Stealing is resource-aware: a
+  hand rich in what its owner needs (or what we need) is a better steal, and
+  a player who can win on their turn gets a large bonus because one stolen
+  card may break the build.  The CLI prints a "Threat board" (per player:
+  VP, loaded / building / overextended, ~turns to win, the path, the missing
+  cards and the rolls that produce them).

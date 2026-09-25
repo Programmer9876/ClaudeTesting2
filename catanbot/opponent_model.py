@@ -167,11 +167,38 @@ class OpponentProfile:
         return self.accept_get[r].mean(prior=self.acceptance_rate(), prior_weight=1.5)
 
     def confidence(self) -> float:
-        """0..1: how much the statistics (vs. the heuristic prior) should be trusted."""
-        return 1.0 - math.exp(-self.accept.weight / 3.0)
+        """0..1: how much the statistics (vs. the heuristic prior) should be trusted.
+
+        Grows with the number of observed responses; a player who often
+        deviates from our heuristic's prediction (high surprise) is trusted
+        to *their statistics* sooner, since the heuristic prior fits them
+        badly.
+        """
+        weight = self.accept.weight * (1.0 + 1.5 * max(0.0, self.surprise_rate() - 0.3))
+        return 1.0 - math.exp(-weight / 3.0)
 
     def surprise_rate(self) -> float:
         return self.surprise.mean(prior=0.3)
+
+    def build_preference(self) -> List[float]:
+        """Relative appetite for each resource implied by what they build (mean 1).
+
+        A city builder wants ore / wheat, a road / settlement builder wood /
+        brick, a dev-card buyer sheep / wheat / ore.  ``[1] * 5`` until
+        something has been observed.
+        """
+        total = sum(self.builds.values())
+        if total <= 0:
+            return [1.0] * 5
+        costs = {"road": B.COST_ROAD, "settlement": B.COST_SETTLEMENT, "city": B.COST_CITY, "dev": B.COST_DEV}
+        want = [0.0] * 5
+        for name, cnt in self.builds.items():
+            cost = costs[name]
+            csum = float(sum(cost)) or 1.0
+            for r in range(5):
+                want[r] += cnt / total * cost[r] / csum
+        m = sum(want) / 5.0
+        return [w / m if m > 0 else 1.0 for w in want]
 
     def style_summary(self) -> str:
         parts = []
@@ -445,11 +472,13 @@ class OpponentModel:
         prof = self.profile_of(state, j)
         # Value of the deal for them by their implied valuation, plus their needs.
         vals = list(prof.value)
-        # Needs: resources they are short of for a city / settlement / dev
+        # Needs: resources they are short of for a city / settlement / dev, shaded by
+        # what they tend to build (a city builder wants ore / wheat).
         prod = player_production(state, j, ignore_robber=True)
+        pref = prof.build_preference()
         gain = 0.0
         for r in range(5):
-            need_boost = 1.0 + 0.6 / (1.0 + 8.0 * prod[r])
+            need_boost = (1.0 + 0.6 / (1.0 + 8.0 * prod[r])) * (0.8 + 0.2 * pref[r])
             gain += vals[r] * need_boost * (receives[r] - pays[r])
         gain += 0.15 * (sum(receives) - sum(pays))  # card count
         if politics is not None and proposer is not None:
@@ -475,8 +504,12 @@ class OpponentModel:
 
     # --- exploitation ----------------------------------------------------------
     def rank_offers(self, state: GameState, me: int, offers: Sequence[Action], needed: Optional[Sequence[int]] = None,
-                    belief: Optional[HandBelief] = None) -> List[dict]:
-        """Score PROPOSE_TRADE actions by expected gain = P(accept) * our value gain."""
+                    belief: Optional[HandBelief] = None, politics=None) -> List[dict]:
+        """Score PROPOSE_TRADE actions by expected gain = P(accept) * our value gain.
+
+        ``politics`` (a ``politics.PoliticalState``) makes P(accept) include
+        the favour slack / leader premium, like the search does.
+        """
         our_vals = our_resource_values(state, me, needed)
         out = []
         for a in offers:
@@ -486,7 +519,7 @@ class OpponentModel:
             for j in range(state.num_players):
                 if j == me or not self._safe_partner(state, me, j, give):
                     continue
-                pj = self.predict_accept(state, j, give, get, proposer=me, belief=belief)
+                pj = self.predict_accept(state, j, give, get, proposer=me, belief=belief, politics=politics)
                 if pj > best_p:
                     best_p, best_j = pj, j
             out.append({"action": a, "p_accept": best_p, "partner": best_j, "gain": gain_us,
@@ -495,14 +528,16 @@ class OpponentModel:
         return out
 
     def arbitrage_opportunities(self, state: GameState, me: int, needed: Optional[Sequence[int]] = None,
-                                belief: Optional[HandBelief] = None, min_prob: float = 0.3) -> List[dict]:
+                                belief: Optional[HandBelief] = None, min_prob: float = 0.3,
+                                politics=None) -> List[dict]:
         """Deals where the counterpart's implied valuation disagrees with ours.
 
         Direct: buy X with Y from j when j values X < Y and we value X > Y.
         Intermediary: buy X with Y from j, sell X for Z to k when j values
         X < Y, k values Z < X and we value Z > Y (we net Y -> Z).
         Returns dicts with ``steps`` (list of PROPOSE_TRADE actions),
-        ``p``, ``gain``, ``reason`` sorted by expected gain.
+        ``p``, ``gain``, ``reason`` sorted by expected gain.  ``politics``
+        is passed on to :meth:`predict_accept`.
         """
         p = state.players[me]
         our_vals = our_resource_values(state, me, needed)
@@ -524,7 +559,7 @@ class OpponentModel:
                     our_edge = our_vals[x] - our_vals[y]        # >0: we prefer x
                     give = tuple(1 if r == y else 0 for r in range(5))
                     get = tuple(1 if r == x else 0 for r in range(5))
-                    prob = self.predict_accept(state, j, give, get, proposer=me, belief=belief)
+                    prob = self.predict_accept(state, j, give, get, proposer=me, belief=belief, politics=politics)
                     if prob < min_prob:
                         continue
                     if our_edge > 0.05 and their_edge > -0.05:
@@ -551,17 +586,56 @@ class OpponentModel:
                             s2 = state.copy()
                             s2.players[me].resources[y] -= 1
                             s2.players[me].resources[x] += 1
-                            prob2 = self.predict_accept(s2, k, give2, get2, proposer=me, belief=belief)
+                            prob2 = self.predict_accept(s2, k, give2, get2, proposer=me, belief=belief,
+                                                        politics=politics)
                             if prob2 < min_prob:
                                 continue
                             gain = prob * prob2 * net_edge * stage
                             out.append({"steps": [(A.PROPOSE_TRADE, give, get), (A.PROPOSE_TRADE, give2, get2)],
                                         "p": prob * prob2, "gain": gain, "partner": j,
                                         "reason": f"intermediary: buy {B.RESOURCE_NAMES[x]} from {_pname(state, j)} "
-                                                  f"with {B.RESOURCE_NAMES[y]}, sell it to {_pname(state, k)} for "
-                                                  f"{B.RESOURCE_NAMES[z]} (P {prob:.0%} x {prob2:.0%})"})
+                                                  f"with {B.RESOURCE_NAMES[y]} ({_pname(state, j)} values "
+                                                  f"{B.RESOURCE_NAMES[x]} {'below' if their_edge > 0 else 'about like'} "
+                                                  f"{B.RESOURCE_NAMES[y]}), sell it to {_pname(state, k)} for "
+                                                  f"{B.RESOURCE_NAMES[z]} ({_pname(state, k)} values {B.RESOURCE_NAMES[z]} "
+                                                  f"below {B.RESOURCE_NAMES[x]}); P {prob:.0%} x {prob2:.0%}"})
         out.sort(key=lambda d: -d["gain"])
         return out[:8]
+
+    # --- robber habits ---------------------------------------------------------
+    def robber_habit_factors(self, state: GameState, actor: int) -> List[float]:
+        """Per-player multipliers (mean ~1) for how ``actor`` habitually picks robber victims.
+
+        Uses the profile's decayed victim counts (``robbed``) and its
+        leader-hitting rate (``robs_leader``): a player who keeps robbing the
+        same victim is expected to keep doing so, one who never hits the
+        leader is expected to spare them.  ``1.0`` everywhere until the
+        profile has seen a robber move; ``0.0`` for the actor itself.
+        """
+        n = state.num_players
+        prof = self.profile_of(state, actor)
+        total = sum(prof.robbed.values())
+        leader = _leader(state, actor)
+        out = []
+        for j in range(n):
+            if j == actor:
+                out.append(0.0)
+                continue
+            f = 1.0
+            if total > 0 and n > 2:
+                share = prof.robbed.get(_pname(state, j), 0.0) / total   # 1/(n-1) when they spread the hits
+                trust = min(1.0, total / 3.0)
+                f *= max(0.5, min(2.5, 1.0 + 0.8 * trust * (share * (n - 1) - 1.0)))
+            if j == leader and prof.robs_leader.weight >= 1:
+                f *= 0.6 + 0.8 * prof.robs_leader.mean()
+            out.append(f)
+        return out
+
+    def robber_habit_weights(self, state: GameState, actor: int) -> List[float]:
+        """``threat(j)`` x :meth:`robber_habit_factors` - target weights for ``robber.best_robber_move``."""
+        from .robber import threat
+        factors = self.robber_habit_factors(state, actor)
+        return [0.0 if j == actor else threat(state, j) * factors[j] for j in range(state.num_players)]
 
     @staticmethod
     def _safe_partner(state: GameState, me: int, j: int, give: Sequence[int]) -> bool:

@@ -38,7 +38,7 @@ from .coalitions import CoalitionDetector
 from .counting import expected_hidden_vp
 from .placement import (RESOURCE_DEMAND, blocking_value, player_production, reachable_spots,
                         resource_scarcity, score_settlement_spot)
-from .robber import hex_damage, hex_pips_for_player, threat
+from .robber import hex_damage, hex_pips_for_player, target_weight, threat
 from .state import GameState, PHASE_GAME_OVER, TradeOffer
 
 BASELINE = 0.1          # low-to-moderate goodwill until proven otherwise
@@ -177,13 +177,32 @@ class PoliticalState:
                     self.adjust(player, j, 0.01 * sw)
         elif kind == A.PLAY_MONOPOLY:
             res = action[1]
+            hidden = [j for j in range(n) if j != player and not state.players[j].hand_known]
+            exp_hands = None
+            taken_total = None
+            if hidden:
+                if state_after is not None:
+                    # Public information: the monopolist's hand grew by the total take.
+                    pa, pb = state_after.players[player], state.players[player]
+                    taken_total = max(0, (pa.total_resources if pa.hand_known else pa.hand_size)
+                                      - (pb.total_resources if pb.hand_known else pb.hand_size))
+                from .counting import expected_opponent_hands
+                exp_hands = expected_opponent_hands(state, me=player)
             for j in range(n):
                 if j == player:
                     continue
                 pj = state.players[j]
-                k = pj.resources[res] if pj.hand_known else 0
-                if k > 0:
-                    self.adjust(player, j, -0.04 * k * sw, f"{_pname(state, player)} monopolised {k} {B.RESOURCE_NAMES[res]} from {_pname(state, j)}")
+                if pj.hand_known:
+                    k = float(pj.resources[res])
+                elif taken_total is not None:
+                    # Split the public take among the hidden hands by their expected holdings.
+                    tot = sum(exp_hands[i][res] for i in hidden) or 0.0
+                    k = taken_total * (exp_hands[j][res] / tot) if tot > 0 else taken_total / len(hidden)
+                else:
+                    k = exp_hands[j][res]        # expected number of cards taken from them
+                if k >= 0.5:
+                    self.adjust(player, j, -0.04 * k * sw,
+                                f"{_pname(state, player)} monopolised ~{k:.0f} {B.RESOURCE_NAMES[res]} from {_pname(state, j)}")
         elif kind in (A.BUILD_SETTLEMENT, A.BUILD_ROAD, A.SETUP_SETTLEMENT):
             # Blocking: did this take a spot / cut a road another player was heading for?
             occ = state.occupied_vertices()
@@ -337,17 +356,25 @@ class PoliticalState:
         g = sum(grudges) / max(1, len(grudges))
         return max(0.0, min(1.0, 0.75 * pos + 0.8 * g))
 
-    def robber_target_weights(self, state: GameState, actor: int) -> List[float]:
-        """Per-player multiplier for how attractive it is for ``actor`` to hit them."""
+    def robber_target_weights(self, state: GameState, actor: int, model=None) -> List[float]:
+        """Per-player multiplier for how attractive it is for ``actor`` to hit them.
+
+        ``model`` (an ``opponent_model.OpponentModel``) adds the actor's
+        observed robber habits - whom they keep robbing and whether they hit
+        the leader - so the simulated opponents rob the way they really do.
+        """
         self.ensure(state.num_players)
+        habit = model.robber_habit_factors(state, actor) if model is not None else None
         out = []
         for j in range(state.num_players):
             if j == actor:
                 out.append(0.0)
                 continue
-            w = threat(state, j)
+            w = target_weight(state, j)                      # VP threat x distance to win
             w *= 1.0 + 1.2 * self.grudge(actor, j)          # grudges
             w *= 1.0 - 0.5 * max(0.0, self.get(j, actor) - self.baseline)  # friends get hit less
+            if habit is not None:
+                w *= habit[j]                                 # observed victim habits / leader hitting
             # Coalitions: an actor spares its allies; a bloc that includes the leader is a
             # bigger threat than its members look individually.
             ally = min(1.0, self.coalitions.strength(actor, j) / 2.0)
@@ -570,7 +597,13 @@ def runway_advice(state: GameState, me: int, politics: Optional[PoliticalState] 
         who = _pname(state, o["player"])
         award = "Longest Road" if o["award"] == "longest_road" else "Largest Army"
         need = ", ".join(f"{o['needs'][r]} {B.RESOURCE_NAMES[r]}" for r in range(5) if o["needs"][r])
-        lines.append(f"{who} is {o['gap']} step(s) from taking {award} off the leader (needs {need}).")
+        if need:
+            detail = f"needs {need}"
+        elif o["award"] == "largest_army":
+            detail = "already holds a dev card that may be a knight"
+        else:
+            detail = "already has the cards"
+        lines.append(f"{who} is {o['gap']} step(s) from taking {award} off the leader ({detail}).")
     if politics is not None:
         lines.extend(politics.summary(state, me))
     return lines

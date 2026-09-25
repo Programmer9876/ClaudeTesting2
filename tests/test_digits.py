@@ -190,3 +190,37 @@ def test_red_prior_changes_probabilities_sensibly():
     p_plain = clf.predict_proba([img], use_red_prior=False)[0]
     i6, i8 = D.CLASS_INDEX[6], D.CLASS_INDEX[8]
     assert p_prior[i6] + p_prior[i8] <= p_plain[i6] + p_plain[i8] + 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the robustness review (vision-io-9, vision-io-10)
+# ---------------------------------------------------------------------------
+def test_save_and_load_agree_on_the_npz_suffix(tmp_path):
+    clf = D.DigitClassifier(hidden=(8,), seed=0)
+    written = clf.save(str(tmp_path / "digits_noext"))
+    assert written.endswith(".npz") and os.path.isfile(written)
+    re = D.DigitClassifier.load(str(tmp_path / "digits_noext"))
+    assert re.hidden == (8,)
+    assert D.DigitClassifier.load(written).hidden == (8,)
+
+
+def test_find_model_path_env_override_and_clear_error(tmp_path, monkeypatch):
+    clf = D.DigitClassifier(hidden=(8,), seed=0)
+    path = clf.save(str(tmp_path / "custom.npz"))
+    monkeypatch.setenv(D.MODEL_PATH_ENV, path)
+    assert D.find_model_path() == path
+    assert D.DigitClassifier.load().hidden == (8,)
+    monkeypatch.setenv(D.MODEL_PATH_ENV, str(tmp_path / "missing.npz"))
+    with pytest.raises(FileNotFoundError, match="missing.npz"):
+        D.find_model_path()
+    monkeypatch.delenv(D.MODEL_PATH_ENV)
+    monkeypatch.setattr(D, "DEFAULT_MODEL_PATH", str(tmp_path / "nope.npz"))
+    monkeypatch.setattr(D, "_PACKAGE_MODEL_PATH", str(tmp_path / "nope2.npz"))
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="train_digits.py"):
+        D.find_model_path()
+
+
+def test_docstring_feature_counts_are_current():
+    assert "640" in D.__doc__ and "1664" in D.__doc__ and "512" not in D.__doc__.split("Colonist draws")[0]
+    assert D.NUM_HOG == 640 and D.NUM_FEATURES == 1664

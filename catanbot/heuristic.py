@@ -22,7 +22,7 @@ from .counting import expected_hidden_vp
 from .devcards import best_year_of_plenty, should_buy_dev, should_play_monopoly
 from .discard import choose_discard, needed_vector
 from .placement import (RESOURCE_DEMAND, best_city_spots, best_settlement_spots, buildable_settlements,
-                        player_production, reachable_spots, resource_scarcity, road_targets,
+                        player_production, reachable_spots, resource_scarcity, road_block_values, road_targets,
                         score_city, score_settlement_spot, setup_pick, setup_road_pick)
 from .robber import best_robber_move, estimated_vp, hex_damage, should_play_knight, steal_exposure_fast, threat
 from .state import GameState, PHASE_GAME_OVER
@@ -185,8 +185,16 @@ class HeuristicEvaluator:
 # Move ordering
 # ---------------------------------------------------------------------------
 def action_priors(state: GameState, actions: Sequence[Action], player: Optional[int] = None,
-                  belief=None) -> List[float]:
-    """Prior desirability of each action (higher = try first).  Same length as ``actions``."""
+                  belief=None, model=None, politics=None) -> List[float]:
+    """Prior desirability of each action (higher = try first).  Same length as ``actions``.
+
+    ``model`` (an ``opponent_model.OpponentModel``) makes the trade plan and
+    the offer ordering use the opponents' profiles (exploitative acceptance
+    prediction); ``politics`` (a ``politics.PoliticalState``) weights robber
+    targets by grudges / friendships and adds favour slack to the acceptance
+    decision - the same inputs the search and the advice text use, so the
+    two never name different robber victims.
+    """
     if not actions:
         return []
     if player is None:
@@ -206,11 +214,15 @@ def action_priors(state: GameState, actions: Sequence[Action], player: Optional[
     if A.BUILD_ROAD in kinds:
         targets = road_targets(state, player, max_roads=3, k=6)
         ctx["road_first"] = {t["first_edge"]: t["score"] for t in targets if t["first_edge"] >= 0}
+        # Roads that cut an opponent off from their best spot (Longest Road defence / blocking).
+        ctx["road_block"] = road_block_values(state, player, [a[1] for a in actions if a[0] == A.BUILD_ROAD])
         ctx["lr"] = longest_road_length(state, player)
     if A.BUY_DEV in kinds:
         ctx["buy_dev"] = should_buy_dev(state, player, belief)
     if A.PLAY_KNIGHT in kinds or A.MOVE_ROBBER in kinds:
-        ctx["robber"] = best_robber_move(state, player)
+        tw = politics.robber_target_weights(state, player) if politics is not None else None
+        ctx["tw"] = tw
+        ctx["robber"] = best_robber_move(state, player, target_weights=tw)
         if A.PLAY_KNIGHT in kinds:
             ctx["knight"] = should_play_knight(state, player)
     if A.PLAY_MONOPOLY in kinds:
@@ -219,12 +231,12 @@ def action_priors(state: GameState, actions: Sequence[Action], player: Optional[
         ctx["yop"] = best_year_of_plenty(state, player)
     if A.BANK_TRADE in kinds or A.PROPOSE_TRADE in kinds:
         needed = needed_vector(state, player)
-        ctx["plan"] = {s["action"] for s in plan_trades(state, player, needed, belief)}
-        ctx["offers"] = set(candidate_offers(state, player, needed, belief))
+        ctx["plan"] = {s["action"] for s in plan_trades(state, player, needed, belief, model=model, politics=politics)}
+        ctx["offers"] = set(candidate_offers(state, player, needed, belief, model=model, politics=politics))
     if A.DISCARD in kinds:
         ctx["discard"] = choose_discard(state, player, legal_actions=list(actions))
     if A.ACCEPT_TRADE in kinds and state.pending_trade is not None:
-        ctx["accept"] = should_accept(state, player, state.pending_trade)[0]
+        ctx["accept"] = should_accept(state, player, state.pending_trade, politics=politics)[0]
 
     out: List[float] = []
     for a in actions:
@@ -240,11 +252,13 @@ def action_priors(state: GameState, actions: Sequence[Action], player: Optional[
         elif k == A.BUILD_SETTLEMENT:
             v = 95.0 + ctx["spots"].get(a[1], 0.0)
         elif k == A.BUILD_ROAD:
-            v = 40.0 + 2.0 * ctx["road_first"].get(a[1], 0.0)
+            block = ctx["road_block"].get(a[1], 0.0)
+            v = 40.0 + 2.0 * ctx["road_first"].get(a[1], 0.0) + 2.0 * block
             if state.free_roads > 0:
                 v += 50.0
             elif ctx["lr"] >= 4 and state.longest_road_owner != player:
-                v += 8.0
+                # extends a Longest Road candidate; more so when it also cuts theirs
+                v += 8.0 + (4.0 if block > 0 else 0.0)
         elif k == A.BUY_DEV:
             v = 80.0 if ctx["buy_dev"][0] else 20.0
         elif k == A.PLAY_KNIGHT:
@@ -254,16 +268,17 @@ def action_priors(state: GameState, actions: Sequence[Action], player: Optional[
                 # The recommended knight outranks ROLL (100) so it is played before rolling.
                 v = 110.0 if recommended else 50.0
             else:
-                opp, own = hex_damage(state, a[1], player)
+                opp, own = hex_damage(state, a[1], player, ctx["tw"])
                 v = (60.0 if recommended else 30.0) + min(15.0, 0.5 * (opp - 1.6 * own))
         elif k == A.MOVE_ROBBER:
             h, victim, _ = ctx["robber"]
-            opp, own = hex_damage(state, a[1], player)
+            tw = ctx["tw"]
+            opp, own = hex_damage(state, a[1], player, tw)
             v = 50.0 + (opp - 1.6 * own)
             if a[1] == h and a[2] == victim:
                 v += 40.0
             elif a[2] >= 0:
-                v += 2.0 + threat(state, a[2])
+                v += 2.0 + (tw[a[2]] if tw is not None else threat(state, a[2]))
         elif k == A.PLAY_ROAD_BUILDING:
             v = 70.0 if len(p.roads) <= B.MAX_ROADS - 1 else 5.0
         elif k == A.PLAY_YEAR_OF_PLENTY:

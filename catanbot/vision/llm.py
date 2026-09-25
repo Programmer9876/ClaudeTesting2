@@ -683,6 +683,13 @@ def parse_with_claude(path_or_image: _ImageLike, me: Optional[str] = None, model
     model_me = model_me.strip().lower() if isinstance(model_me, str) and model_me.strip() else None
     if me and (me in colors or not colors):
         parsed["me"] = me
+        if model_me is not None and model_me != me:
+            # the hand bar shows the screen owner's cards only: a hand the model attached to
+            # another player was mis-attributed and must not count as exact knowledge
+            for p in parsed.get("players", []):
+                if isinstance(p, dict) and str(p.get("color", "")).strip().lower() != me and "resources" in p:
+                    p.pop("resources", None)
+                    warnings.append(f"model attributed the hand bar to {p.get('color')!r}; ignored because me={me!r}")
     elif me:
         # Same contract as the CV parser: an unknown colour is reported, never propagated,
         # so ``state.player_index(parsed["me"])`` cannot fail downstream.

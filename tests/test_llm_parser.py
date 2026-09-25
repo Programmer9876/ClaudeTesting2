@@ -465,3 +465,67 @@ def test_forced_tool_choice_rejection_retries_with_auto(monkeypatch):
     result = llm.parse_with_claude(sample_image(), client=client)
     assert result.state.robber == 9
     assert [c["tool_choice"]["type"] for c in client.messages.calls] == ["tool", "auto"]
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the robustness review (vision-io-1, vision-io-4, vision-io-6)
+# ---------------------------------------------------------------------------
+def test_unknown_me_never_reaches_the_state(monkeypatch):
+    """vision-io-1: a --me colour that is not a detected player must not propagate (KeyError in the CLI)."""
+    result = llm.parse_with_claude(sample_image(), me="green", client=FakeClient(tool_use_response(make_tool_input())))
+    assert result.parsed["me"] == "red"          # the model's answer is kept
+    assert any("green" in w and "using 'red'" in w for w in result.warnings)
+    result.state.player_index(result.parsed["me"])   # what cli.cmd_analyze does
+    # the model itself reports an unknown owner -> first player, with a warning
+    raw = make_tool_input()
+    raw["me"] = "purple"
+    result = llm.parse_with_claude(sample_image(), client=FakeClient(tool_use_response(raw)))
+    assert result.parsed["me"] == "red"
+    assert any("purple" in w for w in result.warnings)
+    # no players at all: no crash, no me
+    raw = make_tool_input()
+    raw["players"] = []
+    result = llm.parse_with_claude(sample_image(), me="red", client=FakeClient(tool_use_response(raw)))
+    assert result.state.num_players == 0
+
+
+def test_me_override_drops_mis_attributed_hand():
+    client = FakeClient(tool_use_response(make_tool_input()))
+    result = llm.parse_with_claude(sample_image(), me="blue", client=client)
+    assert result.parsed["me"] == "blue"
+    assert "resources" not in result.parsed["players"][0]
+    assert any("attributed the hand bar" in w for w in result.warnings)
+    assert not result.state.players[0].hand_known
+
+
+def test_rolled_flag_in_prompt_schema_and_state():
+    """vision-io-4: the model can say whether the roll already happened."""
+    assert "rolled" in llm.build_prompt()
+    assert "rolled" in llm.build_tool_schema()["properties"]
+    raw = make_tool_input()
+    raw["rolled"] = False          # dice 8 still displayed from the previous turn
+    result = llm.parse_with_claude(sample_image(), client=FakeClient(tool_use_response(raw)))
+    assert result.state.phase == "roll" and result.state.dice == 8
+    raw = make_tool_input()
+    del raw["dice"]
+    result = llm.parse_with_claude(sample_image(), client=FakeClient(tool_use_response(raw)))
+    assert result.state.phase == "roll"
+
+
+def test_sdk_resolved_credentials_are_used_without_env_vars(monkeypatch):
+    """vision-io-6: no environment pre-check; the SDK may hold a stored profile / federation credentials."""
+    seen: list = []
+
+    def factory(api_key):
+        seen.append(api_key)
+        return FakeClient(tool_use_response(make_tool_input()))
+
+    monkeypatch.setitem(sys.modules, "anthropic", _fake_anthropic_module(factory))
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    result = llm.parse_with_claude(sample_image())
+    assert result.state.robber == 9 and seen == [None]
+    # and when the SDK cannot resolve anything, the hint mentions both ways to log in
+    monkeypatch.setitem(sys.modules, "anthropic", _fake_anthropic_module())
+    with pytest.raises(RuntimeError, match="ant auth login"):
+        llm.parse_with_claude(sample_image())

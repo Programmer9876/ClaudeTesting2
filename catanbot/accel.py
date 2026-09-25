@@ -29,11 +29,13 @@ import warnings
 from typing import List, Optional, Sequence
 
 __all__ = ["AVAILABLE", "extract", "extract_batch", "longest_road_length", "static_values", "static_value",
-           "heuristic_evaluate", "load_core", "disabled_by_env", "verify"]
+           "heuristic_evaluate", "load_core", "disabled_by_env", "verify",
+           "ENGINE_ACTIVE", "ENGINE_ENV", "engine_enabled_by_env", "engine_available", "engine_legal_actions",
+           "engine_apply", "engine_apply_inplace", "engine_apply_forced", "random_playout_fast"]
 
 # Entry points every usable build provides; an older build missing one is stale and gets disabled by verify().
 _REQUIRED = ("extract_batch", "extract", "longest_road_length", "static_values", "static_value", "heuristic_evaluate",
-             "UnsupportedStateError")
+             "UnsupportedStateError", "legal_actions", "apply", "apply_inplace", "apply_forced", "random_playout_fast")
 
 
 def disabled_by_env() -> bool:
@@ -182,3 +184,73 @@ def heuristic_evaluate(states: Sequence, players: Sequence[int], temperature: fl
 def core_file() -> Optional[str]:
     """Path of the loaded extension (for diagnostics)."""
     return getattr(_core, "__file__", None) if _core is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Rules engine (C++ port of catanbot.engine: legal_actions / apply / apply_inplace / random_playout)
+# ---------------------------------------------------------------------------
+# The Python engine stays the default.  ``engine.legal_actions`` / ``apply`` / ``apply_inplace`` route
+# to the extension only when :data:`ENGINE_ACTIVE` is true: the extension is loaded, it has the engine
+# entry points and the environment variable ``CATANBOT_ACCEL_ENGINE`` is set (opt-in, default off).
+# The wrappers return ``None`` for a state the extension cannot represent (``UnsupportedStateError``)
+# so the caller falls back to the Python code; illegal actions raise ``engine.IllegalActionError``
+# exactly like the Python engine (the extension raises that very class).
+ENGINE_ENV = "CATANBOT_ACCEL_ENGINE"
+_ENGINE_REQUIRED = ("legal_actions", "apply", "apply_inplace", "apply_forced", "random_playout_fast")
+
+
+def engine_enabled_by_env() -> bool:
+    """True when ``CATANBOT_ACCEL_ENGINE`` is set to anything but empty / 0 / false / no."""
+    return os.environ.get(ENGINE_ENV, "").strip().lower() not in ("", "0", "false", "no")
+
+
+def engine_available() -> bool:
+    """True when the loaded extension provides the engine entry points (independent of the env switch)."""
+    return _core is not None and all(hasattr(_core, name) for name in _ENGINE_REQUIRED)
+
+
+ENGINE_ACTIVE: bool = AVAILABLE and engine_enabled_by_env() and engine_available()
+
+
+def engine_legal_actions(state):
+    """C++ ``engine.legal_actions`` (same tuples, same order); ``None`` when the state is unsupported."""
+    try:
+        return _core.legal_actions(state)
+    except ValueError as exc:
+        if _unsupported(exc):
+            return None
+        raise
+
+
+def engine_apply(state, action, rng=None):
+    """C++ ``engine.apply``: a new ``GameState``; ``None`` when the state is unsupported.
+
+    ``rng`` may be ``None``, an int seed (C++ generator) or a ``random.Random``, which the extension
+    consults exactly like the Python engine does (same calls, same order, same results).
+    """
+    try:
+        return _core.apply(state, action, rng)
+    except ValueError as exc:
+        if _unsupported(exc):
+            return None
+        raise
+
+
+def engine_apply_inplace(state, action, rng=None):
+    """C++ ``engine.apply_inplace`` (written back into the same objects); ``None`` when unsupported."""
+    try:
+        return _core.apply_inplace(state, action, rng)
+    except ValueError as exc:
+        if _unsupported(exc):
+            return None
+        raise
+
+
+def engine_apply_forced(state, action, drawn_index: int):
+    """``engine.apply`` with the random choice given (steal / dev draw index, or a 2d6 pair index for ``(ROLL,)``)."""
+    return _core.apply_forced(state, action, int(drawn_index))
+
+
+def random_playout_fast(state, seed=None, max_turns=None, max_actions: int = 2_000_000, trace: bool = False):
+    """``engine.random_playout`` entirely in C++ (see ``core.random_playout_fast``); needs the extension."""
+    return _core.random_playout_fast(state, seed, max_turns, int(max_actions), bool(trace))

@@ -142,3 +142,47 @@ def test_render_states_with_edge_cases():
     # unknown player colour does not crash
     st.players[0].color = "teal"
     synth.render_state(st, size=(400, 250), seed=0, jitter=False)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the robustness review (vision-io-11)
+# ---------------------------------------------------------------------------
+def test_unknown_hand_is_drawn_as_question_marks(state, monkeypatch):
+    drawn: list = []
+    orig = synth._Canvas.text
+
+    def spy(self, cx, cy, s, *args, **kw):
+        drawn.append(s)
+        return orig(self, cx, cy, s, *args, **kw)
+
+    monkeypatch.setattr(synth._Canvas, "text", spy)
+    st = state.copy()
+    st.players[0].hand_known = False
+    st.players[0].hand_size = 5
+    synth.render_state(st, size=(640, 400), seed=1, me=0, jitter=False)
+    assert drawn.count("?") == 5
+    drawn.clear()
+    synth.render_state(state, size=(640, 400), seed=1, me=0, jitter=False)
+    assert "?" not in drawn
+
+
+def test_unpaired_port_is_drawn_where_schema_reports_it(state):
+    st = state.copy()
+    v = B.COASTAL_VERTICES[0]
+    st.ports = {v: B.WOOD}
+    entries = synth._port_entries(st.ports)
+    assert len(entries) == 1 and entries[0][1] == B.WOOD and v in B.EDGE_VERTICES[entries[0][0]]
+    reported = S.state_to_parsed(st, me=0)["ports"]
+    assert [(p["edge"], p["type"]) for p in reported] == [(entries[0][0], "wood")]
+    img = synth.render_state(st, size=(1280, 800), seed=1, me=0, jitter=False, jpeg=False)
+    g = synth.board_geometry((1280, 800), seed=1, jitter=False)
+    hs = g["hex_size"]
+    e = entries[0][0]
+    h = B.EDGE_HEXES[e][0]
+    hx, hy = B.HEX_CENTERS[h]
+    ex, ey = B.EDGE_POS[e]
+    dx, dy = ex - hx, ey - hy
+    n = math.hypot(dx, dy)
+    px, py = synth.pixel_of_edge(e, g)
+    icon = _mean_rgb(img, px + dx / n * 0.62 * hs - 0.3 * hs, py + dy / n * 0.62 * hs, r=2)
+    assert icon[0] > 180 and icon[1] > 160 and icon[2] < 200   # beige port icon, not sea

@@ -163,6 +163,7 @@ def test_aliases_and_missing_optionals():
     parsed["me"] = "blue"
     parsed["players"][0].pop("resources")
     parsed["players"][1]["resources"] = {"wool": 2, "grain": 1}
+    parsed["players"][1]["cards"] = 3
     assert S.validate(parsed) == []
     st = S.parsed_to_state(parsed)
     assert st.hexes == list(B.STANDARD_HEXES)
@@ -342,3 +343,126 @@ def test_validate_handles_garbage_without_raising():
     assert S.validate({"hexes": [None] * 19, "players": [{"color": 5}]})
     st = S.parsed_to_state({"hexes": [], "players": []})
     assert st.num_players == 0 and len(st.hexes) == 19
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the robustness review (vision-io-2 .. vision-io-8)
+# ---------------------------------------------------------------------------
+from catanbot.state import PHASE_ROLL
+
+
+def test_ports_as_vertex_map_and_vertex_entries():
+    """vision-io-2: GameState.to_dict()'s {vertex: type} port format must round-trip, never raise."""
+    parsed = _example()
+    parsed["ports"] = {str(v): B.PORT_NAMES[t] for v, t in B.STANDARD_PORTS.items()}
+    assert S.parsed_to_state(parsed).ports == B.STANDARD_PORTS
+    assert S.validate(parsed) == []
+    parsed["ports"] = {"3": "3:1"}      # 1-character key used to index out of range
+    S.parsed_to_state(parsed)
+    v = B.COASTAL_VERTICES[0]
+    parsed["ports"] = [{"vertex": v, "type": "ore"}]
+    assert S.parsed_to_state(parsed).ports == {v: B.ORE}
+    # a ports field without a single valid entry means the standard layout, with a warning
+    parsed["ports"] = [{"vertex": 12, "type": "3:1"}, {"edge": 999, "type": "3:1"}, ["x"]]
+    assert S.parsed_to_state(parsed).ports == B.STANDARD_PORTS
+    w = S.validate(parsed)
+    assert any("no valid entry" in x for x in w), w
+    assert any("malformed" in x for x in w), w
+
+
+def test_dev_card_key_aliases_and_unknown_key_warning():
+    """vision-io-3: plausible spellings are accepted; unknown keys are reported."""
+    for key, idx in (("knights", B.DEV_KNIGHT), ("Knight", B.DEV_KNIGHT), ("year of plenty", B.DEV_YEAR_OF_PLENTY),
+                     ("road-building", B.DEV_ROAD_BUILDING), ("victory_points", B.DEV_VP), ("VP", B.DEV_VP),
+                     ("Monopoly", B.DEV_MONOPOLY), ("yop", B.DEV_YEAR_OF_PLENTY)):
+        assert S.dev_type_from_name(key) == idx, key
+        parsed = _example()
+        parsed["players"][0]["dev_cards"] = {key: 2}
+        parsed["players"][0]["vp"] = 6 + (2 if idx == B.DEV_VP else 0)
+        st = S.parsed_to_state(parsed)
+        assert st.players[0].dev_known and st.players[0].dev_cards[idx] == 2
+        assert not any("not recognised" in x for x in S.validate(parsed))
+    assert S.dev_type_from_name("bogus") is None
+    parsed = _example()
+    parsed["players"][0]["dev_cards"] = {"knight": 1, "wizard": 1}
+    w = S.validate(parsed)
+    assert any("'wizard'" in x and "not recognised" in x for x in w), w
+    parsed["players"][0]["dev_cards"] = [1, 0, 0, 0, 0]
+    assert not any("dev_cards" in x for x in S.validate(parsed))
+
+
+def test_phase_follows_dice_and_rolled_flag():
+    """vision-io-4: a parse without a dice total is a pre-roll position."""
+    parsed = _example()
+    for missing in ("absent", 0, None):
+        p = copy.deepcopy(parsed)
+        if missing == "absent":
+            del p["dice"]
+        else:
+            p["dice"] = missing
+        st = S.parsed_to_state(p)
+        assert st.phase == PHASE_ROLL and st.dice == 0
+    assert S.parsed_to_state(parsed).phase == PHASE_MAIN
+    p = copy.deepcopy(parsed)
+    p["rolled"] = False            # the displayed 8 is the previous player's roll
+    assert S.parsed_to_state(p).phase == PHASE_ROLL
+    p["dice"] = 0
+    p["rolled"] = True
+    assert S.parsed_to_state(p).phase == PHASE_MAIN
+    assert "rolled" in S.PARSE_SCHEMA["properties"]
+    p["rolled"] = "yes"
+    assert any("'rolled'" in x for x in S.validate(p))
+
+
+def test_me_hidden_vp_cards_inferred_from_vp():
+    """vision-io-5: vp above the public points with count-only dev cards means VP cards."""
+    parsed = _example()
+    parsed["players"][0]["vp"] = 8       # 4 public (2 settlements + city ... plus longest road)
+    parsed["players"][0]["dev_cards"] = 3
+    st = S.parsed_to_state(parsed)
+    public = st.public_vp(0)
+    assert st.total_vp(0) == 8
+    assert st.players[0].dev_cards[B.DEV_VP] == 8 - public
+    assert not st.players[0].dev_known and st.players[0].dev_count == 3
+    assert st.dev_deck[B.DEV_VP] <= 5 - (8 - public)
+    assert S.validate(parsed) == []
+    # opponents' vp is public only: never inferred
+    parsed["players"][1]["vp"] = 6
+    assert S.parsed_to_state(parsed).players[1].dev_cards == [0] * 5
+    # the round trip through state_to_parsed keeps the total
+    st2 = S.parsed_to_state(S.state_to_parsed(st, me=0))
+    assert st2.total_vp(0) == 8
+
+
+def test_opponent_exact_resources_are_honoured():
+    """vision-io-7: --fix blue.hand=... (an opponent's known cards) must reach the state."""
+    parsed = _example()
+    parsed["players"][1]["resources"] = {"wood": 3, "ore": 3}
+    st = S.parsed_to_state(parsed)
+    assert st.players[1].hand_known and st.players[1].resources == [3, 0, 0, 0, 3] and st.players[1].hand_size == 6
+    assert st.bank[B.WOOD] == 19 - 1 - 3 and st.bank[B.ORE] == 19 - 3
+    assert S.validate(parsed) == []
+
+
+def test_validate_reports_card_count_deck_bank_and_award_inconsistencies():
+    """vision-io-8."""
+    parsed = _example()
+    parsed["players"][0]["cards"] = 9              # resources sum to 4
+    w = S.validate(parsed)
+    assert any("cards 9 does not match the 4 resources" in x for x in w), w
+    parsed = _example()
+    parsed["dev_deck_remaining"] = -3
+    assert any("dev_deck_remaining -3" in x for x in S.validate(parsed))
+    assert sum(S.parsed_to_state(parsed).dev_deck) == 15    # negative value ignored, not a zero deck
+    parsed["dev_deck_remaining"] = 40
+    assert any("dev_deck_remaining 40" in x for x in S.validate(parsed))
+    parsed = _example()
+    parsed["bank"] = {"wood": -2, "gold": 4}
+    w = S.validate(parsed)
+    assert any("unknown resource 'gold'" in x for x in w) and any("negative" in x and "wood" in x for x in w), w
+    parsed = _example()
+    parsed["players"][0]["longest_road"] = False   # red still has a 6-road chain
+    parsed["players"][3]["largest_army"] = False   # green still has 3 knights
+    w = S.validate(parsed)
+    assert any("road of length 6" in x and "not flagged" in x for x in w), w
+    assert any("3 knights" in x and "not flagged" in x for x in w), w

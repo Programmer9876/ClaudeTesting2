@@ -85,7 +85,9 @@ Fixes of the obvious errors of the stock `VictoryPointPlayer`:
   when the knight takes Largest Army, otherwise they compete with the other
   actions after the roll,
 * development cards are bought with surplus ore / sheep / wheat (the
-  progress term keeps a nearly affordable city intact),
+  progress term keeps a nearly affordable city intact; ending the turn with
+  an affordable dev card while holding ore and wheat for a city is therefore
+  intended, it happens once or twice per game),
 * maritime trades (4:1 / 3:1 / 2:1) are used when they complete a build, and
   to get under the discard limit,
 * initial placements from an opening book: settlement spot maximising
@@ -120,10 +122,12 @@ knights, Road Building roads, discards and the initial placements use the
   so no player can choose its discard through `decide`.  The players
   implement `choose_discard(game)` (keep the next build's cards) and
   `play_game(game, smart_discard=True)` is a drop-in for `Game.play` that
-  applies it with `validate_action=False`.  The ladder uses the stock loop
-  unless `--smart-discard` is given.  On 3.3 the engine asks for one
-  `DISCARD_RESOURCE` at a time and `decide` answers with the least valuable
-  card of the same plan, so `play_game` is just `Game.play` there.
+  applies it with `validate_action=False`.  The ladder runs every game
+  through `play_game` (`--stock-discard` uses the stock loop instead, as a
+  control; the difference is about two points of win rate, see below).  On
+  3.3 the engine asks for one `DISCARD_RESOURCE` at a time and `decide`
+  answers with the least valuable card of the same plan, so `play_game` is
+  just `Game.play` there.
 * All hands and the development deck are visible in `state`.  The players
   use the hand composition of a robbed player for the exact steal
   expectation (the stock `VictoryPointPlayer` copies the same state) and
@@ -132,18 +136,24 @@ knights, Road Building roads, discards and the initial placements use the
   action, result)`: dice, drawn card, stolen resource), so the search never
   consumes the game's random stream (3.3 shares one `random.Random` between
   a game and its copies).
-* Games are not bit-reproducible across processes: catanatron builds the
-  robber victims as a `set` of `Color` enums, whose iteration order depends
-  on the per-process hash seed, and both players break exact ties by action
-  order.  Re-running a batch therefore gives statistically equivalent, not
-  identical, games.
+* Reproducibility: catanatron generates some actions from `set`s (the
+  robber victims as a set of `Color`, maritime-trade and Year-of-Plenty
+  offers as sets of resource tuples), so the order of `playable_actions`
+  depends on the per-process string hash seed; that order fixes the choice
+  of the random players and every exact tie-break of ours.  The ladder
+  therefore pins `PYTHONHASHSEED=0` (it re-executes itself unless the
+  variable is already set; the worker processes inherit it) and a seed
+  replays the identical game in every run (`hashseed=` in the header line;
+  checked by a test).  A plain `Game(...).play()` in a fresh interpreter
+  without `PYTHONHASHSEED` still gives a statistically equivalent, not
+  identical, game.
 
 ## Ladder
 
 ```bash
 PYTHONPATH=. python3 scripts/catanatron_ladder.py --games 12                 # R,W,V,F,A round robin
 PYTHONPATH=. python3 scripts/catanatron_ladder.py --games 24 --types F,V,V,V # one 4-player matchup
-PYTHONPATH=. python3 scripts/catanatron_ladder.py --games 12 --smart-discard --json out.jsonl
+PYTHONPATH=. python3 scripts/catanatron_ladder.py --games 12 --stock-discard --json out.jsonl  # control: stock loop
 # catanatron 3.3 controls (X, Y) from the GitHub checkout without changing the install:
 PYTHONPATH=/home/user/bcollazo/catanatron/catanatron:. python3 scripts/catanatron_ladder.py --games 24 --types X,Y,F,A
 ```
@@ -151,41 +161,50 @@ PYTHONPATH=/home/user/bcollazo/catanatron/catanatron:. python3 scripts/catanatro
 Every 4-subset of `--types` plays `--games` games; the seat order rotates
 with the game index and the engine additionally shuffles the seating from
 the game seed.  Games run in `--workers` processes (default 2; 3 were used
-below on 4 shared cores, every batch under one minute).  The win rate is
+below on 4 shared cores, every batch under 70 s).  The catanbot players
+choose their discards (`play_game`) unless `--stock-discard` is given, and
+the hash seed is pinned, so every batch below replays exactly with the
+listed seed.  The win rate is
 wins / games played by that type; a type that is one of four players has a
 25 % par.  With 24 games one player's win rate has a standard error of
 about 9 points, with 48 games about 7 points.
 
-## Results on catanatron 3.2.1 (installed wheel, stock engine loop)
+## Results on catanatron 3.2.1 (installed wheel)
 
-Round robin `--games 12 --seed 0` (60 games, every type in 48 games):
+Round robin `--games 12 --seed 0` (60 games, every type in 48 games), the
+catanbot players choosing their discards (the ladder default):
 
 | type | player | games | wins | win % | avg VP |
 | --- | --- | ---: | ---: | ---: | ---: |
-| A | AlphaBetaPlayer | 48 | 33 | 68.8 | 9.08 |
-| F | ValueFunctionPlayer | 48 | 27 | 56.2 | 8.04 |
-| V | VictoryPointPlayer | 48 | 0 | 0.0 | 2.85 |
-| W | WeightedRandomPlayer | 48 | 0 | 0.0 | 2.81 |
-| R | RandomPlayer | 48 | 0 | 0.0 | 2.52 |
+| A | AlphaBetaPlayer | 48 | 32 | 66.7 | 8.88 |
+| F | ValueFunctionPlayer | 48 | 28 | 58.3 | 8.12 |
+| V | VictoryPointPlayer | 48 | 0 | 0.0 | 2.67 |
+| W | WeightedRandomPlayer | 48 | 0 | 0.0 | 2.58 |
+| R | RandomPlayer | 48 | 0 | 0.0 | 2.42 |
 
-No game hit the turn limit; 77 turns per game on average; 1.8 s per game.
-The same round robin through `play_game --smart-discard` (catanbot players
-choose their discards): A 64.6 % (8.88 VP), F 60.4 % (8.33), R / W / V 0 %.
+No game hit the turn limit; 73 turns per game on average; 3.2 s per game
+with three workers on shared cores.  The control through the stock engine
+loop (`--stock-discard`, same seeds, random discards for everyone): A 68.8 %
+(33 wins, 8.79 VP), F 56.2 % (27 wins, 8.19), R / W / V 0 %, 75 turns per
+game.  The smart discards move the two catanbot players by about two points
+in opposite directions (well within the 7-point standard error), so the
+random discards of the stock loop cost them little against these opponents.
 
 Direct matchups, 24 games each (one tested player, three of the control):
 
 | matchup | seed | tested player | control |
 | --- | ---: | --- | --- |
-| F vs V,V,V | 1000 | F 100 % (24/24, 10.12 VP) | V 0 % (2.82 VP) |
-| A vs V,V,V | 1200 | A 100 % (24/24, 10.21 VP) | V 0 % (2.76 VP) |
-| A vs F,F,F | 2000 | A 33.3 % (8/24, 7.79 VP) | F 22.2 % (7.14 VP) |
-| F vs A,A,A | 3000 | F 20.8 % (5/24, 7.33 VP) | A 26.4 % (7.67 VP) |
+| F vs V,V,V | 1000 | F 100 % (24/24, 10.12 VP) | V 0 % (2.97 VP) |
+| A vs V,V,V | 1200 | A 100 % (24/24, 10.12 VP) | V 0 % (2.67 VP) |
+| A vs F,F,F | 2000 | A 25.0 % (6/24, 7.29 VP) | F 25.0 % (7.40 VP) |
+| F vs A,A,A | 3000 | F 25.0 % (6/24, 7.54 VP) | A 25.0 % (7.31 VP) |
 
-A paired experiment with the scratch harness (36 seeds x all four seats for
-the tested player = 144 games, so seat and board luck cancel) gave the
-AlphaBetaPlayer 27.8 % against three ValueFunctionPlayers (par 25 %); the
-same harness gives exactly 25.0 % for a ValueFunctionPlayer against three
-copies of itself.
+Both A-vs-F matchups land exactly on the 25 % par.  An earlier paired
+experiment with the scratch harness (36 seeds x all four seats for the
+tested player = 144 games, so seat and board luck cancel; stock loop,
+unpinned hash seed) gave the AlphaBetaPlayer 27.8 % against three
+ValueFunctionPlayers; the same harness gives exactly 25.0 % for a
+ValueFunctionPlayer against three copies of itself.
 
 ## Results on catanatron 3.3.0 (GitHub checkout, players choose discards)
 
@@ -194,11 +213,15 @@ Run with `PYTHONPATH=/home/user/bcollazo/catanatron/catanatron:.`; `X` and
 
 | batch | seed | result |
 | --- | ---: | --- |
-| X,Y,F,A, 24 games | 5000 | F 41.7 % (8.38 VP), A 33.3 % (7.42), X 12.5 % (6.67), Y 12.5 % (6.83) |
-| F vs X,X,X, 24 games | 5100 | F 45.8 % (8.29 VP), X 18.1 % (6.21) |
-| A vs X,X,X, 24 games | 5200 | A 58.3 % (8.75 VP), X 13.9 % (6.43) |
-| X vs F,F,F, 24 games | 5300 | X 16.7 % (6.21 VP), F 27.8 % (7.51) |
-| R,W,V,F,A round robin, 12/subset | 5400 | A 66.7 % (8.85 VP), F 58.3 % (8.75), R / W / V 0 % |
+| X,Y,F,A, 24 games | 5000 | A 41.7 % (8.17 VP), F 33.3 % (7.83), Y 16.7 % (6.71), X 8.3 % (6.75) |
+| F vs X,X,X, 24 games | 5100 | F 50.0 % (8.46 VP), X 16.7 % (6.74) |
+| A vs X,X,X, 24 games | 5200 | A 58.3 % (8.46 VP), X 13.9 % (6.14) |
+| X vs F,F,F, 24 games | 5300 | X 12.5 % (5.96 VP), F 29.2 % (7.57) |
+| R,W,V,F,A round robin, 12/subset | 5400 | A 68.8 % (9.04 VP), F 56.2 % (8.50), R / W / V 0 % |
+
+(Pinned hash seed; an earlier run of the same seeds with an unpinned hash
+seed gave F 41.7 % / A 33.3 % in the 4-way and F 45.8 % against three X,
+i.e. the same picture within noise.)
 
 Catanatron's `AlphaBetaPlayer` (depth 2, pruned) needs about 4 s per game
 in a 4-player game, its `ValueFunctionPlayer` under 1 s.
@@ -207,30 +230,32 @@ in a 4-player game, its `ValueFunctionPlayer` under 1 s.
 
 * `ValueFunctionPlayer` clearly beats `VictoryPointPlayer` and
   `WeightedRandomPlayer`: 24/24 against three `VictoryPointPlayer`s, and the
-  three stock players won none of the 120 round-robin games on either
-  engine.  It also beats catanatron 3.3's own `ValueFunctionPlayer`
-  (45.8 % against three of them; that player gets 16.7 % against three of
-  ours).
-* `AlphaBetaPlayer` is at least as strong as `ValueFunctionPlayer`, by a
-  small margin rather than clearly stronger: it is above par in every direct
-  comparison (33.3 % and 27.8 % as one of four against three `F`; `F` gets
-  20.8 % against three `A`) and has the higher round-robin win rate on both
-  engines (68.8 vs 56.2 %, 66.7 vs 58.3 %), but the differences are one to
-  two standard errors.  In the single 24-game 4-way with catanatron's
-  players it finished behind `F` (33.3 vs 41.7 %), which is within noise;
-  against three catanatron `ValueFunctionPlayer`s it scored 58.3 %.
+  three stock players won none of the 180 round-robin games on the two
+  engines (three batches).  It also beats catanatron 3.3's own
+  `ValueFunctionPlayer` (50.0 % against three of them; that player gets
+  12.5 % against three of ours) and its `AlphaBetaPlayer` (33.3 vs 16.7 %
+  in the 4-way).
+* `AlphaBetaPlayer` is at least as strong as `ValueFunctionPlayer` but not
+  clearly stronger: both direct 24-game matchups (`A` against three `F`, `F`
+  against three `A`) land exactly on the 25 % par, the paired harness gave
+  it 27.8 %, and it has the higher round-robin win rate on both engines
+  (66.7 vs 58.3 %, 68.8 vs 56.2 %) and the better result against
+  catanatron 3.3's players (41.7 vs 33.3 % in the 4-way, 58.3 vs 50.0 %
+  against three `X`).  The round-robin gap is about one standard error; the
+  direct matchups say the two are equal against each other.
 * Weight tuning by paired self-play (card value, build-progress weight,
   opening book on / off, 144 games each) moved win rates by at most a few
   points, within noise, so the defaults were kept.
 * Limitations: the search models only the next opponent's single reply
   (no domestic trading, which no stock player initiates either), the value
   function sees full information like every catanatron player, and the
-  smart discards only reach the 3.2.1 engine through `play_game`.
+  smart discards only reach the 3.2.1 engine through `play_game` (which the
+  ladder uses; a plain `Game.play` still discards at random for them).
 
 ## Tests
 
 `python3 -m pytest tests/test_catanatron_players.py -q -p no:cacheprovider`
-(10 tests, about 6 s; passes on the 3.2.1 wheel and on the 3.3 checkout):
+(13 tests, about 12 s; passes on the 3.2.1 wheel and on the 3.3 checkout):
 value function monotonic in VP and in production (settlement, city on the
 best settlement, robber on an own tile), both players return a playable
 action in every prompt of two random games (including the 3.3 per-card
@@ -241,3 +266,11 @@ stays within its node budget and reaches at least depth 1, never ends the
 turn with a buildable city and upgrades the best settlement, the robber
 never lands on an own tile, discards keep the next build, the opening book
 picks a top-production spot, and `play_game` with smart discards completes.
+Three whole-game checks: an accumulator over two `play_game` games verifies
+every decision of both players (legal, never END_TURN with a buildable
+settlement / city, the robber never on an own tile when another tile is
+available, every discard equal to `plan_discard`, and that discards, robber
+moves and dev-card purchases actually occurred); the ladder's `play_seeded`
+logs chosen (list-valued) discards by default and `play_one` records
+`smart_discard`; and the ladder run twice in subprocesses without
+`PYTHONHASHSEED` prints `hashseed=0` and writes identical per-game results.

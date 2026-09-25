@@ -202,8 +202,10 @@ def apply_fix(parsed: dict, fix: str) -> None:
         parsed["ports"] = sorted(ports, key=lambda p: p["edge"])
         return
     if kl.startswith("bank."):
+        rname = B.RESOURCE_NAMES[_res_index(kl[5:])]
+        stock = _parse_int(vl, "bank stock", 0, B.BANK_PER_RESOURCE)
         parsed.setdefault("bank", {B.RESOURCE_NAMES[r]: B.BANK_PER_RESOURCE for r in range(5)})
-        parsed["bank"][B.RESOURCE_NAMES[_res_index(kl[5:])]] = _parse_int(vl, "bank stock", 0, B.BANK_PER_RESOURCE)
+        parsed["bank"][rname] = stock
         return
     if "." in kl:
         color, attr = kl.split(".", 1)
@@ -482,7 +484,7 @@ def draw_ids(img, geometry: Optional[Dict[str, float]]):
     draw = ImageDraw.Draw(img)
     try:
         from .vision.colonist import DEFAULT_FONT_PATH
-        font = ImageFont.truetype(DEFAULT_FONT_PATH, max(9, int(0.15 * hs)))
+        font = ImageFont.truetype(DEFAULT_FONT_PATH, max(10, int(0.17 * hs)))
     except Exception:
         font = ImageFont.load_default()
 
@@ -556,15 +558,21 @@ def parse_offer(state: GameState, me: int, text: str) -> Tuple[int, List[int], L
         raise UsageError(f"bad --offer '{text}': both 'give' and 'get' must be non-empty; {fmt}")
     if any(give[r] and get[r] for r in range(5)):
         raise UsageError(f"bad --offer '{text}': the same resource cannot be on both sides")
+    return proposer, give, get
+
+
+def offer_affordability_warnings(state: GameState, me: int, proposer: int, give: Sequence[int],
+                                 get: Sequence[int]) -> List[str]:
+    """Warnings when a known hand cannot cover its side of an offer (accepting is then illegal)."""
+    out: List[str] = []
     mep = state.players[me]
     if mep.hand_known and any(mep.resources[r] < get[r] for r in range(5)):
-        raise UsageError(f"bad --offer '{text}': you cannot pay {A._counts_str(get)} (your hand: "
-                         f"{A._counts_str(mep.resources)}); correct it with --fix '{mep.color}.hand=...'")
+        out.append(f"you cannot pay {A._counts_str(get)} for this offer (your hand: {A._counts_str(mep.resources)}), "
+                   f"so only rejecting is possible; if the hand was misread fix it with --fix '{mep.color}.hand=...'")
     pp = state.players[proposer]
     if pp.hand_known and any(pp.resources[r] < give[r] for r in range(5)):
-        raise UsageError(f"bad --offer '{text}': {pp.color} does not hold {A._counts_str(give)} "
-                         f"(their hand: {A._counts_str(pp.resources)})")
-    return proposer, give, get
+        out.append(f"{pp.color} does not hold {A._counts_str(give)} (their hand: {A._counts_str(pp.resources)})")
+    return out
 
 
 def run_search(state: GameState, me: int, evaluator, cfg, args, model=None, politics=None, rng=None):
@@ -624,6 +632,7 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
     from .discard import explain_seven_risk
     from .politics import political_trade_options, runway_advice
     from .robber import best_robber_move, should_play_knight
+    from .danger import danger_lines
     from .search import SearchConfig
     from .trading import trade_advice
 
@@ -647,6 +656,7 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
                                + "; there are no actions to recommend.")
     elif offer:
         proposer, give, get = parse_offer(state, me, offer)
+        report["warnings"].extend(offer_affordability_warnings(state, me, proposer, give, get))
         state.pending_trade = TradeOffer(proposer, give, get)
         state.current = proposer
         state.phase = PHASE_TRADE_RESPONSE
@@ -696,7 +706,7 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
         advice["trading"] = trade_advice(state, me, model=model)
     except Exception as ex:  # pragma: no cover
         advice["trading"] = [f"(trade advice unavailable: {ex})"]
-    advice["seven_risk"] = [explain_seven_risk(state, me)]
+    advice["seven_risk"] = [explain_seven_risk(state, me, politics)]
     if state.players[me].total_resources > 7 and state.phase == PHASE_MAIN and E.acting_player(state) == me:
         from .discard import choose_discard, surplus_dump_actions
         try:
@@ -714,6 +724,10 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
     h, victim, reason = best_robber_move(state, me, target_weights=politics.robber_target_weights(state, me))
     advice["robber"] = [("Play a knight now: " if ok else "Hold the knight: ") + why,
                         f"Best robber target: {A.describe((A.MOVE_ROBBER, h, victim), state)} - {reason}"]
+    try:
+        advice["robber"].extend("Threat board: " + line for line in danger_lines(state, me))
+    except Exception as ex:  # pragma: no cover
+        advice["robber"].append(f"(threat board unavailable: {ex})")
     advice["dev_cards"] = dev_card_advice(state, me)
     advice["opponents"] = model.summary(state, me=me)
     # the per-opponent profile lines belong to the Opponents section only

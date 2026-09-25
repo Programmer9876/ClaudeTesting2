@@ -91,6 +91,7 @@ class Calibration:
     })
     dev_card: RGB = (120, 70, 170)    # dev-card icon / card colour in the UI
     panel: RGB = (30, 40, 56)         # dark UI panel colour (hand bar, bank panel)
+    white: int = 255                  # level of white UI elements (text, dice, current-player border)
     player_max_dist: float = 60.0      # RGB distance to accept a pixel as a player colour
     building_min_fraction: float = 0.22
     road_min_fraction: float = 0.35
@@ -123,6 +124,7 @@ def scaled_calibration(cal: Calibration, ratio: float, token: Optional[RGB] = No
     new.robber = _scale_rgb(cal.robber, ratio)
     new.dev_card = _scale_rgb(cal.dev_card, ratio)
     new.panel = _scale_rgb(cal.panel, ratio)
+    new.white = int(min(255, max(0, round(cal.white * ratio))))
     new.tile = {k: _scale_rgb(v, ratio) for k, v in cal.tile.items()}
     new.players = {k: _scale_rgb(v, ratio) for k, v in cal.players.items()}
     return new
@@ -214,6 +216,29 @@ def _close(mask: np.ndarray, k: int) -> np.ndarray:
     d = sliding_window_view(m, (k, k)).max(axis=(2, 3))
     m2 = np.pad(d, pad, constant_values=True)
     return sliding_window_view(m2, (k, k)).min(axis=(2, 3)).astype(bool)
+
+
+def _median3(arr: np.ndarray) -> np.ndarray:
+    """3x3 median filter of an RGB uint8 image."""
+    if cv2 is not None:
+        return cv2.medianBlur(arr, 3)
+    pad = np.pad(arr, ((1, 1), (1, 1), (0, 0)), mode="edge")
+    h, w = arr.shape[:2]
+    stack = np.stack([pad[dy:dy + h, dx:dx + w] for dy in range(3) for dx in range(3)], axis=0)
+    return np.median(stack, axis=0).astype(np.uint8)
+
+
+def _noise_level(arr: np.ndarray, region: Optional[np.ndarray] = None) -> Tuple[float, np.ndarray]:
+    """Median absolute difference between the image and its 3x3 median (over ``region``), and the median image.
+
+    Flat renders and JPEG re-encodes score ~0; Gaussian sensor noise of
+    sigma 4 / 8 / 16 scores ~2.7 / 5.7 / 11.
+    """
+    med = _median3(arr)
+    d = np.abs(arr.astype(np.int16) - med.astype(np.int16)).mean(axis=2)
+    if region is not None and region.any():
+        d = d[region]
+    return float(np.median(d)), med
 
 
 def _resize(arr: np.ndarray, size: Tuple[int, int]) -> np.ndarray:
@@ -811,8 +836,8 @@ def find_robber(arr: np.ndarray, geom: Dict[str, float], cal: Calibration) -> Tu
 
     Works on the board's bounding box only.  A pawn-sized (0.20 x 0.50 hex
     sizes) box filter over the dark, unsaturated mask scores every hex by
-    its densest dark patch; the pawn scores ~0.7-0.95 while dark tile art
-    stays below ~0.6.  Unlike a connected-component search this is immune to
+    its densest dark patch; the pawn scores 0.6-0.95 (clean to heavy JPEG)
+    while dark tile art stays below ~0.5.  Unlike a connected-component search this is immune to
     the thin piece outlines that touch the pawn on crowded hexes.  The
     component search is kept as a fallback for weak scores.
     """
@@ -833,8 +858,8 @@ def find_robber(arr: np.ndarray, geom: Dict[str, float], cal: Calibration) -> Tu
         full[: inside.shape[0], : inside.shape[1]] = inside
         inside = full
     centers = _lattice_pixels(g2, "hex")
-    # 1. box-filter score
-    dark = ((val < 0.36) & (sat < 0.40)).astype(np.float32)
+    # 1. box-filter score (the value threshold follows the image brightness: cal.white)
+    dark = ((val < 0.36 * cal.white / 255.0) & (sat < 0.40)).astype(np.float32)
     kw, kh = max(3, int(round(0.20 * hs))), max(3, int(round(0.50 * hs)))
     box = _box_mean(dark, kw, kh)
     box[~inside] = 0.0
@@ -847,8 +872,8 @@ def find_robber(arr: np.ndarray, geom: Dict[str, float], cal: Calibration) -> Tu
         m = float(box[yy0:yy1, xx0:xx1].max())
         if m > best_s:
             best_h, best_s = i, m
-    if best_s >= 0.6:
-        return best_h, float(min(1.0, (best_s - 0.6) / 0.3))
+    if best_s >= 0.55:
+        return best_h, float(min(1.0, (best_s - 0.55) / 0.35))
     # 2. fallback: dark connected component of pawn size near a hex centre
     dark2 = (val < 0.42) & (sat < 0.30) & inside
     n, labels, stats, cents = _components(dark2)
@@ -883,7 +908,8 @@ def _player_palette(cal: Calibration) -> Tuple[List[str], np.ndarray]:
 
 
 def _background_palette(cal: Calibration) -> np.ndarray:
-    cols = [cal.sea, cal.token, cal.port, cal.robber, (35, 35, 35), (255, 255, 255)]
+    """Colours a piece pixel must be farther from than from its player colour (sea, tokens, UI, tiles)."""
+    cols = [cal.sea, cal.token, cal.port, cal.robber, (35, 35, 35), (cal.white,) * 3, cal.dev_card, cal.panel]
     cols += [cal.tile[r] for r in range(6)]
     # shaded tile-art colours
     for r in range(6):
@@ -1018,11 +1044,11 @@ def detect_pieces(arr: np.ndarray, geom: Dict[str, float], cal: Calibration,
                 pts.append((x1 + dx * t + nx * s, y1 + dy * t + ny * s))
         pts = np.array(pts)
         # samples outside the image are skipped (clamping them to the border would read the UI)
-        ok = (pts[:, 0] >= 0) & (pts[:, 0] < w) & (pts[:, 1] >= 0) & (pts[:, 1] < h)
+        ok = (pts[:, 0] >= 0) & (pts[:, 0] <= w - 1) & (pts[:, 1] >= 0) & (pts[:, 1] <= h - 1)
         if ok.sum() < len(pts) // 2:
             continue
-        xs = np.round(pts[ok, 0]).astype(int)
-        ys = np.round(pts[ok, 1]).astype(int)
+        xs = np.clip(np.round(pts[ok, 0]).astype(int), 0, w - 1)
+        ys = np.clip(np.round(pts[ok, 1]).astype(int), 0, h - 1)
         px = arr[ys, xs]
         cls = _classify_pixels(px, pal, bg, cal.player_max_dist)
         counts = colour_counts(cls)
@@ -1179,7 +1205,8 @@ def _match_digit(mask: np.ndarray) -> Tuple[int, float]:
 
 
 def read_number_in_region(arr: np.ndarray, x0: int, y0: int, x1: int, y1: int, light_text: bool = True,
-                          min_h: int = 6, bg_rgb: Optional[Sequence[float]] = None) -> Tuple[Optional[int], float]:
+                          min_h: int = 6, bg_rgb: Optional[Sequence[float]] = None,
+                          white: int = 255) -> Tuple[Optional[int], float]:
     """OCR a (possibly multi-digit) number made of light (or dark) glyphs inside a region.
 
     With ``bg_rgb`` (the colour behind the text) the glyph mask is *relative*:
@@ -1193,14 +1220,19 @@ def read_number_in_region(arr: np.ndarray, x0: int, y0: int, x1: int, y1: int, l
     if x1 <= x0 or y1 <= y0:
         return None, 0.0
     sub = arr[y0:y1, x0:x1].astype(np.int16)
+    white = int(white)
     if bg_rgb is None:
-        mask = sub.min(axis=2) > 205 if light_text else sub.max(axis=2) < 70
+        mask = sub.min(axis=2) > int(0.80 * white) if light_text else sub.max(axis=2) < 70
     else:
         bgc = np.asarray(bg_rgb, dtype=np.int16).reshape(3)
-        target = np.array([255, 255, 255] if light_text else [0, 0, 0], np.int16)
-        d_t = np.abs(sub - target).sum(axis=2)
+        if light_text:
+            # anything at least as bright as the white level counts as white
+            d_t = np.abs(np.minimum(sub, white) - white).sum(axis=2)
+        else:
+            d_t = np.abs(sub).sum(axis=2)
         d_b = np.abs(sub - bgc).sum(axis=2)
-        gate = (sub.min(axis=2) > 140) if light_text else (sub.max(axis=2) < 110)   # keeps icons (yellow star) out
+        # loose absolute gate: keeps coloured icons (the yellow VP star) out of the text mask
+        gate = (sub.min(axis=2) > int(0.55 * white)) if light_text else (sub.max(axis=2) < 110)
         mask = (d_t < 0.6 * d_b) & (d_t < 300) & gate
     n, labels, stats, cents = _components(mask)
     glyphs = []
@@ -1293,17 +1325,16 @@ def read_player_panel(arr: np.ndarray, cal: Calibration,
     for r in rows:
         x, y, bw, bh = r["x"], r["y"], r["w"], r["h"]
         light = r["color"] != "white"
-        # measured row colour (text-free strip below the name) for the relative text mask
-        strip = arr[y + int(0.1 * bh):max(y + int(0.1 * bh) + 1, y + int(0.25 * bh)),
-                    x + int(0.6 * bw):max(x + int(0.6 * bw) + 1, x + int(0.9 * bw))]
-        row_rgb = np.median(strip.reshape(-1, 3), axis=0) if strip.size else np.array(cal.players.get(r["color"], (0, 0, 0)))
+        # measured row colour for the relative text mask (text, icons and badges are a minority)
+        box = arr[y:y + bh:2, x:x + bw:2]
+        row_rgb = np.median(box.reshape(-1, 3), axis=0) if box.size else np.array(cal.players.get(r["color"], (0, 0, 0)))
         sy0, sy1 = y + int(0.52 * bh), y + int(0.92 * bh)
         # stat columns as drawn: vp at 6 % .. 30 %, cards 30 % .. 50 %, dev 50 % .. 70 %, knights 70 % .. 95 %
         cols = [(0.05, 0.30), (0.29, 0.50), (0.49, 0.70), (0.69, 0.96)]
         vals = []
         for a, b in cols:
             v, cf = read_number_in_region(arr, x + int(a * bw), sy0, x + int(b * bw), sy1, light_text=light,
-                                          min_h=max(5, int(0.12 * bh)), bg_rgb=row_rgb)
+                                          min_h=max(5, int(0.12 * bh)), bg_rgb=row_rgb, white=cal.white)
             vals.append(v)
             confs.append(cf if v is not None else 0.0)
         r["vp"], r["cards"], r["dev_cards"], r["knights"] = vals
@@ -1330,7 +1361,7 @@ def read_player_panel(arr: np.ndarray, cal: Calibration,
         bx0, bx1 = max(0, x - int(0.06 * bh)), min(w, x + bw + int(0.06 * bh))
         by0, by1 = max(0, y - int(0.06 * bh)), min(h, y + bh + int(0.06 * bh))
         frame = arr[by0:by1, bx0:bx1].astype(np.int16)
-        white = frame.min(axis=2) > 235
+        white = frame.min(axis=2) > int(0.92 * cal.white)
         inner = np.zeros_like(white)
         inner[y - by0:y - by0 + bh, x - bx0:x - bx0 + bw] = True
         ring = white & ~inner
@@ -1361,10 +1392,24 @@ def read_hand_bar(arr: np.ndarray, cal: Calibration) -> Tuple[Optional[List[int]
     cands: List[Tuple[int, int, int, int, int, int]] = []   # (class, x, y, w, h, area) in full-res pixels
     for c in range(6):
         n, labels, stats, cents = _components(cls == c)
-        for i in range(1, n):
-            x, y, bw, bh = [int(v) * f for v in stats[i][:4]]
-            area = int(stats[i][4]) * f * f
-            if area < 0.0008 * h * w or bh < bw * 0.9 or area / float(bw * bh) < 0.7:
+        boxes = [[int(v) * f for v in stats[i][:4]] + [int(stats[i][4]) * f * f] for i in range(1, n)
+                 if int(stats[i][4]) * f * f >= 0.0002 * h * w]
+        # the card label (white text with a dark stroke) can split a card into an upper and a lower
+        # part at the working scale: merge same-class parts that overlap in x and touch vertically
+        boxes.sort(key=lambda b: b[1])
+        merged: List[List[int]] = []
+        for b in boxes:
+            for m in merged:
+                same_column = abs(m[0] - b[0]) < 0.15 * m[2] and abs(m[2] - b[2]) < 0.15 * m[2]
+                gap = max(m[1], b[1]) - min(m[1] + m[3], b[1] + b[3])
+                if same_column and gap < 0.25 * max(m[3], b[3]):
+                    x0, y0_, x1, y1 = min(m[0], b[0]), min(m[1], b[1]), max(m[0] + m[2], b[0] + b[2]), max(m[1] + m[3], b[1] + b[3])
+                    m[:] = [x0, y0_, x1 - x0, y1 - y0_, m[4] + b[4]]
+                    break
+            else:
+                merged.append(list(b))
+        for x, y, bw, bh, area in merged:
+            if area < 0.0008 * h * w or bh < bw * 0.9 or area / float(bw * bh) < 0.6:
                 continue
             cands.append((c, x, y, bw, bh, area))
     best: Optional[Dict[int, Tuple[int, int, int, int, int, int]]] = None
@@ -1386,7 +1431,7 @@ def read_hand_bar(arr: np.ndarray, cal: Calibration) -> Tuple[Optional[List[int]
         card = arr[y0 + y:y0 + y + bh, x:x + bw]
         card_rgb = np.median(card.reshape(-1, 3), axis=0) if card.size else tile_refs[c]
         v, cf = read_number_in_region(arr, x, y0 + y + int(0.45 * bh), x + bw, y0 + y + bh, light_text=True,
-                                      min_h=max(5, int(0.15 * bh)), bg_rgb=card_rgb)
+                                      min_h=max(5, int(0.15 * bh)), bg_rgb=card_rgb, white=cal.white)
         confs.append(cf if v is not None else 0.0)
         if c < 5:
             counts[c] = v
@@ -1397,8 +1442,8 @@ def read_hand_bar(arr: np.ndarray, cal: Calibration) -> Tuple[Optional[List[int]
     return [int(v) for v in counts], dev, float(np.mean(confs)) if confs else 0.0   # type: ignore[arg-type]
 
 
-def _count_pips(face: np.ndarray, bw: int, bh: int) -> int:
-    dark = face.max(axis=2) < 80
+def _count_pips(face: np.ndarray, bw: int, bh: int, dark_level: int = 80) -> int:
+    dark = face.max(axis=2) < dark_level
     nn, ll, ss, cc = _components(dark)
     pips = [k for k in range(1, nn) if 0.002 * bw * bh < ss[k][4] < 0.08 * bw * bh
             and abs(ss[k][2] - ss[k][3]) <= max(2, 0.4 * max(ss[k][2], ss[k][3]))
@@ -1406,16 +1451,17 @@ def _count_pips(face: np.ndarray, bw: int, bh: int) -> int:
     return len(pips)
 
 
-def read_dice(arr: np.ndarray) -> Tuple[int, float]:
+def read_dice(arr: np.ndarray, cal: Optional[Calibration] = None) -> Tuple[int, float]:
     """Sum of the pips on the two dice in the bottom-right corner (0 if not found).
 
     The dice are two equal white squares next to each other, each showing
     1-6 pips; any other pair of white blobs (a white player's pieces, text)
-    is rejected.
+    is rejected.  ``cal.white`` sets the white level.
     """
     h, w = arr.shape[:2]
+    white_level = cal.white if cal is not None else 255
     region = arr[int(0.8 * h):, int(0.7 * w):].astype(np.int16)
-    white = region.min(axis=2) > 225
+    white = region.min(axis=2) > int(0.88 * white_level)
     n, labels, stats, cents = _components(white)
     squares = []
     for i in range(1, n):
@@ -1444,7 +1490,7 @@ def read_dice(arr: np.ndarray) -> Tuple[int, float]:
     for x, y, bw, bh in (squares[a], squares[b]):
         mx, my = int(0.1 * bw), int(0.1 * bh)
         face = region[y + my:y + bh - my, x + mx:x + bw - mx]
-        pips = _count_pips(face, bw, bh)
+        pips = _count_pips(face, bw, bh, dark_level=max(40, int(0.31 * white_level)))
         if not 1 <= pips <= 6:
             return 0, 0.0
         total += pips
@@ -1473,7 +1519,8 @@ def read_bank_panel(arr: np.ndarray, cal: Calibration) -> Tuple[Optional[Dict[st
     vals = []
     for k in range(6):
         v, cf = read_number_in_region(arr, ox + x + int(k * cell), y + int(0.55 * bh), ox + x + int((k + 1) * cell),
-                                      y + bh, light_text=True, min_h=max(5, int(0.15 * bh)), bg_rgb=cal.panel)
+                                      y + bh, light_text=True, min_h=max(5, int(0.15 * bh)), bg_rgb=cal.panel,
+                                      white=cal.white)
         vals.append(v)
     if any(v is None for v in vals[:5]):
         return None, vals[5]
@@ -1483,29 +1530,124 @@ def read_bank_panel(arr: np.ndarray, cal: Calibration) -> Tuple[Optional[Dict[st
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+def _estimate_token_colour(arr: np.ndarray, geom: Dict[str, float]) -> Optional[RGB]:
+    """Median colour of the bright, low-saturation pixels near the hex centres (the number tokens)."""
+    hs = geom["hex_size"]
+    cols = []
+    for cx, cy in _lattice_pixels(geom, "hex"):
+        px = _ring_pixels(arr, cx, cy, 0.0, 0.25 * hs)
+        if len(px) < 10:
+            continue
+        hue, sat, val = rgb_to_hsv(px)
+        m = (sat < 0.35) & (val > 0.45)
+        if m.mean() > 0.3:
+            cols.append(np.median(px[m], axis=0))
+    if len(cols) < 6:
+        return None
+    m = np.median(np.array(cols), axis=0)
+    return (int(m[0]), int(m[1]), int(m[2]))
+
+
 def parse_image(path_or_image: Union[str, Image.Image, np.ndarray], me: Optional[str] = None,
                 assume_standard: bool = True, calibration: Optional[Calibration] = None,
                 read_ui: bool = True) -> ParseResult:
+    """Parse a Colonist.io screenshot (path, PIL image or RGB array) into a :class:`ParseResult`.
+
+    ``me`` is the colour of the screen owner (defaults to the first panel
+    row), ``assume_standard`` constrains tiles / numbers to the standard
+    multisets, ``calibration`` overrides the reference colours and
+    ``read_ui`` enables the panel / hand bar / dice / bank readers.
+    Everything that cannot be read becomes a warning; ``confidence`` holds a
+    0..1 value per stage (``geometry``, ``hexes``, ``numbers``,
+    ``numbers_min``, ``robber``, ``ports``, ``pieces``, ``panel``, ``hand``,
+    ``dice``, ``bank``).
+    """
     cal = calibration or Calibration()
     arr = _to_rgb_array(path_or_image)
     warnings: List[str] = []
     confidence: Dict[str, float] = {}
-    geom, debug, w0 = find_board(arr, cal)
+    sea = sea_mask(arr, cal)
+    # A noisy screenshot (photo of a monitor, heavy re-encoding) breaks the colour masks; a
+    # light median filter removes the grain without hurting the digits.
+    noise, med = _noise_level(arr, sea)
+    if noise > 2.0:
+        arr = med
+        sea = sea_mask(arr, cal)
+        warnings.append(f"noisy image (noise level {noise:.1f}); a 3x3 median filter was applied")
+    geom, debug, w0 = find_board(arr, cal, sea=sea)
+    debug["noise_level"] = noise
     warnings.extend(w0)
-    resources, res_conf, meds = classify_tiles(arr, geom, cal, assume_standard)
+    # ---- brightness / palette adaptation ------------------------------------------
+    # The number tokens are the one element with a known colour on every board: if they are
+    # much brighter / darker than the reference, the whole screenshot is (monitor gamma, night
+    # mode, re-encoding) and every reference colour is rescaled accordingly.
+    cal_img = cal
+    tok = _estimate_token_colour(arr, geom)
+    if tok is not None and sum(abs(a - b) for a, b in zip(tok, cal.token)) > 40:
+        ratio = _luma(tok) / max(1.0, _luma(cal.token))
+        cal_img = scaled_calibration(cal, ratio, token=tok)
+        debug["adapted_token"] = tok
+        debug["brightness_ratio"] = ratio
+        warnings.append(f"image colours differ from the reference palette (number tokens read as RGB {tok}); "
+                        f"reference colours scaled by {ratio:.2f}")
+        if debug.get("method") != "tokens":
+            pts = _token_points(arr, cal_img)
+            cands = _fit_candidates(pts, min_matched=8)
+            if cands:
+                g, resid, matched, iou, ranking = _pick_registration(cands, ~sea)
+                geom = dict(g, width=float(arr.shape[1]), height=float(arr.shape[0]))
+                debug.update({"method": "tokens(adapted)", "points": int(len(pts)), "matched": matched,
+                              "residual": resid, "land_iou": iou, "candidates": ranking,
+                              "confidence": float(min(1.0, matched / 14.0)), "geometry": dict(geom)})
+                warnings = [w for w in warnings if "blob fallback" not in w and "not located reliably" not in w]
+    confidence["geometry"] = float(debug.get("confidence", 0.0))
+    cals = [cal] if cal_img is cal else [cal, cal_img]
+    # ---- board ----------------------------------------------------------------------
+    resources, res_conf, meds = classify_tiles(arr, geom, cal_img, assume_standard)
     confidence["hexes"] = float(np.mean(res_conf))
-    robber, rob_conf = find_robber(arr, geom, cal)
+    # Per-image background colours: the 19 tile ring medians and the sea median.  A "tile"
+    # whose median is a player colour is a hex hidden under a panel row - adding it would
+    # veto that player's pieces, so it is skipped (real tiles differ from every player colour).
+    player_rgbs = np.array([c for cc in cals for c in cc.players.values()], dtype=np.float32)
+    extra_bg = [tuple(int(v) for v in m) for m in meds
+                if np.linalg.norm(player_rgbs - np.asarray(m, dtype=np.float32)[None, :], axis=1).min() > 16.0]
+    if sea.any():
+        sm = np.median(arr[sea], axis=0)
+        extra_bg.append((int(sm[0]), int(sm[1]), int(sm[2])))
+    palette = _piece_palettes(cals, extra_bg)
+    creams = _token_visibility(arr, geom, cal_img)
+    if debug.get("method") == "blob":
+        # verify the fallback geometry: a correct registration puts a cream token disc on most hex centres
+        n_vis = sum(1 for c in creams if c > 0.25)
+        debug["tokens_at_centres"] = n_vis
+        if n_vis < 8:
+            confidence["geometry"] = min(confidence["geometry"], 0.25)
+            warnings = [w for w in warnings if "blob fallback" not in w]
+            warnings.append(f"board not located reliably (blob fallback; number tokens found at only {n_vis} of 19 hex "
+                            "centres); the board below is probably wrong - use --state / --fix or the LLM parser")
+    robber, rob_conf = find_robber(arr, geom, cal_img)
     if robber < 0:
-        # default: the desert
-        robber = next((i for i, r in enumerate(resources) if r == B.DESERT), 0)
-        warnings.append("robber not found; assuming it is on the desert")
-    confidence["robber"] = rob_conf
-    numbers, num_conf, w1 = read_numbers(arr, geom, resources, cal, assume_standard, robber)
+        rob_conf = 0.0
+        hidden = [i for i in range(B.NUM_HEXES) if resources[i] != B.DESERT and creams[i] < 0.25]
+        desert = next((i for i, r in enumerate(resources) if r == B.DESERT), 0)
+        if len(hidden) == 1:
+            robber = hidden[0]
+            warnings.append(f"robber pawn not found; assuming it covers the number token of hex {robber} - "
+                            "set it with --fix robber=HEX if wrong")
+        else:
+            robber = desert
+            warnings.append(f"robber pawn not found; assuming it is on the desert (hex {desert}, no production "
+                            "blocked) - set it with --fix robber=HEX if wrong")
+    confidence["robber"] = float(rob_conf)
+    numbers, num_conf, w1 = read_numbers(arr, geom, resources, cal_img, assume_standard, robber, creams=creams)
     warnings.extend(w1)
-    confidence["numbers"] = float(np.mean([c for i, c in enumerate(num_conf) if resources[i] != B.DESERT]) or 0.0)
-    ports, port_conf, w2 = detect_ports(arr, geom, cal)
+    num_confs = [c for i, c in enumerate(num_conf) if resources[i] != B.DESERT]
+    confidence["numbers"] = float(np.mean(num_confs)) if num_confs else 0.0
+    confidence["numbers_min"] = float(min(num_confs)) if num_confs else 0.0
+    ports, port_conf, w2 = detect_ports(arr, geom, cal_img)
     warnings.extend(w2)
     confidence["ports"] = port_conf
+    # ---- UI chrome ------------------------------------------------------------------
     rows: List[Dict[str, Any]] = []
     hand = None
     dev = None
@@ -1514,44 +1656,61 @@ def parse_image(path_or_image: Union[str, Image.Image, np.ndarray], me: Optional
     deck_left = None
     if read_ui:
         try:
-            rows, panel_conf, w3 = read_player_panel(arr, cal)
+            rows, panel_conf, w3 = read_player_panel(arr, cal_img, palette=palette)
             warnings.extend(w3)
             confidence["panel"] = panel_conf
         except Exception as ex:  # pragma: no cover - best effort
             warnings.append(f"player panel unreadable: {ex}")
         try:
-            hand, dev, hand_conf = read_hand_bar(arr, cal)
+            hand, dev, hand_conf = read_hand_bar(arr, cal_img)
             confidence["hand"] = hand_conf
             if hand is None:
-                warnings.append("hand bar not found; your resources are unknown (use --fix me.hand=...)")
+                warnings.append("hand bar not found or not fully readable; your resources are unknown "
+                                "(use --fix me.hand=...)")
         except Exception as ex:  # pragma: no cover
             warnings.append(f"hand bar unreadable: {ex}")
         try:
-            dice, dice_conf = read_dice(arr)
+            dice, dice_conf = read_dice(arr, cal_img)
+            confidence["dice"] = float(dice_conf)
         except Exception:
             dice = 0
         try:
-            bank, deck_left = read_bank_panel(arr, cal)
+            bank, deck_left = read_bank_panel(arr, cal_img)
+            confidence["bank"] = 1.0 if bank is not None else 0.0
         except Exception:
             bank = None
-    known_colors = [r["color"] for r in rows] or None
-    buildings, roads, piece_conf = detect_pieces(arr, geom, cal, known_colors)
+    # ---- pieces ---------------------------------------------------------------------
+    # Never restricted to the panel colours: a missed panel row must not delete a player.
+    piece_details: Dict[str, Any] = {}
+    buildings, roads, piece_conf = detect_pieces(arr, geom, cal, None, palette=palette, details=piece_details)
     confidence["pieces"] = piece_conf
-    colors_seen = []
-    for r in rows:
-        colors_seen.append(r["color"])
+    row_by_color = {r["color"]: r for r in rows}
+    n_pieces: Dict[str, int] = {}
     for v, (c, _, _) in buildings.items():
-        if c not in colors_seen:
-            colors_seen.append(c)
+        n_pieces[c] = n_pieces.get(c, 0) + 1
     for e, (c, _) in roads.items():
-        if c not in colors_seen:
+        n_pieces[c] = n_pieces.get(c, 0) + 1
+    dropped = {c for c, n in n_pieces.items() if c not in row_by_color and n < 2}
+    if dropped:
+        buildings = {v: t for v, t in buildings.items() if t[0] not in dropped}
+        roads = {e: t for e, t in roads.items() if t[0] not in dropped}
+    colors_seen = [r["color"] for r in rows]
+    for c in sorted(n_pieces, key=lambda c: -n_pieces[c]):
+        if c not in colors_seen and c not in dropped:
             colors_seen.append(c)
+            warnings.append(f"{c}: pieces found but no panel row; VP / cards / dev cards unknown "
+                            f"(use --fix {c}.vp=N etc.)")
     if not colors_seen:
         colors_seen = ["red"]
         warnings.append("no player pieces or panel found")
+    city_hits = piece_details.get("city_hits", {})
+    uncertain = sorted(v for v, hit in city_hits.items() if 0.45 <= hit < 0.75)
+    if uncertain:
+        warnings.append("city / settlement uncertain at vertex " + ", ".join(
+            f"{v} ({'city' if buildings[v][1] else 'settlement'}, {city_hits[v]:.2f})" for v in uncertain)
+            + " - check the debug overlay")
     # ---- players ------------------------------------------------------------
     players = []
-    row_by_color = {r["color"]: r for r in rows}
     for c in colors_seen:
         r = row_by_color.get(c, {})
         setts = sorted(v for v, (cc, city, _) in buildings.items() if cc == c and not city)
@@ -1624,13 +1783,11 @@ def parse_image(path_or_image: Union[str, Image.Image, np.ndarray], me: Optional
         warnings.append("no ports detected; using the standard port layout")
     warnings.extend(S.validate(parsed))
     state = S.parsed_to_state(parsed)
-    if dice:
-        from ..state import PHASE_MAIN
-        state.phase = PHASE_MAIN
-        state.dice = int(dice)
     debug["buildings"] = buildings
     debug["roads"] = roads
+    debug["city_hits"] = city_hits
     debug["numbers_conf"] = num_conf
+    debug["token_visibility"] = creams
     debug["tile_medians"] = meds.tolist()
     debug["panel_rows"] = rows
     return ParseResult(parsed=parsed, state=state, confidence=confidence, warnings=warnings, debug=debug)

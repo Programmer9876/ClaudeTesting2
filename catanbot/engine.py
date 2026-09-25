@@ -37,6 +37,7 @@ from __future__ import annotations
 import random
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+from . import accel as _accel  # optional C++ engine, opt-in via CATANBOT_ACCEL_ENGINE=1 (see accel.ENGINE_ACTIVE)
 from . import actions as A
 from . import board as B
 from .state import (
@@ -569,6 +570,10 @@ def longest_road_length(state: GameState, player: int) -> int:
 # ---------------------------------------------------------------------------
 def legal_actions(state: GameState) -> List[Action]:
     """Complete list of legal actions for :func:`acting_player` (empty when over)."""
+    if _accel.ENGINE_ACTIVE:
+        acts = _accel.engine_legal_actions(state)
+        if acts is not None:
+            return acts
     phase = state.phase
     if phase == PHASE_MAIN:
         return _legal_main(state)
@@ -1358,6 +1363,10 @@ def apply_inplace(state: GameState, action: Action, rng: Optional[random.Random]
     card draws, robber steals); when ``None`` a fresh ``random.Random`` is
     used for those.
     """
+    if _accel.ENGINE_ACTIVE:
+        out = _accel.engine_apply_inplace(state, action, rng)
+        if out is not None:
+            return out
     if state.phase == PHASE_GAME_OVER:
         raise IllegalActionError("game is over")
     try:
@@ -1381,6 +1390,10 @@ def apply_inplace(state: GameState, action: Action, rng: Optional[random.Random]
 
 def apply(state: GameState, action: Action, rng: Optional[random.Random] = None) -> GameState:
     """Return a new state with ``action`` applied (the input is not modified)."""
+    if _accel.ENGINE_ACTIVE:
+        out = _accel.engine_apply(state, action, rng)
+        if out is not None:
+            return out
     return apply_inplace(state.copy(), action, rng)
 
 

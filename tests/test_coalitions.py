@@ -41,9 +41,17 @@ def test_blatant_losing_acceptance_creates_a_bloc():
     assert det.strength(1, 2) >= 1.0
     assert [1, 2] in det.blocs()
     assert det.against(0) >= 1.0 and det.against(1) == 0.0
-    # subtle, fair 1:1 deals do not create a bloc
+    # subtle, fair 1:1 deals do not create a bloc: pick the two resources orange values most alike,
+    # and hands of one card so the bank is no alternative for either side
+    from catanbot.coalitions import resource_values
+    vq = resource_values(s, 2)
+    a, b = min(((x, y) for x in range(5) for y in range(5) if x != y), key=lambda xy: abs(vq[xy[0]] - vq[xy[1]]))
+    s.players[1].resources = [1 if r == a else 0 for r in range(5)]
+    s.players[2].resources = [1 if r == b else 0 for r in range(5)]
+    give = [1 if r == a else 0 for r in range(5)]
+    get = [1 if r == b else 0 for r in range(5)]
     det2 = CoalitionDetector(4)
-    fair = TradeOffer(1, [1, 0, 0, 0, 0], [0, 1, 0, 0, 0], responses={2: True})
+    fair = TradeOffer(1, give, get, responses={2: True})
     for _ in range(5):
         det2.observe_trade(s, 1, 2, fair, fair.responses)
     assert det2.strength(1, 2) < 1.0

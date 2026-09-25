@@ -37,7 +37,7 @@ from . import engine as E
 from .actions import Action
 from .counting import HandBelief
 from .devcards import should_buy_dev
-from .discard import choose_discard, explain_seven_risk, seven_risk
+from .discard import choose_discard, default_keep_targets, explain_seven_risk, seven_risk, surplus_dump_actions
 from .heuristic import action_priors
 from .opponent_model import OpponentModel, trade_stage_factor
 from .placement import road_targets, score_city, vertex_production
@@ -62,6 +62,10 @@ class SearchConfig:
     max_nodes: int = 40000
     time_limit: Optional[float] = None
     trade_proposals: int = 3        # PROPOSE_TRADE candidates per node (scaled down late in the game)
+    trade_cap_early: int = 4        # proposals per turn early in the game (DESIGN section 11: 4 early, 2 late) ...
+    trade_cap_late: int = 2         # ... interpolated with trade_stage_factor; 0 disables proposals
+    opponent_proposals: int = 1     # profile-ranked proposals a simulated opponent may make per turn (0 = never)
+    dump_candidates: int = 3        # surplus dumps (discard.surplus_dump_actions) always tried with > 7 cards
     discard_candidates: int = 3
     use_opponent_model: bool = True
 
@@ -120,6 +124,8 @@ class Searcher:
         self._deadline: Optional[float] = None
         self._rng = random.Random(12345)
         self._political_reasons: Dict[Action, str] = {}
+        self._chain_next: Dict[Action, Action] = {}   # first step of an intermediary deal -> its second step
+        self._arb_cache: Dict[tuple, list] = {}        # arbitrage deals per (hands, trades) within one search
         self._shift = 0.0            # mean(future - static) of the lookahead set, applied to static leaves
 
     # ------------------------------------------------------------------
@@ -136,6 +142,9 @@ class Searcher:
         self.nodes = 0
         self._deadline = (time.time() + cfg.time_limit) if cfg.time_limit else None
         self._rng = rng or random.Random(12345)
+        self._political_reasons = {}
+        self._chain_next = {}
+        self._arb_cache = {}
         legal = E.legal_actions(state)
         if not legal:
             return []
@@ -153,7 +162,7 @@ class Searcher:
             force_end = level >= cfg.max_actions_per_turn
             new_nodes: List[_Node] = []
             for node in frontier:
-                cands = self._candidates(node.state, me, force_end)
+                cands = self._candidates(node.state, me, force_end, node.line)
                 for a in cands:
                     kids = []
                     try:
@@ -257,7 +266,70 @@ class Searcher:
     # ------------------------------------------------------------------
     # candidate generation
     # ------------------------------------------------------------------
-    def _candidates(self, state: GameState, me: int, force_end: bool) -> List[Action]:
+    def trade_cap(self, state: GameState) -> int:
+        """Proposals allowed per turn: ``trade_cap_early`` early, ``trade_cap_late`` late (DESIGN section 11)."""
+        cfg = self.config
+        stage_f = trade_stage_factor(state)                      # 1.0 early .. 0.3 late
+        t = max(0.0, min(1.0, (1.0 - stage_f) / 0.7))
+        cap = cfg.trade_cap_early + (cfg.trade_cap_late - cfg.trade_cap_early) * t
+        return max(0, min(E.MAX_TRADE_PROPOSALS_PER_TURN, int(round(cap))))
+
+    def _arbitrage(self, state: GameState, me: int) -> list:
+        """Exploitable deals for this hand (cached per search; profiles do not change mid-search)."""
+        key = (me, tuple(tuple(q.resources) for q in state.players), state.trades_this_turn)
+        arbs = self._arb_cache.get(key)
+        if arbs is None:
+            try:
+                arbs = self.model.arbitrage_opportunities(state, me, belief=self.belief, politics=self.politics)
+            except Exception:
+                arbs = []
+            self._arb_cache[key] = arbs
+        return arbs
+
+    def _candidate_priors(self, state: GameState, legal: Sequence[Action], me: int) -> List[float]:
+        """Move-ordering priors for our own decision node.
+
+        On top of ``heuristic.action_priors`` (which already sees the opponent
+        model and the politics): PROPOSE_TRADE priors are multiplied by
+        ``trade_stage_factor``, the first steps of the best exploitable deals
+        (``OpponentModel.arbitrage_opportunities``) are promoted above
+        ordinary proposals and their explanation records the counterpart's
+        revealed valuation, and with more than 7 cards the cheapest surplus
+        dumps (``discard.surplus_dump_actions``) rank at least like the trade
+        plan so they are never crowded out of the beam by road / offer spam.
+        """
+        cfg = self.config
+        model = self.model if cfg.use_opponent_model else None
+        priors = list(action_priors(state, legal, me, self.belief, model=model, politics=self.politics))
+        idx = {a: i for i, a in enumerate(legal)}
+        stage_f = trade_stage_factor(state)
+        if state.phase == PHASE_MAIN:
+            has_proposals = any(a[0] == A.PROPOSE_TRADE for a in legal)
+            if has_proposals and stage_f < 1.0:
+                for i, a in enumerate(legal):
+                    if a[0] == A.PROPOSE_TRADE:
+                        priors[i] *= stage_f
+            if has_proposals and model is not None:
+                for d in self._arbitrage(state, me)[:3]:
+                    first = d["steps"][0]
+                    i = idx.get(first)
+                    if i is None:
+                        continue
+                    priors[i] = max(priors[i], (58.0 + 10.0 * d["gain"]) * stage_f)   # plan proposals sit at 55
+                    self._political_reasons.setdefault(
+                        first, "exploit: " + d["reason"]
+                        + (f"; then {A.describe(d['steps'][1], state)}" if len(d["steps"]) > 1 else ""))
+                    if len(d["steps"]) > 1:
+                        self._chain_next.setdefault(first, d["steps"][1])
+            if cfg.dump_candidates > 0 and state.players[me].total_resources > 7:
+                for k, a in enumerate(surplus_dump_actions(state, me, list(legal))[:cfg.dump_candidates]):
+                    i = idx.get(a)
+                    if i is not None:
+                        priors[i] = max(priors[i], 62.0 - k)                     # plan bank trades sit at 60
+        return priors
+
+    def _candidates(self, state: GameState, me: int, force_end: bool,
+                    line: Optional[Sequence[Action]] = None) -> List[Action]:
         cfg = self.config
         legal = E.legal_actions(state)
         if not legal:
@@ -275,13 +347,17 @@ class Searcher:
                             or estimated_vp(state, a[1]) >= B.VP_TO_WIN - 1)]
             if safe:
                 legal = safe
-        priors = action_priors(state, legal, me, self.belief)
+        priors = self._candidate_priors(state, legal, me)
         stage_f = trade_stage_factor(state)
         order = sorted(range(len(legal)), key=lambda i: -priors[i])
         out: List[Action] = []
         n_trades = 0
         n_discards = 0
-        max_trades = max(0, int(round(cfg.trade_proposals * stage_f)))
+        # Per node: fewer proposal candidates late in the game (but at least one while proposals
+        # are enabled); per turn: the documented cap (4 early, 2 late).
+        max_trades = max(1 if cfg.trade_proposals > 0 else 0, int(round(cfg.trade_proposals * stage_f)))
+        if state.trades_this_turn >= self.trade_cap(state):
+            max_trades = 0
         for i in order:
             a = legal[i]
             k = a[0]
@@ -298,6 +374,14 @@ class Searcher:
                 break
         if (A.END_TURN,) in legal and (A.END_TURN,) not in out:
             out.append((A.END_TURN,))
+        # Second step of an intermediary deal: once the first trade executed (we now hold the
+        # bought card, so the follow-up offer is legal) it is tried first at this level.
+        if line and self._chain_next and max_trades > 0:
+            last = next((a for a in reversed(line) if a[0] == A.PROPOSE_TRADE), None)
+            nxt = self._chain_next.get(last) if last is not None else None
+            if nxt is not None and nxt in legal and nxt not in out:
+                out.insert(0, nxt)
+                self._political_reasons.setdefault(nxt, "exploit: second leg of the intermediary deal")
         # Political options: trades that let a trailing player take an award off the
         # leader at no cost to our own win probability ("buy runway").
         if (state.phase == PHASE_MAIN and state.free_roads == 0
@@ -496,13 +580,29 @@ class Searcher:
             if s.phase == PHASE_DISCARD:
                 a = choose_discard(s, j, legal_actions=legal)
             elif s.phase == PHASE_TRADE_RESPONSE and s.pending_trade is not None:
-                ok, _ = should_accept(s, j, s.pending_trade)
+                ok, _ = should_accept(s, j, s.pending_trade, politics=self.politics, model=self.model)
                 a = (A.ACCEPT_TRADE,) if ok and (A.ACCEPT_TRADE,) in legal else (A.REJECT_TRADE,)
             else:
                 a = legal[0]
             s = self._apply(s, a)
             guard += 1
         return s
+
+    def _opponent_proposal(self, s: GameState, j: int, legal: Sequence[Action]) -> Optional[Action]:
+        """The one player trade a simulated opponent ``j`` would propose now (profile-ranked), or None."""
+        if not any(a[0] == A.PROPOSE_TRADE for a in legal):
+            return None
+        legal_set = set(legal)
+        model = self.model if self.config.use_opponent_model else None
+        try:
+            # Like trade_advice: plan for the build they are closest to, then the next one.
+            for cost, _ in default_keep_targets(s, j)[:2]:
+                for st in plan_trades(s, j, cost, self.belief, model=model, politics=self.politics):
+                    if st["kind"] == "player" and st["action"] in legal_set:
+                        return st["action"]
+        except Exception:
+            return None
+        return None
 
     # ------------------------------------------------------------------
     # opponents' turns
@@ -538,13 +638,15 @@ class Searcher:
                                opp_roll_samples=max(2, self.config.opp_roll_samples // 3),
                                opponent_actions=3, opponent_expand=4, finished_lookahead=2,
                                max_nodes=max(500, (self.config.max_nodes - self.nodes) // max(1, len(leaves))),
-                               trade_proposals=1, discard_candidates=2, use_opponent_model=self.config.use_opponent_model)
+                               trade_proposals=1, discard_candidates=2, use_opponent_model=self.config.use_opponent_model,
+                               trade_cap_early=self.config.trade_cap_early, trade_cap_late=self.config.trade_cap_late,
+                               opponent_proposals=0, dump_candidates=min(2, self.config.dump_candidates))
         vals = []
         for s in leaves:
             if s.phase == PHASE_GAME_OVER or E.acting_player(s) != me:
                 vals.append(float(self._eval([s], [me])[0]))
                 continue
-            sub = Searcher(self.evaluator, sub_cfg, self.model, self.belief)
+            sub = Searcher(self.evaluator, sub_cfg, self.model, self.belief, self.politics)
             sub._rng = random.Random(self._rng.random())
             res = sub.search(s, me)
             self.nodes += sub.nodes
@@ -581,7 +683,7 @@ class Searcher:
                 if s.phase == PHASE_DISCARD:
                     a = choose_discard(s, acting, legal_actions=legal)
                 elif s.phase == PHASE_TRADE_RESPONSE and s.pending_trade is not None:
-                    ok, _ = should_accept(s, acting, s.pending_trade)
+                    ok, _ = should_accept(s, acting, s.pending_trade, politics=self.politics, model=self.model)
                     a = (A.ACCEPT_TRADE,) if ok and (A.ACCEPT_TRADE,) in legal else (A.REJECT_TRADE,)
                 else:
                     a = legal[0]
@@ -599,7 +701,15 @@ class Searcher:
                 s = self._apply(s, choose_discard(s, j, legal_actions=legal))
                 continue
             if s.phase == PHASE_ROBBER:
-                tw = self.politics.robber_target_weights(s, j) if self.politics is not None else None
+                # Opponents rob by threat x grudge x their observed habits (whom they keep hitting,
+                # whether they go for the leader).
+                model = self.model if cfg.use_opponent_model else None
+                if self.politics is not None:
+                    tw = self.politics.robber_target_weights(s, j, model=model)
+                elif model is not None:
+                    tw = model.robber_habit_weights(s, j)
+                else:
+                    tw = None
                 h, v, _ = best_robber_move(s, j, target_weights=tw)
                 a = (A.MOVE_ROBBER, h, v)
                 if a not in legal:
@@ -615,13 +725,25 @@ class Searcher:
                 s = self._apply(s, (A.END_TURN,)) if (A.END_TURN,) in legal else self._apply(s, legal[0])
                 continue
             cands = [a for a in legal if a[0] != A.PROPOSE_TRADE]
-            priors = action_priors(s, cands, j, self.belief)
+            # At most ``opponent_proposals`` profile-ranked player trades per simulated turn, so the
+            # lookahead (and the value net trained on it) sees us being offered deals.
+            if cfg.opponent_proposals > 0 and s.trades_this_turn < cfg.opponent_proposals:
+                prop = self._opponent_proposal(s, j, legal)
+                if prop is not None:
+                    cands.append(prop)
+            model = self.model if cfg.use_opponent_model else None
+            priors = action_priors(s, cands, j, self.belief, model=model, politics=self.politics)
             order = sorted(range(len(cands)), key=lambda i: -priors[i])[:cfg.opponent_expand]
             trial = []
             for i in order:
                 a = cands[i]
                 s2 = self._apply(s, a)
                 s2 = self._autoplay_others(s2, j)
+                if a[0] == A.PROPOSE_TRADE and s2.phase == PHASE_TRADE_SELECT and s2.current == j:
+                    # Resolve the proposal so its value reflects the executed (or cancelled) trade.
+                    lg = E.legal_actions(s2)
+                    ex = next((x for x in lg if x[0] == A.EXECUTE_TRADE), None)
+                    s2 = self._apply(s2, ex if ex is not None else (A.CANCEL_TRADE,))
                 trial.append((a, s2))
             if not trial:
                 break
@@ -644,14 +766,19 @@ class Searcher:
     def explain(self, state: GameState, action: Action, me: int) -> str:
         if action in self._political_reasons:
             return self._political_reasons[action]
-        return explain_action(state, action, me, self.model, self.belief)
+        return explain_action(state, action, me, self.model, self.belief, self.politics)
 
 
 def explain_action(state: GameState, action: Action, me: int, model: Optional[OpponentModel] = None,
-                   belief: Optional[HandBelief] = None) -> str:
-    """Short human readable rationale for an action (uses the strategy modules)."""
+                   belief: Optional[HandBelief] = None, politics: Optional[PoliticalState] = None) -> str:
+    """Short human readable rationale for an action (uses the strategy modules).
+
+    ``politics`` makes the robber victim and the printed acceptance
+    probabilities agree with the search (grudges, favour slack).
+    """
     k = action[0]
     p = state.players[me]
+    tw = politics.robber_target_weights(state, me) if politics is not None else None
     try:
         if k in (A.BUILD_SETTLEMENT, A.SETUP_SETTLEMENT):
             v = action[1]
@@ -682,16 +809,16 @@ def explain_action(state: GameState, action: Action, me: int, model: Optional[Op
             return why + " (playable next turn; a VP card counts immediately)"
         if k == A.PLAY_KNIGHT:
             ok, why = should_play_knight(state, me)
-            h, victim, reason = best_robber_move(state, me)
+            h, victim, reason = best_robber_move(state, me, target_weights=tw)
             if (action[1], action[2]) == (h, victim):
                 return f"{why}; {reason}"
-            opp, own = hex_damage(state, action[1], me)
+            opp, own = hex_damage(state, action[1], me, tw)
             return f"{why}; blocks {opp:.1f} pips-equivalent of opponents' production"
         if k == A.MOVE_ROBBER:
-            h, victim, reason = best_robber_move(state, me)
+            h, victim, reason = best_robber_move(state, me, target_weights=tw)
             if (action[1], action[2]) == (h, victim):
                 return reason
-            opp, own = hex_damage(state, action[1], me)
+            opp, own = hex_damage(state, action[1], me, tw)
             return f"blocks {opp:.1f} pips-equivalent" + (f", costs us {own:.1f}" if own else "")
         if k == A.BANK_TRADE:
             ratio = state.port_ratio(me, action[1])
@@ -706,7 +833,7 @@ def explain_action(state: GameState, action: Action, me: int, model: Optional[Op
             give, get = action[1], action[2]
             txt = ""
             if model is not None:
-                best = max(((model.predict_accept(state, j, give, get, proposer=me, belief=belief), j)
+                best = max(((model.predict_accept(state, j, give, get, proposer=me, belief=belief, politics=politics), j)
                             for j in range(state.num_players) if j != me), default=(0.0, -1))
                 if best[1] >= 0:
                     nm = state.players[best[1]].name or state.players[best[1]].color
@@ -727,7 +854,7 @@ def explain_action(state: GameState, action: Action, me: int, model: Optional[Op
             return "nothing better to do this turn"
         if k == A.ACCEPT_TRADE or k == A.REJECT_TRADE:
             if state.pending_trade is not None:
-                ok, why = should_accept(state, me, state.pending_trade, model=model)
+                ok, why = should_accept(state, me, state.pending_trade, model=model, politics=politics)
                 return why
         if k == A.PLAY_ROAD_BUILDING:
             return "two free roads (saves 2 wood + 2 brick)"

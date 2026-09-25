@@ -9,9 +9,15 @@ processes::
     "search:depth=1,evaluator=heuristic"
     "search:depth=1,model=models/value_net.npz,blend=0.5"   # 50/50 net + heuristic
 
+Trading-style keys (heuristic and search bots, DESIGN section 11):
+``accept_bias=0.3`` (per-game acceptance bias drawn from U(-0.3, 0.3)),
+``offer_temp=0.5`` (temperature over the proposal ranking) and
+``trade_eps=0.05`` (random accept / reject or random proposal).
+
 ``make_bot(spec)`` builds the bot.  ``play_game`` runs one game and can
 record training samples (feature vectors from every player's perspective at
-every decision, labelled with the eventual winner).
+every decision, labelled with the eventual winner); ``GameResult.bias``
+keeps the acceptance bias of each sample's bot as metadata.
 """
 from __future__ import annotations
 
@@ -97,12 +103,20 @@ def load_evaluator(path: Optional[str], blend: Optional[float] = None):
     return ev
 
 
+def _trade_style(kw: Dict[str, str]) -> Dict[str, float]:
+    """The trading-style keys of a spec (``accept_bias`` / ``bias``, ``offer_temp``, ``trade_eps``)."""
+    return {"accept_bias": float(kw.get("accept_bias", kw.get("bias", 0.0))),
+            "offer_temp": float(kw.get("offer_temp", 0.0)),
+            "trade_eps": float(kw.get("trade_eps", 0.0))}
+
+
 def make_bot(spec: str) -> Bot:
     name, kw = parse_spec(spec)
     if name == "random":
         return RandomBot(end_turn_bias=float(kw.get("end", 0.0)))
     if name == "heuristic":
-        return HeuristicBot(temperature=float(kw.get("temp", 0.0)), epsilon=float(kw.get("eps", 0.0)))
+        return HeuristicBot(temperature=float(kw.get("temp", 0.0)), epsilon=float(kw.get("eps", 0.0)),
+                            **_trade_style(kw))
     if name == "search":
         cfg = SearchConfig(
             depth=int(kw.get("depth", 1)),
@@ -117,7 +131,8 @@ def make_bot(spec: str) -> Bot:
         )
         ev = load_evaluator(kw.get("model") or kw.get("evaluator"),
                             float(kw["blend"]) if "blend" in kw else None)
-        bot = SearchBot(ev, cfg, epsilon=float(kw.get("eps", 0.0)), temperature=float(kw.get("temp", 0.0)))
+        bot = SearchBot(ev, cfg, epsilon=float(kw.get("eps", 0.0)), temperature=float(kw.get("temp", 0.0)),
+                        **_trade_style(kw))
         bot.name = spec
         return bot
     raise ValueError(f"unknown bot spec: {spec}")
@@ -155,6 +170,7 @@ class GameResult:
     players: Optional[np.ndarray] = None  # (N,) perspective player of each sample
     y: Optional[np.ndarray] = None       # (N,) 1.0 if that player won
     vp_frac: Optional[np.ndarray] = None  # (N,) final VP / 10 of that player (auxiliary)
+    bias: Optional[np.ndarray] = None    # (N,) per-game acceptance bias of that player's bot (trading-style metadata)
 
 
 def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optional[random.Random] = None,
@@ -215,6 +231,8 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
             tot = float(sum(vps)) or 1.0
             res.y = np.array([vps[p] / tot for p in res.players], dtype=np.float32)
         res.vp_frac = np.array([min(1.0, vps[p] / 10.0) for p in res.players], dtype=np.float32)
+        seat_bias = [float(getattr(b, "trade_bias", 0.0) or 0.0) for b in bots[:n]]
+        res.bias = np.array([seat_bias[p] for p in res.players], dtype=np.float32)
     return res
 
 

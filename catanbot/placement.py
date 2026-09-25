@@ -123,16 +123,19 @@ def buildable_settlements(state: GameState, player: int, occ: Optional[Dict[int,
 
 
 def reachable_spots(state: GameState, player: int, max_roads: int = 3,
-                    occ: Optional[Dict[int, int]] = None) -> Dict[int, Tuple[int, int]]:
+                    occ: Optional[Dict[int, int]] = None,
+                    eocc: Optional[Dict[int, int]] = None) -> Dict[int, Tuple[int, int]]:
     """Free settlement spots reachable by building roads.
 
     Returns ``{vertex: (roads_needed, first_edge)}`` where ``roads_needed`` is
     the number of additional roads (0 = buildable now) and ``first_edge`` the
     first road to build towards it (-1 when none needed).  Paths stop at
-    opponent buildings and never use occupied edges.
+    opponent buildings and never use occupied edges.  ``eocc`` (edge -> owner)
+    defaults to the state's occupied edges; pass a modified copy to ask "what
+    if this edge were taken" (see :func:`road_block_values`).
     """
     occ = state.occupied_vertices() if occ is None else occ
-    eocc = state.occupied_edges()
+    eocc = state.occupied_edges() if eocc is None else eocc
     p = state.players[player]
     own_build = set(p.settlements) | set(p.cities)
     start = set(own_build)
@@ -255,6 +258,68 @@ def blocking_value(state: GameState, player: int, v: int, occ: Optional[Dict[int
     return best
 
 
+def _best_reach_score(state: GameState, i: int, occ: Dict[int, int], eocc: Dict[int, int],
+                      max_roads: int = 2) -> Tuple[float, Dict[int, Tuple[int, int]]]:
+    """Best distance-discounted spot score player ``i`` can reach within ``max_roads`` roads."""
+    reach = reachable_spots(state, i, max_roads=max_roads, occ=occ, eocc=eocc)
+    best = 0.0
+    if reach:
+        own_prod = player_production(state, i, ignore_robber=True)
+        scarcity = resource_scarcity(state)
+        for v, (d, _) in reach.items():
+            s = score_settlement_spot(state, i, v, occ=occ, own_prod=own_prod, scarcity=scarcity) / (1.0 + 0.9 * d)
+            if s > best:
+                best = s
+    return best, reach
+
+
+def road_block_values(state: GameState, player: int, edges: Iterable[int],
+                      occ: Optional[Dict[int, int]] = None) -> Dict[int, float]:
+    """How much building a road on each of ``edges`` cuts the opponents off.
+
+    For every edge the value is the largest drop (over opponents) of that
+    opponent's best reachable settlement spot score (within two roads,
+    distance discounted) when the edge is occupied by ``player``: an edge that
+    severs an opponent's only path to their best spot scores that spot, an
+    edge nobody else wanted scores 0.  Same scale as ``blocking_value``.
+    """
+    occ = state.occupied_vertices() if occ is None else occ
+    eocc = state.occupied_edges()
+    edges = [e for e in edges if e not in eocc]
+    out: Dict[int, float] = {e: 0.0 for e in edges}
+    if not edges:
+        return out
+    for i in range(state.num_players):
+        if i == player:
+            continue
+        base, reach = _best_reach_score(state, i, occ, eocc)
+        if base <= 0.0:
+            continue
+        # Only edges on the opponent's frontier (touching a vertex they can reach with at most
+        # one road) can change their two-road reach; everything else is skipped without a BFS.
+        near = set()
+        start = set(state.players[i].settlements) | set(state.players[i].cities)
+        for e in state.players[i].roads:
+            start.update(B.EDGE_VERTICES[e])
+        for v in start:
+            near.add(v)
+            for e in B.VERTEX_EDGES[v]:
+                if e not in eocc:
+                    a, b = B.EDGE_VERTICES[e]
+                    near.add(b if a == v else a)
+        for e in edges:
+            a, b = B.EDGE_VERTICES[e]
+            if a not in near and b not in near:
+                continue
+            eocc2 = dict(eocc)
+            eocc2[e] = player
+            after, _ = _best_reach_score(state, i, occ, eocc2)
+            drop = base - after
+            if drop > out[e]:
+                out[e] = drop
+    return out
+
+
 def best_settlement_spots(state: GameState, player: int, k: int = 5,
                           candidates: Optional[Iterable[int]] = None,
                           setup: bool = False, include_blocking: bool = True) -> List[Tuple[int, float]]:
@@ -297,20 +362,23 @@ def best_city_spots(state: GameState, player: int, k: int = 3) -> List[Tuple[int
 def road_targets(state: GameState, player: int, max_roads: int = 3, k: int = 5) -> List[dict]:
     """Best settlement spots reachable by road with the first edge to build.
 
-    Returns dicts ``{"vertex", "roads", "first_edge", "score", "spot_score"}``
+    Returns dicts ``{"vertex", "roads", "first_edge", "score", "spot_score", "block"}``
     sorted by ``score`` (spot value discounted by distance and by the chance
-    an opponent grabs it first).
+    an opponent grabs it first, plus a bonus when the first road also cuts an
+    opponent off from their best spot - ``block``, see :func:`road_block_values`).
     """
     occ = state.occupied_vertices()
     reach = reachable_spots(state, player, max_roads=max_roads, occ=occ)
     own_prod = player_production(state, player, ignore_robber=True)
     scarcity = resource_scarcity(state)
+    blocks = road_block_values(state, player, {e for _, e in reach.values() if e >= 0}, occ=occ)
     out = []
     for v, (d, e) in reach.items():
         spot = score_settlement_spot(state, player, v, occ=occ, own_prod=own_prod, scarcity=scarcity)
         contest = blocking_value(state, player, v, occ=occ)
-        score = (spot + 0.15 * contest) / (1.0 + 0.9 * d)
-        out.append({"vertex": v, "roads": d, "first_edge": e, "score": score, "spot_score": spot})
+        block = blocks.get(e, 0.0)
+        score = (spot + 0.15 * contest) / (1.0 + 0.9 * d) + 0.15 * block
+        out.append({"vertex": v, "roads": d, "first_edge": e, "score": score, "spot_score": spot, "block": block})
     out.sort(key=lambda t: -t["score"])
     return out[:k]
 

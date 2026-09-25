@@ -49,17 +49,37 @@ the value net disagrees with a rule, the net wins.
 
 ## Robber and knights (`robber.py`, `politics.py`)
 
+* Who is dangerous (`danger.py`): not the VP rank but the **distance to a
+  win**.  For every player the cheapest path to 10 VP given their hand is
+  worked out (city upgrades, settlements on spots up to two roads away,
+  Longest Road, Largest Army, VP cards), then the cards still missing, their
+  production and port substitutes per resource, the rolls that feed the
+  path and the turns until it is affordable.  Target weight = VP threat x
+  (0.4 + 1.6 x danger): the leader is the default target, but a loaded
+  runner-up (cards in hand, a spot, the right numbers) outranks an
+  overextended leader (all cities built, no spot, empty hand).
 * Robber target = the hex that removes the most demand-weighted pips from
-  the most threatening players (VP-weighted, leader ×1.3-1.8), never on our
-  own production unless nothing else exists, with a bonus for a fat-handed
-  victim.  Victim = biggest threat, then most cards.
+  the most dangerous players, never on our own production unless nothing
+  else exists.  Blocking is **need-aware**: a hex counts for the share of the
+  target's supply of a resource they still need; a resource they hold,
+  produce elsewhere or can buy through a port from a surplus is discounted,
+  while the surplus resource that feeds a 2:1 / 3:1 port becomes worth
+  blocking.  Victim = most dangerous player, weighted by what their hand
+  likely holds (what they need, what we need) and by a large bonus when one
+  stolen card can break a can-win-now hand; then the fattest hand.
+* Out of turn we are a target too (`robber.steal_exposure`): every opponent
+  rolling before us may hit us with a 7 or a knight, and whether they aim at
+  us follows from their own best robber move.  The evaluator discounts a
+  valuable hand by the expected loss, so the search spends it or keeps cheap
+  cards when we are the obvious victim; the advice says so.
 * Play a knight (before or after rolling) when: it takes Largest Army
   (especially if that wins), the robber blocks a critical tile of ours
   (>= 3 pips-equivalent), a player at 8+ VP can be slowed, an opponent is
   about to steal Largest Army from us, or late in the game we hold enough
   knights to build the army.  Otherwise hold it.
-* Opponents in the simulation pick victims by threat × grudge, so the search
-  "knows" the visible leader gets robbed.
+* Opponents in the simulation pick victims by danger × grudge, so the search
+  "knows" who gets robbed - the loaded player, not necessarily the visible
+  leader.
 
 ## Development cards (`devcards.py`, `counting.py`)
 

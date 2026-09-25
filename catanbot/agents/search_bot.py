@@ -19,7 +19,7 @@ from ..heuristic import HeuristicEvaluator, action_priors
 from ..opponent_model import OpponentModel
 from ..politics import PoliticalState
 from ..search import ScoredAction, SearchConfig, Searcher
-from ..state import GameState
+from ..state import GameState, PHASE_MAIN, PHASE_TRADE_RESPONSE
 from .base import Bot
 
 
@@ -28,11 +28,18 @@ class SearchBot(Bot):
 
     def __init__(self, evaluator=None, config: Optional[SearchConfig] = None, epsilon: float = 0.0,
                  temperature: float = 0.0, model: Optional[OpponentModel] = None,
-                 track_opponents: bool = True, name: Optional[str] = None):
+                 track_opponents: bool = True, name: Optional[str] = None,
+                 accept_bias: float = 0.0, offer_temp: float = 0.0, trade_eps: float = 0.0):
         self.evaluator = evaluator or HeuristicEvaluator()
         self.config = config or SearchConfig(depth=1, beam=4, expand=8)
         self.epsilon = epsilon
         self.temperature = temperature
+        # Trading-style randomisation for self-play (DESIGN section 11), see agents/heuristic_bot.py:
+        # per-game acceptance bias (half-width), temperature over the proposal ranking, random trades.
+        self.accept_bias = accept_bias
+        self.offer_temp = offer_temp
+        self.trade_eps = trade_eps
+        self.trade_bias: Optional[float] = None
         self.model = model
         self.track_opponents = track_opponents
         self.belief: Optional[HandBelief] = None
@@ -49,6 +56,12 @@ class SearchBot(Bot):
         self.belief = None
         self.last_results = []
         self._searcher = None
+        self.trade_bias = None
+
+    def _game_bias(self, rng) -> float:
+        if self.trade_bias is None:
+            self.trade_bias = rng.uniform(-self.accept_bias, self.accept_bias) if self.accept_bias > 0 else 0.0
+        return self.trade_bias
 
     def _searcher_for(self) -> Searcher:
         if (self._searcher is None or self._searcher.model is not self.model
@@ -64,20 +77,45 @@ class SearchBot(Bot):
         if len(legal_actions) == 1:
             self.last_results = [ScoredAction(legal_actions[0], 0.0)]
             return legal_actions[0]
+        bias = self._game_bias(rng)
         if self.epsilon > 0 and rng.random() < self.epsilon:
             return legal_actions[rng.randrange(len(legal_actions))]
+        if self.trade_eps > 0 and rng.random() < self.trade_eps:
+            if state.phase == PHASE_TRADE_RESPONSE:
+                a = legal_actions[rng.randrange(len(legal_actions))]
+                self.last_results = [ScoredAction(a, 0.0, "random response (trade_eps)")]
+                return a
+            proposals = [a for a in legal_actions if a[0] == A.PROPOSE_TRADE]
+            if proposals and state.phase == PHASE_MAIN:
+                a = proposals[rng.randrange(len(proposals))]
+                self.last_results = [ScoredAction(a, 0.0, "random proposal (trade_eps)")]
+                return a
         if self.model is not None:
             self.model.attach(state)
         self._ensure_politics(state)
         searcher = self._searcher_for()
         me = E.acting_player(state)
         results = searcher.search(state, me, random.Random(rng.random()))
+        if bias != 0.0 and state.phase == PHASE_TRADE_RESPONSE and len(results) > 1:
+            # Per-game acceptance bias: 0.02 win probability per unit, like should_accept's margin.
+            results = [ScoredAction(r.action, r.value + (0.02 * bias if r.action[0] == A.ACCEPT_TRADE else 0.0),
+                                    r.explanation, r.line, r.static) for r in results]
+            results.sort(key=lambda r: -r.value)
         self.last_results = results
         if not results:
             return legal_actions[0]
-        if self.temperature > 0 and len(results) > 1:
-            scale = 20.0 / self.temperature  # 0.05 edge ~ e^1
-            m = results[0].value
+        chosen = self._sample(results, self.temperature, rng)
+        if self.offer_temp > 0 and chosen[0] == A.PROPOSE_TRADE:
+            # Temperature over the offer ranking only: which deal we ask for varies between games.
+            proposals = [r for r in results if r.action[0] == A.PROPOSE_TRADE]
+            chosen = self._sample(proposals, self.offer_temp, rng)
+        return chosen
+
+    @staticmethod
+    def _sample(results: List[ScoredAction], temperature: float, rng) -> Action:
+        if temperature > 0 and len(results) > 1:
+            scale = 20.0 / temperature  # 0.05 edge ~ e^1
+            m = max(r.value for r in results)
             weights = [math.exp((r.value - m) * scale) for r in results]
             x = rng.random() * sum(weights)
             acc = 0.0
