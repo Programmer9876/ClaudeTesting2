@@ -375,3 +375,23 @@ before any T7-T11 game):
   every game's `lineup` as in the rule above;
 * the analysis prints claims 1 to 4 and the readiness verdict, which is
   PASS only when claims 2, 3 and 4 all pass.
+
+## Amendment 2026-09-25 (5): code snapshot for T7-T11
+
+Written before any T7-T11 game.  T7-T11 run from a frozen worktree at
+`/home/user/proof_snapshot2` whose code is commit **9599eed** (the first
+commit containing the counted-information mode, the mixed-table option and
+their tests), with exactly these four tooling files taken from commit
+855bfd0 (analysis and runner only; they do not affect how either side
+plays):
+
+| file | sha256 prefix |
+|---|---|
+| scripts/prove_strength.py | 3010fd6ee4063937 |
+| scripts/run_proof.sh | ca67bfe3ad3c1089 |
+| tests/test_prove_strength.py | db44f865bd1a5514 |
+| docs/PROOF_PROTOCOL.md | (this file up to amendment 4) |
+
+T7-T11 start only after T1-T6 and R1-R2 have finished, so the two runs do
+not share cores.  Outputs go to the same run directory (`json/T7` ...), and
+the final analysis of all claims uses the analysis script above.
