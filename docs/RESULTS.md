@@ -4,6 +4,13 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 16:30 UTC - five trade proposals vs three (200 paired games)
+
+Five proposals per node instead of three: -3.0 pp (s.e. 3.5), +1.9 ms per
+decision.  More proposals do not help; the default of three stays.  Next:
+a paired campaign against catanatron's strong bots with thousands of games
+per term (harness, 3.3 trade wiring and opening variants being built).
+
 ## 2026-09-25 16:00 UTC - late-game trade damping follow-up (400 games)
 
 The weak +4-5 pp signal from sweep 2 did not hold: stage drop 0.0 is +0.8
