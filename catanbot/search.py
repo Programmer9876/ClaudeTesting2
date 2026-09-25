@@ -152,7 +152,11 @@ class Searcher:
                 cands = self._candidates(node.state, me, force_end)
                 for a in cands:
                     kids = []
-                    for p, s2 in self._outcomes(node.state, a, me):
+                    try:
+                        outcomes = self._outcomes(node.state, a, me)
+                    except E.IllegalActionError:
+                        continue
+                    for p, s2 in outcomes:
                         child = _Node(s2, node.prob * p, node.line + [a])
                         child.finished = self._is_finished(s2, me)
                         kids.append((p, child))
@@ -275,7 +279,8 @@ class Searcher:
             out.append((A.END_TURN,))
         # Political options: trades that let a trailing player take an award off the
         # leader at no cost to our own win probability ("buy runway").
-        if state.phase == PHASE_MAIN and state.dice and state.trades_this_turn < E.MAX_TRADE_PROPOSALS_PER_TURN:
+        if (state.phase == PHASE_MAIN and state.free_roads == 0
+                and any(a[0] == A.PROPOSE_TRADE for a in legal)):
             try:
                 for opt in political_trade_options(state, me, self.evaluator, self.politics, model=self.model)[:2]:
                     a = opt["action"]
