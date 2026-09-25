@@ -43,8 +43,12 @@ The `.so` and `build/` are build artefacts (do not commit them).
 | `cpp/heuristic.hpp`, `cpp/heuristic.cpp` | the port of `heuristic.py::static_value` + the placement / counting helpers it uses |
 | `cpp/engine.hpp`, `cpp/engine.cpp` | the port of `engine.py` (legal actions, every action handler, production, awards, win detection, random playout) |
 | `cpp/module.cpp` | pybind11 bindings (`PYBIND11_MODULE(catanbot_core)`), incl. action tuple <-> `ActionC`, `GameStateC` -> `GameState` and the `CState` handle |
+| `cpp/policy.hpp`, `cpp/policy.cpp` | ports of the strategy helpers the simulated opponents use: `discard.choose_discard`, `danger.win_path`, `robber.best_robber_move`, the robber weight chain of `politics.py` / `opponent_model.py` |
+| `cpp/evaluator.hpp`, `cpp/evaluator.cpp` | native leaf evaluators: `HeuristicEval`, `MlpEval` (the numpy `ValueNet` forward), `BlendEval` |
+| `cpp/search.hpp`, `cpp/search.cpp`, `cpp/search_bindings.inc` | the native lookahead: `greedy_turn` / `simulate_until_my_turn` / `reduced_search` / `future_values` and their bindings |
+| `tests/test_accel_search.py` | differential tests of the native lookahead (component and end-to-end parity, trace replay, fallbacks) |
 | `setup_cpp.py`, `scripts/build_cpp.sh` | build |
-| `catanbot/accel.py` | loader / switch used by `features.py`, `heuristic.py` and `engine.py` |
+| `catanbot/accel.py` | loader / switch used by `features.py`, `heuristic.py`, `engine.py` and `search.py` |
 | `tests/test_accel_features.py` | differential tests + benchmark (features) |
 | `tests/test_accel_heuristic.py` | differential tests + benchmark (heuristic) |
 | `tests/test_accel_engine.py` | differential tests + benchmark (engine) |
@@ -168,8 +172,9 @@ engine port) rather than from the feature code itself.
 
 ## Limitations / notes
 
-* Feature extraction, the heuristic evaluator and (opt-in) the rules engine;
-  the move ordering (`action_priors`) and the search itself are still Python.
+* Feature extraction, the heuristic evaluator, (opt-in) the rules engine and
+  the lookahead of the search (`Searcher._future_values`, see the last section);
+  the root of the search (move ordering `action_priors`, trades, politics) is still Python.
 * At most 4 players (the feature layout pads to 3 opponents anyway) and
   32-bit integer fields.  Calling `core.*` directly on such a state (or on
   resource lists that are not length 5, ids out of range, > 64 road entries
@@ -493,3 +498,214 @@ with `to_state()` costs ~4.5 us only where a Python `GameState` is really needed
   pass a `random.Random` object for bit-identical sequences.
 * `-march=native` and the rebuild rules of the other ports apply; `setup_cpp.py` now lists
   `cpp/engine.cpp` as a source.
+
+## Native lookahead (`Searcher._future_values`)
+
+The fourth port moves the expensive part of the search into C++: after the
+Python root has expanded our own turn, every end-of-turn node needs a *future
+value* - the opponents play their turns greedily under sampled dice, and the
+resulting leaves are evaluated or (depth >= 3) searched again.  Profiled with
+the SearchBot configuration (opponent model + politics), `_future_values` was
+83 % of a depth-2 search and 96 % of a depth-3 search, dominated by
+`action_priors` for the simulated opponents' decisions (trade planning, road
+targets, robber targets).  The port keeps the whole batch below the root in
+`GameStateC`: the end-of-turn `GameState`s are converted once (~4 us each) and
+Python never sees the simulated states.
+
+### What runs natively, what stays in Python
+
+| native (`cpp/search.cpp`, `policy.cpp`, `evaluator.cpp`) | Python, unchanged |
+| --- | --- |
+| `_simulate_until_my_turn`, `_greedy_turn` (forced roll values, discards, robber, TRADE_SELECT shortcut, main-phase greedy one-step lookahead with the same evaluator, END_TURN rules, all guards), `_autoplay_others` inside the simulated turns | `Searcher.search` root loop: `_candidates`, `_candidate_priors`, `action_priors`, arbitrage, surplus dumps, political options, every root chance node (`_outcomes`, `_trade_outcomes`, `_response_outcomes`, `_dev_outcomes`, `_steal_outcomes`), `_backup`, `_shift`, `_principal_line`, `explain`, `search_determinized` |
+| `_reduced_search_values` as a native reduced `search()` over non-trade actions (ROLL / dev / steal chance nodes, beam by group, finished lookahead recursing into the native `future_values`, mean shift, clamped backup, node budget, deadline) | the Python `_future_values` / `_greedy_turn` / `_reduced_search_values` bodies: the reference and the fallback |
+| leaf and trial evaluation: `HeuristicEval` (bit-identical), `MlpEval` (float32-precision twin of `ValueNet.predict`), `BlendEval` | `TimedEvaluator`-style wrappers, float64 nets, custom evaluators (they keep the Python path) |
+| `choose_discard` (+ `default_keep_targets`, `_needed_tiers`, `needed_vector`), `danger.win_path` (+ `_vp_sources`, `_expected_hand` prior, `danger_multiplier`, `block_factor`, `steal_factor`, `rob_break_probability`), `robber.threat` / `target_weight` / `hex_damage` / `steal_candidates` / `choose_victim` / `best_robber_move`, `counting.hand_prior_weights` / `dev_pool`, the factor chain of `politics.robber_target_weights` and `OpponentModel.robber_habit_factors` (constants computed once per call in `accel.robber_weights_bundle`, `target_weight` / `threat` and the leader recomputed per simulated state) | `_opponent_proposal` (simulated opponents proposing trades) and `should_accept` for them: **not mirrored** |
+
+### Mirrored exactly vs. simplified by design
+
+The native simulation is **bit-identical** to the Python one in *parity mode*:
+`SearchConfig(opponent_expand=1000, opponent_proposals=0)` (every non-trade
+candidate is tried), the simulated opponents' `action_priors` replaced by
+legal-order priors, and one shared `random.Random` (the extension calls it
+exactly like the Python engine does).  `tests/test_accel_search.py` checks that
+on 525 end-of-turn states from 40 positions (3 / 4 players, hidden-hand
+determinizations) x three robber-weight variants (none / politics / habits):
+identical values, identical node counts, identical leaves and identical rng
+state afterwards, and identical `Searcher.search` rankings and values at
+depth 2 on 60 positions.
+
+With the **default configuration** the native opponents differ from the
+Python ones in four documented ways (the values are then *equivalent*, not
+identical):
+
+1. every non-trade legal action is a candidate instead of the prior-ordered
+   top `opponent_expand` (a superset: measured on 463 decisions, the argmax
+   over all candidates equals the argmax over the top 6 in 93 %);
+2. simulated opponents never propose trades (`opponent_proposals` is ignored
+   natively; Python proposes at most one profile-ranked offer per turn, chosen
+   in ~4.5 % of decisions);
+3. no `action_priors`, so the model's build preferences do not shape which
+   candidates are tried (they never influenced the value a candidate is
+   chosen by);
+4. steals / dev-card draws come from a xoshiro stream reseeded per
+   (state, sample) - common random numbers across states - instead of the
+   shared Python stream.
+
+The reduced sub-search at depth >= 3 is not a port of the Python sub-search:
+candidates are all non-trade actions ordered by their afterstate value (top
+`expand`, END_TURN always kept, discards = `choose_discard`'s pick plus the
+nearest by L1 distance), there are no trade candidates, and the node budget
+is split statically per level (`search.reduced_config`).  On identical leaves
+its values track the Python sub-search closely (94 leaves, three seeds each:
+correlation 0.97, mean difference +0.004, mean |difference| 0.03, the same
+size as the seed-to-seed noise of either side).  Best-action agreement with
+the Python search at depth 3 is at the rng noise floor of the sampled
+lookahead itself (8/16 positions; Python vs Python with different dice seeds
+agrees on 11/16, native vs native on 8/16).
+
+### The switch
+
+```python
+SearchConfig(native_future=True)        # default; False keeps the Python lookahead
+CATANBOT_NO_NATIVE_SEARCH=1             # environment: Python lookahead, extension kept for features/heuristic/engine
+CATANBOT_NO_ACCEL=1                     # environment: no extension at all (as before)
+Searcher(...).native_active             # True when _future_values runs natively
+```
+
+`Searcher.__init__` builds the evaluator's native twin
+(`accel.native_evaluator`, duck-typed: `HeuristicEvaluator`, a float32
+`ValueNet`, or a `BlendedEvaluator` of the two; anything else -> `None` ->
+Python path) and `_future_values` hands its states to `accel.future_values`
+right after sampling the dice sequences (so the root's random stream is
+consumed exactly as before).  Fallbacks, all automatic: extension missing or
+stale (`accel.verify()` now also requires the lookahead entry points, so an
+older `.so` is disabled as a whole with the usual `RuntimeWarning`), either
+environment variable, `native_future=False`, an unknown evaluator, a state the
+structs cannot hold (`UnsupportedStateError` -> `accel.future_values` returns
+`None` -> the Python body runs for that call).  `Searcher.search` re-checks
+the net's arrays on every call (`accel.evaluator_key`) and rebuilds the twin
+when `set_params` / `load` replaced them; in-place mutation of the same numpy
+arrays is not detected.
+
+Node accounting: the extension returns the number of engine applies it
+performed (every trial candidate, every chance outcome, including the
+afterstate evaluations that order the reduced search's candidates) and
+`Searcher.nodes` grows by it; `max_nodes` is passed in as the remaining
+budget and `time_limit` as the deadline, checked per reduced-search level and
+per leaf (a native call can overshoot the deadline by one leaf's work).
+
+### Python API
+
+```python
+core.HeuristicEval(temperature=16.0) -> handle
+core.MlpEval(W, b, mean, std) -> handle              # float32 (in, out) weight matrices, biases, normalisation
+core.BlendEval(net, alpha, heuristic) -> handle
+handle.evaluate(states, players) -> np.ndarray float64;  handle.logits(states, players) -> float32 (MlpEval)
+core.future_values(states, me, depth, levels, rolls, evaluator, robber=None, rng=None, deadline=None,
+                   node_budget=None, trace=False) -> (values, nodes)     # + (steps, leaves, leaf_values) with trace
+core.reduced_search(state, me, depth, levels, evaluator, robber=None, rng=None, deadline=None, node_budget=None)
+core.choose_discard(state, player, legal=False), core.best_robber_move(state, player, robber=None) -> (hex, victim, score),
+core.win_path(state, player) -> dict, core.robber_weights(state, actor, robber) -> list, core.needed_vector(state, player)
+accel.native_search_available(), accel.native_evaluator(ev), accel.evaluator_key(ev),
+accel.robber_weights_bundle(state, politics, model), accel.future_values(...)
+```
+
+`levels` are dicts of the `SearchConfig` fields the native side uses
+(`opponent_actions`, `beam`, `expand`, `max_actions_per_turn`, `roll_samples`,
+`opp_roll_samples`, `finished_lookahead`, `discard_candidates`, `max_nodes`),
+one per lookahead level, built with `search.reduced_config` exactly like the
+Python sub-search configs; `rolls` are the sampled dice sequences; `rng` is
+`None` / an int seed (xoshiro per (state, sample)) or a `random.Random`
+(shared, for parity tests); `trace=True` returns per (state, sample) the
+applied `(player, action, draw_index)` list and the leaf as a `CState`, so a
+simulation can be replayed through the Python engine with forced draws.
+
+### Exactness of the ports
+
+Same discipline as `heuristic.cpp`: the same accumulation order, `x ** 0.5`
+as libm `pow`, `-ffp-contract=off`, `min` / `max` keeping the first of equal
+candidates.  `choose_victim`'s `round(val, 3)` is mirrored with
+`snprintf("%.3f")` + `strtod` (both correctly rounded), `win_path`'s
+`round(vp)` with `nearbyint` (half-to-even), `_vp_sources`' stable sort and
+the greedy `min(..., key=gap)` / `list.remove` with an index-based first
+minimum.  `win_path`'s only order-dependent step (which spots of equal
+distance enter `spots[:slots]`) cannot change the numbers because
+equal-distance spots share their cost vectors.  The value net is the one
+place without bit parity: numpy's float32 `sgemm` accumulates in an
+implementation-defined order, so `MlpEval` accumulates the float32 products
+in double (eight interleaved partial sums, a fixed order on every machine) and
+rounds to float32 at every layer boundary, standardises in float32 like numpy
+and narrows the sigmoid to float32 like `predict`; measured against
+`ValueNet.predict` on 1200 rows: max |dp| 1.8e-7 (fresh 256/128 net), 3.0e-7
+(trained `models/value_net_candidate.npz`), max |dlogit| 1.7e-6.
+
+`accel.robber_weights_bundle` mirrors `politics.robber_target_weights` /
+`OpponentModel.robber_habit_factors` by precomputing every factor that does
+not depend on the simulated state (grudges, friendships, victim habits, ally
+discount, coalition factors) and multiplying them natively in the Python
+order onto `target_weight` / `threat`; the leader (with and without the actor)
+is recomputed per state.  The test checks the chain on every state for
+politics-only, politics + model and model-only.
+
+Rebuild after changing `discard.py`, `danger.py`, `robber.py`, the robber
+weight code in `politics.py` / `opponent_model.py`, `counting.py` or
+`model.py`'s forward pass: there is no run-time check for these ports (only
+`tests/test_accel_search.py`).
+
+### Tests
+
+```bash
+PYTHONPATH=. python3 -m pytest tests/test_accel_search.py -q -p no:cacheprovider -s     # prints the parity / agreement reports
+PYTHONPATH=. python3 -m pytest tests/test_search.py tests/test_review_fixes.py -q -p no:cacheprovider
+CATANBOT_NO_NATIVE_SEARCH=1 PYTHONPATH=. python3 -m pytest tests/test_search.py -q -p no:cacheprovider
+```
+
+`tests/test_accel_search.py` (skipped without the lookahead build): component
+parity on every state of 2 / 3 / 4-player heuristic-bot games plus
+hidden-hand and terminal variants (> 3 000 `choose_discard` / `needed_vector`
+checks, > 1 500 `win_path` field sets, > 1 000 `best_robber_move` decisions
+with none / politics / habit weights, the weight chain on every combination),
+the evaluator handles (heuristic bitwise on > 800 rows, net <= 1e-6 on 1 200
+rows, blend), the end-to-end parity described above (525 end-of-turn states,
+60 depth-2 positions), leaves vs `_simulate_until_my_turn`, a trace replay of
+the default configuration through the Python engine (every roll = the passed
+sequence, every discard = `choose_discard`, every robber move =
+`best_robber_move` with the politics / habit weights, every action legal, the
+leaf and its value reproduced), the depth-2 / depth-3 agreement report,
+reduced-search invariants (values in [0, 1], a past deadline returns the
+static value, a zero node budget collapses depth 2 to depth 1, the global
+budget is honoured), node accounting, every fallback (unsupported 5-player
+state -> Python path with identical results, unknown evaluator, both
+environment variables, stale build, `CATANBOT_NO_ACCEL=1` in a subprocess) and
+a printed micro-benchmark.
+
+### Measured speed
+
+<!-- NATIVE_BENCH_TABLE -->
+
+### Strength
+
+<!-- NATIVE_STRENGTH_TABLE -->
+
+### Limitations / notes
+
+* Simulated opponents never propose trades and try every non-trade candidate
+  (see "simplified by design"); `cfg.opponent_proposals` / `opponent_expand`
+  only affect the Python path.  A depth >= 2 search with the native path on
+  therefore ranks a fraction of positions differently from the Python
+  reference; self-play data generated with it comes from a slightly different
+  opponent model.
+* The native reduced search (depth >= 3) orders candidates by afterstate
+  value and has no trade candidates.
+* The GIL is held for the whole native call (fine for the worker-process model
+  of self-play / training; a threaded caller blocks for up to the search's
+  time limit).
+* Same state limits as the other ports (at most 4 players, 32-bit fields):
+  such a state takes the Python path per call, silently (a test covers it).
+* `-march=native` and the rebuild rules apply; `setup_cpp.py` lists
+  `cpp/policy.cpp`, `cpp/evaluator.cpp` and `cpp/search.cpp`.
+* Hooks that need edits in files owned by other work: `selfplay.make_bot`
+  could map a spec key `native=0/1` to `SearchConfig.native_future` (until
+  then `scripts/bench_search.py --tournament` does it, or set
+  `CATANBOT_NO_NATIVE_SEARCH=1` per process); `model.py`'s docstring could
+  note that the C++ forward is float32-precision identical.
