@@ -46,6 +46,7 @@ logged actions).
 from __future__ import annotations
 
 import inspect
+import math
 import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
@@ -256,6 +257,9 @@ class PublicInfoTracker:
         self.bank: List[int] = [B.BANK_PER_RESOURCE] * 5
         self.stats: Dict[str, int] = {"entries": 0, "hidden_steals": 0, "seen_steals": 0, "hidden_discards": 0,
                                       "hidden_dev_draws": 0, "resyncs": 0}
+        #: hidden discards of the 7 being resolved (seat -> cards); applied jointly with the bank
+        #: once the last discarder is done (Colonist's simultaneous discards)
+        self.pending_discards: Dict[int, int] = {}
         self._shadow: Optional[State] = None
         self._observed = 0
 
@@ -276,6 +280,7 @@ class PublicInfoTracker:
         self.my_dev = list(snap.my_dev)
         self.deck = snap.deck
         self.bank = list(snap.bank)
+        self.pending_discards = {}
 
     def start(self, st: State) -> None:
         """Start following ``st``'s game: replay its whole log from the initial position."""
@@ -283,14 +288,23 @@ class PublicInfoTracker:
         if len(log) == 0:
             self._init_from(st)
         else:
-            st0 = initial_state_like(st)
-            self._init_from(st0)
-            self._shadow = st0
-            self._observed = 0
-            self.follow(st)
+            for _ in self.replay_log(st):
+                pass
             self._check_public(st)
         self._shadow = st.copy()
         self._observed = len(log)
+
+    def replay_log(self, st: State):
+        """Restart from ``st``'s initial position and process its log one entry at a time; yields
+        ``(entry, shadow state after it)`` (the shadow is the tracker's own true replay - for
+        tests and diagnostics: the counter never reads it except through the public rules)."""
+        st0 = initial_state_like(st)
+        self._init_from(st0)
+        self._shadow = st0
+        self._observed = 0
+        for entry in list(action_log(st)):
+            self.step(entry)
+            yield entry, self._shadow
 
     def follow(self, st: State) -> None:
         """Process the entries logged since the last call (raises :class:`TrackerError` /
@@ -301,12 +315,15 @@ class PublicInfoTracker:
         log = action_log(st)
         n = len(log)
         while self._observed < n:
-            entry = log[self._observed]
-            pre = snapshot(self._shadow, self.me)
-            replay_entry(self._shadow, entry)
-            post = snapshot(self._shadow, self.me)
-            self._observe_entry(entry, pre, post)
-            self._observed += 1
+            self.step(log[self._observed])
+
+    def step(self, entry) -> None:
+        """Apply one log entry to the shadow game and feed its public events to the counter."""
+        pre = snapshot(self._shadow, self.me)
+        replay_entry(self._shadow, entry)
+        post = snapshot(self._shadow, self.me)
+        self._observe_entry(entry, pre, post)
+        self._observed += 1
 
     def resync(self, st: State) -> None:
         """Recover after the shadow diverged: continue from ``st``'s public information (the
@@ -316,6 +333,7 @@ class PublicInfoTracker:
         c = self.counter
         c.size = [sum(h) for h in snap.hands]      # public hand sizes
         c.last_bank = list(snap.bank)
+        self.pending_discards = {}
         c._reset("resync")
         c.observe_hand(self.me, snap.hands[self.me])
         self._public_bookkeeping(snap)
@@ -349,6 +367,11 @@ class PublicInfoTracker:
         c = self.counter
         n = self.n
         self.stats["entries"] += 1
+        if self.pending_discards and t not in DISCARD_TYPES:
+            # the 7's discards are over: the bank now shows their total per resource
+            c.last_bank = list(pre.bank)
+            c.observe_discards(self.pending_discards, pre.bank)
+            self.pending_discards = {}
         c.last_bank = list(post.bank)
         size0 = [sum(h) for h in pre.hands]
         size1 = [sum(h) for h in post.hands]
@@ -377,7 +400,7 @@ class PublicInfoTracker:
                     c.observe_discard(actor, counts)
                 else:
                     self.stats["hidden_discards"] += k      # cards (3.2.1 logs one action per discarder)
-                    c.observe_discard(actor, n=k)
+                    self.pending_discards[actor] = self.pending_discards.get(actor, 0) + k
         elif t == ActionType.PLAY_MONOPOLY:
             res = RESOURCE_TO_CB[a.value]
             c.observe_monopoly(actor, res, taken_by={j: size0[j] - size1[j] for j in range(n) if j != actor})
@@ -390,7 +413,8 @@ class PublicInfoTracker:
                     c.observe_delta(j, d)
         c.observe_hand(me, post.hands[me])
         for j in range(n):
-            c.observe_hand_size(j, size1[j])
+            if j not in self.pending_discards:
+                c.observe_hand_size(j, size1[j])
         if t not in DISCARD_TYPES:
             # The bank is public: after a 7's (simultaneous) discards, and after every other entry.
             c.observe_bank(post.bank)
@@ -441,6 +465,58 @@ class PublicInfoTracker:
         """``sum(pool) == deck size + the opponents' unknown card counts`` (public identity)."""
         return sum(self.dev_pool()) == self.deck + sum(self.dev_count[j] for j in self.unknown_dev_holders())
 
+    # --- the belief (pending hidden discards included) ---------------------------
+    def is_exact(self, j: int) -> bool:
+        """True when seat ``j``'s hand is known exactly from the public information."""
+        c = self.counter
+        if not c.is_exact(j):
+            return False
+        k = self.pending_discards.get(j, 0)
+        return k <= 0 or sum(1 for x in next(iter(c.hyps))[j] if x > 0) <= 1
+
+    def support_weight(self, hands: Sequence[Sequence[int]]) -> float:
+        """Probability of the exact joint assignment ``hands`` (0: excluded by the public information)."""
+        pend = self.pending_discards
+        if not pend:
+            return self.counter.weight_of(hands)
+        want = [tuple(int(x) for x in h) for h in hands]
+        total = 0.0
+        for joint, w in self.counter.hyps.items():
+            p = w
+            for j in range(self.n):
+                if j in pend:
+                    d = [joint[j][r] - want[j][r] for r in range(5)]
+                    if min(d) < 0 or sum(d) != pend[j]:
+                        p = 0.0
+                        break
+                    p *= math.prod(math.comb(joint[j][r], d[r]) for r in range(5)) / math.comb(sum(joint[j]), pend[j])
+                elif joint[j] != want[j]:
+                    p = 0.0
+                    break
+            total += p
+        return total
+
+    def expected_hand(self, j: int) -> List[float]:
+        """Expected hand of seat ``j`` (a pending hidden discard removes cards in proportion)."""
+        e = list(self.counter.expected[j])
+        k = self.pending_discards.get(j, 0)
+        n = sum(e)
+        if k and n > 0:
+            e = [x * (n - k) / n for x in e]
+        return e
+
+    def _discard_pending(self, hand: List[int], k: int, rng=None) -> List[int]:
+        """``hand`` after a pending hidden discard of ``k`` cards: uniformly random cards (``rng``)
+        or, deterministically, from the most held resources."""
+        h = list(hand)
+        for _ in range(min(k, sum(h))):
+            if rng is None:
+                r = max(range(5), key=lambda x: (h[x], -x))
+            else:
+                r = _weighted_pick(h, rng)
+            h[r] -= 1
+        return h
+
     # --- views for the bot ----------------------------------------------------
     def public_view(self, cb: GameState) -> GameState:
         """The state handed to the bot's hooks: :func:`redact_state` with the deck as the
@@ -454,7 +530,7 @@ class PublicInfoTracker:
         joint = self.counter.most_likely()
         for j, p in enumerate(s.players):
             if j != self.me:
-                p.resources = list(joint[j])
+                p.resources = self._discard_pending(list(joint[j]), self.pending_discards.get(j, 0))
                 p.hand_known = True
                 p.hand_size = sum(p.resources)
         return s
@@ -463,13 +539,15 @@ class PublicInfoTracker:
         """A fully specified state sampled from the public information: the opponents' hands are
         one joint hypothesis of the counter (drawn with its probability), their development cards
         are dealt from the public pool (re-dealt, up to 20 times, while an opponent would already
-        hold enough VP cards to have won) and the rest of the pool is the deck."""
+        hold enough VP cards to have won) and the rest of the pool is the deck.  During a 7's
+        discards an opponent's hidden discard so far is a uniformly random subset of its hand."""
         s = pub.copy()
         me = self.me
         joint = self.counter.sample(rng)
         for j, p in enumerate(s.players):
             if j != me:
-                p.resources = list(joint[j])
+                k = self.pending_discards.get(j, 0)
+                p.resources = self._discard_pending(list(joint[j]), k, rng) if k else list(joint[j])
                 p.hand_known = True
                 p.hand_size = sum(p.resources)
         self._deal_devs(s, rng)

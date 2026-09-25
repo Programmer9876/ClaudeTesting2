@@ -50,6 +50,12 @@ Three things live here:
    :func:`state_fingerprint`.  A fresh game rebuilt on the logged board with the
    logged outcomes reproduces the original exactly (``scripts/replay_catanatron.py``).
 
+6. Information modes (:data:`INFO_MODES`, ``CatanbotPlayer(info=...)``): ``full`` (the
+   default) converts the true state with every card known, as described in 2.;
+   ``counted`` hands the bot only what a Colonist.io player knows - public events counted
+   from the action log by :class:`catanbot.bench.public_info.PublicInfoTracker`, opponents'
+   hidden cards sampled from that posterior (``docs/BENCHMARKS.md``, "Information modes").
+
 Known semantic differences (see ``docs/BENCHMARKS.md``): player-to-player
 trading is off by default (catanatron 3.2.1 has none; on 3.3 the default
 ``suppress_trades=True`` never offers and answers the domestic-trade prompts
@@ -1475,8 +1481,8 @@ class CatanbotPlayer(Player):
         owner = self.bot
         while "last_results" not in vars(owner) and getattr(owner, "inner", None) is not None:
             owner = owner.inner        # ParamBot forwards last_results to the wrapped bot
-        counter, me = self.tracker.counter, self.tracker.me
-        if not all(counter.is_exact(j) for j in range(len(pub.players)) if j != me):
+        tr = self.tracker
+        if not all(tr.is_exact(j) for j in range(len(pub.players)) if j != tr.me):
             self.stats["info_uncertain"] += 1
         for _ in range(k_samples):
             det = self.tracker.determinize(pub, self.rng)

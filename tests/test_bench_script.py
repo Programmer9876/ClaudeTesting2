@@ -280,3 +280,119 @@ def test_hash_seed_reexec_makes_runs_reproducible(tmp_path):
     assert runs[0] == runs[1]
     # in-process calls (the tests above) never re-exec
     bench._reexec_with_hash_seed(-1)
+
+
+# ---------------------------------------------------------------------------
+# --mixed-opponents (1 catanbot seat + one copy of each of three presets) and --info
+# ---------------------------------------------------------------------------
+MIXED = ["random", "weighted", "vp"]     # present on every catanatron version, fast
+
+
+def test_mixed_lineup_rotation_is_balanced_over_24_games():
+    from collections import Counter
+    names = ["value", "alphabeta", "sameturn"]
+    for start in (0, 5, 17, 240):
+        games = range(start, start + 24)
+        lineups = [bench.mixed_lineup(g, names) for g in games]
+        for g, lu in zip(games, lineups):
+            assert lu[g % 4] == bench.CATANBOT                      # catanbot's seat rotates exactly as in 1v3
+            assert sorted(x for x in lu if x != bench.CATANBOT) == sorted(names)
+        rel = Counter((lu[(g % 4 + k) % 4], k) for g, lu in zip(games, lineups) for k in (1, 2, 3))
+        assert set(rel.values()) == {8} and len(rel) == 9             # every preset x relative position: 8 games
+        seats = Counter((nm, s) for lu in lineups for s, nm in enumerate(lu))
+        assert set(seats.values()) == {6} and len(seats) == 16         # every player x absolute seat: 6 games
+        assert len(set(lineups)) == 24                                 # the 24 (seat, permutation) cells, once each
+    with pytest.raises(ValueError):
+        bench.mixed_lineup(0, ["value", "alphabeta"])
+
+
+def test_mixed_table_attributes_wins_and_positions():
+    recs = [{"winner_name": "catanbot", "lineup": ["catanbot", "a", "b", "c"], "relative": ["a", "b", "c"],
+             "vps": [10, 3, 4, 5]},
+            {"winner_name": "b", "lineup": ["c", "catanbot", "a", "b"], "relative": ["a", "b", "c"],
+             "vps": [2, 6, 7, 10]},
+            {"winner_name": None, "lineup": ["b", "c", "catanbot", "a"], "relative": ["a", "b", "c"],
+             "vps": [9, 9, 9, 9], "crashed": False}]
+    t = bench.mixed_table(recs, ["a", "b", "c"])
+    assert t["wins"] == {"catanbot": 1, "a": 0, "b": 1, "c": 0, "none": 1}
+    assert t["avg_vp"]["catanbot"] == pytest.approx((10 + 6 + 9) / 3) and t["avg_vp"]["b"] == pytest.approx((4 + 10 + 9) / 3)
+    assert t["positions"]["a"] == {"1": 3, "2": 0, "3": 0}
+
+
+def test_mixed_games_record_lineup_and_winner(tmp_path, capsys):
+    import json
+    out = tmp_path / "mixed.json"
+    logs = tmp_path / "logs"
+    rc = bench.main(["--game-range", "3:5", "--mixed-opponents", ",".join(MIXED), "--spec", SMALL, "--seed", "4",
+                     "--log-actions", str(logs), "--json", str(out)])
+    text = capsys.readouterr().out
+    assert rc == 0 and "mixed wins" in text and "0 errors" in text
+    s = json.loads(out.read_text())
+    assert s["format"] == "1v3-mixed" and s["opponents"] == MIXED and s["info"] == {"mode": "full"}
+    assert s["opponent_class"] == "RandomPlayer+WeightedRandomPlayer+VictoryPointPlayer"
+    for r in s["results"]:
+        g = r["game"]
+        assert r["lineup"] == list(bench.mixed_lineup(g, MIXED)) and r["seat"] == g % 4
+        w = r["winner_seat"]
+        assert r["winner_name"] == (r["lineup"][w] if w >= 0 else None)
+        assert r["won"] == (r["winner_name"] == bench.CATANBOT)
+        assert set(r["timing"]["opp_by_name"]) == set(MIXED)
+    wins = s["mixed"]["wins"]
+    assert sum(wins.values()) == s["games"] == 2 and wins["catanbot"] == s["wins"]
+    import gzip
+    (path,) = list(logs.iterdir())
+    assert "1v3-mixed" in path.name
+    recs = [json.loads(line) for line in gzip.open(path, "rt")]
+    for rec in recs:
+        assert rec["match"] == "1v3-mixed" and rec["lineup"] == list(bench.mixed_lineup(rec["game"], MIXED))
+        assert [p.get("preset") or bench.CATANBOT for p in rec["players"]] == rec["lineup"]
+
+
+def test_mixed_chunks_reproduce_one_run(tmp_path, capsys):
+    """Per-game seeds and lineups depend on the game index alone: chunks 0:1 + 1:3 == one run 0:3
+    (also in the counted information mode)."""
+    import json
+
+    def run(rng, name, extra=()):
+        out = tmp_path / name
+        rc = bench.main(["--game-range", rng, "--mixed-opponents", ",".join(MIXED), "--spec", SMALL, "--seed", "9",
+                         "--json", str(out)] + list(extra))
+        capsys.readouterr()
+        assert rc == 0
+        return {r["game"]: (r["lineup"], r["winner_name"], r["vps"], r["turns"], r["actions"])
+                for r in json.loads(out.read_text())["results"]}
+
+    whole = run("0:3", "whole.json", ["--info", "counted", "--info-samples", "2"])
+    parts = {**run("0:1", "a.json", ["--info", "counted", "--info-samples", "2"]),
+             **run("1:3", "b.json", ["--info", "counted", "--info-samples", "2"])}
+    assert whole == parts and sorted(whole) == [0, 1, 2]
+
+
+def test_mixed_option_validation(capsys):
+    with pytest.raises(SystemExit):
+        bench.main(["--mixed-opponents", "random,weighted"])
+    with pytest.raises(SystemExit):
+        bench.main(["--mixed-opponents", ",".join(MIXED), "--our-seats", "2"])
+    rc = bench.main(["--games", "1", "--mixed-opponents", "random,weighted,nonsense"])
+    assert rc == 2 and "unknown opponent" in capsys.readouterr().err
+
+
+def test_info_counted_is_recorded_in_json_and_logs(tmp_path, capsys):
+    import gzip
+    import json
+    out = tmp_path / "c.json"
+    rc = bench.main(["--games", "1", "--opponent", "weighted", "--spec", SMALL, "--info", "counted",
+                     "--info-samples", "3", "--discards-public", "--log-actions", str(tmp_path / "l"),
+                     "--json", str(out)])
+    text = capsys.readouterr().out
+    assert rc == 0 and "info counted K=3 discards-public" in text and "information : counted" in text
+    s = json.loads(out.read_text())
+    assert s["info"] == {"mode": "counted", "samples": 3, "discards_public": True}
+    assert s["info_stats"]["info_errors"] == 0 and s["info_stats"]["hidden_discards"] == 0
+    assert s["stats"]["errors"] == 0 and s["stats"]["fallback"] == 0
+    (path,) = list((tmp_path / "l").iterdir())
+    rec = json.loads(gzip.open(path, "rt").readline())
+    ours = [p for p in rec["players"] if p["kind"] == "catanbot"]
+    assert ours[0]["info"] == {"mode": "counted", "samples": 3, "discards_public": True}
+    with pytest.raises(SystemExit):
+        bench.main(["--info-samples", "0"])

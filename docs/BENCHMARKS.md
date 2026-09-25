@@ -32,7 +32,8 @@ pip install catanatron                     # 3.2.1 wheel; only needed for this b
 python3 scripts/bench_catanatron.py --games 20 --opponent vp \
     --spec "search:depth=1,evaluator=heuristic" [--workers 2] [--seed 0] [--json out.json] [--verbose] \
     [--vps-to-win 10] [--discard-limit 7] [--trades off|native|value|fair] \
-    [--opponent-params KEY=VAL,...] [--hash-seed 0]
+    [--opponent-params KEY=VAL,...] [--hash-seed 0] [--info full|counted [--info-samples 4] [--discards-public]]
+python3 scripts/bench_catanatron.py --games 24 --mixed-opponents value,alphabeta,sameturn   # 1 catanbot + 3 different presets
 python3 scripts/bench_catanatron.py --list-opponents       # which presets resolve on the running catanatron
 python3 scripts/bench_catanatron.py --probe-trades 200 --opponent value,alphabeta,random   # 3.3: how opponents answer offers
 python3 -m pytest tests/test_catanatron_adapter.py tests/test_bench_script.py -q   # adapter tests (skipped without catanatron)
@@ -629,12 +630,14 @@ h7=t13 (-2,2,0)   h8=t4 (-1,1,0)    h9=t0 (0,0,0)     h10=t1 (1,-1,0)   h11=t7 (
 `ACTUAL_VICTORY_POINTS` and `public_vp(i)` its `VICTORY_POINTS` at every
 tick of a game (tested).  The Longest Road holder and length are *copied*
 from catanatron, not recomputed, because the two engines count roads
-differently (limitation 11).  **All hands are exact**: catanatron hands every
-`Player` the complete `game.state`, so every seat is converted with
-`hand_known=True` / `dev_known=True` - our "me" and the three opponents alike
-(catanbot's own self-play engine is perfect-information too, so the search
-takes the same code path; the card-counting / determinization layer is simply
-not needed here).  With trades suppressed (3.2.1, and `--trades off` on
+differently (limitation 11).  **All hands are exact** in the default
+information mode (`--info full`): catanatron hands every `Player` the complete
+`game.state`, so every seat is converted with `hand_known=True` /
+`dev_known=True` - our "me" and the three opponents alike (catanbot's own
+self-play engine is perfect-information too, so the search takes the same code
+path).  `--info counted` redacts the opponents' cards to what a Colonist.io
+player knows and decides on determinizations of a card-counting posterior
+instead ("Information modes" below).  With trades suppressed (3.2.1, and `--trades off` on
 3.3) `trades_this_turn` is set to the per-turn maximum so
 `engine.legal_actions` never proposes player trades and the search runs with
 `SearchConfig.trade_proposals = 0`; otherwise it is the number of
@@ -945,3 +948,103 @@ Smoke results of the dual-version work (2026-09-25, `--games 2 --workers 1
 observe errors; 3.3.0 vs `value` 0/2 wins (4.5 vs 6.8 VP), 1.1 s/game, 0
 errors, 3 planned discard cards handed over card by card.  The full ladders
 on both versions, run the same day, are in the results section above.
+
+## Information modes
+
+`--info full` (the default, `CatanbotPlayer(info="full")`) hands the bot
+catanatron's true state: every hand and every development card is known, as
+described in "State" above.  This is *more* than a human sees at a Colonist
+table, so a win rate measured this way is an upper bound for play there.
+The default is unchanged by the information-mode work: the same seeded games
+replay action for action (identical logs and final-state fingerprints) with
+the adapter from before the change, and `tests/test_public_info.py` pins the
+decision procedure on 10 positions.
+
+`--info counted` (`CatanbotPlayer(info="counted", info_samples=4,
+discards_public=False)`) gives the bot exactly what a Colonist.io player
+knows (`catanbot/bench/public_info.py`):
+
+* **always known**: board, robber, buildings, roads, the bank per resource,
+  the deck size, every hand *size* and development-card *count*, every
+  played development card, awards, public VP; our own cards exactly;
+* **public events with their content**: dice and each player's production,
+  build costs, bank / port trades, domestic trades, Monopoly (the amount each
+  victim lost is its hand-size drop), Year of Plenty, Road Building, card
+  purchases (count and cost);
+* **hidden**: the card of a steal between two opponents, the cards of a
+  discard on a 7 (the count is public; `--discards-public` shows the cards),
+  the type of every development card an opponent drew and still holds (only
+  the public pool is known: 25 cards minus every played card minus ours).
+  The discards of one 7 are *simultaneous* as on Colonist: the bank shows
+  only their total once the last discarder is done, so a lone hidden
+  discarder is still pinned down by the bank and several keep only their
+  split open.
+
+A `PublicInfoTracker` follows catanatron's action log on its own shadow game
+(from the initial position, so a player that joins late still counts only
+public events) and feeds `catanbot.counting.CardCounter`: an exact weighted
+mixture of joint hand hypotheses (one hypothesis while nothing hidden
+happened; a hidden steal branches over the victim's cards with their
+probabilities; spends, monopolies and the bank prune what became
+impossible).  A chance result (stolen card, drawn card, discarded cards) is
+read only when the model allows it.  The bot then sees a public view (every
+opponent `hand_known=False` / `dev_known=False` with exact sizes and counts,
+cards zeroed; observations and explanations use it too, and opponents'
+hidden discards are not observed) and every searched decision averages its
+ranking over `K` determinizations sampled from the tracker (joint hands from
+the mixture, development cards from the public pool, re-dealt while an
+opponent would already hold enough VP cards to have won).  Our legal actions
+depend only on public facts (own cards, board, bank, opponents' hand sizes
+for robber victims) and are identical in every sample.
+
+Measured (2026-09-25; replays of 20 games of four `WeightedRandomPlayer`s per
+engine, following seat `seed % 4`, discards hidden): the true hands were in
+the support of the counter at 100 % of 11,103 (3.2.1) / 12,428 (3.3) log
+steps, with mean probability 0.80 / 0.76; each opponent's hand was known
+exactly at 73 % of steps (all three at 63 % / 61 %); at most 44 / 23
+hypotheses, never a pruned hypothesis or a reset, with 11-14 hidden steals,
+29-33 hidden discard cards and 12-14 hidden card draws per game.  With every
+hidden event revealed (a test switch) the counter equals the true hands after
+every entry of 5 games per engine.  Changing the opponents' true cards in a
+way the model cannot see (a card swapped between two opponents, a held card
+exchanged with the deck) never changes a counted-mode decision or its
+ranking on 20 positions per engine, while a full-information search's
+values move at 18 (3.2.1) and 20 (3.3) of them.
+
+Cost: `K` searches per decision.  On the same positions with the default
+spec (`search:depth=1,evaluator=heuristic`), K = 4: 3.3 vs `value` 94 ms vs
+22 ms per searched decision in full mode (4.2x), 3.2.1 vs `vf` 37 ms vs 11 ms
+(3.4x); the two modes chose the same action at 35/35 and 39/40 of those
+positions.
+
+Approximations: an unseen discard is modelled as a uniformly random subset of
+the hand (exact on 3.2.1, whose engine discards at random; on 3.3 players
+choose); actions condition the belief through feasibility only (a city
+proves the cards were held; not building proves nothing); hidden
+development cards are uniform over the public pool apart from the "has not
+won yet" condition; catanatron's discards are sequential while the counted
+mode treats one 7's discards as simultaneous; the opponent model's
+predictions of opponents' moves (used for trade acceptance only) are made
+without their hands.  3.2.1 logs every chance outcome in the action values,
+3.3 in `ActionRecord.result`: nothing the model allows is missing on either.
+`scripts/ablate_catanatron.py --info counted [--info-samples K]
+[--discards-public]` (or `--cand-adapter-opt info=counted` for one arm)
+passes the mode to the arms.
+
+## Mixed opponents
+
+`--mixed-opponents value,alphabeta,sameturn` (any three presets) seats
+catanbot in seat `g % 4` exactly as the 1v3 rotation and one copy of each
+preset in the other seats, ordered by permutation `(g // 4) % 6` of the list
+over the relative positions 1-3 after catanbot in turn order.  `g mod 24`
+fixes both, so any 24 consecutive games put every preset in every relative
+position 8 times (and every player in every seat 6 times).  Each game records
+its `lineup`, `relative` order and `winner_name` (`catanbot` or the preset);
+the summary (`format: "1v3-mixed"`, `opponents`, `mixed`: wins, win rate and
+average VP per player, games per preset and relative position) and the
+compute table report every preset separately.  It composes with `--info`,
+`--game-range` chunks (the lineup depends on the game index only),
+`--hash-seed` and `--log-actions` (records carry the lineup; `--check`
+replays them); `--our-seats 2` is not supported.  Smoke (2026-09-25, 3.3.0,
+default spec, games 0-2, one worker): 0 adapter errors; catanbot 1/3,
+`value` 1/3, `alphabeta` 1/3, `sameturn` 0/3; average VP 8.0 / 7.0 / 7.7 / 6.3, 20 s per game.

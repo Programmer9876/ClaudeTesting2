@@ -495,6 +495,10 @@ class CardCounter(HandBelief):
                     for r in range(5):
                         if h[r]:
                             row[r] += w * h[r]
+            first = next(iter(self.hyps))
+            for i in range(self.n):
+                if self.is_exact(i):          # exact hands stay exact integers (no float dust)
+                    m[i] = [float(x) for x in first[i]]
             self._marg = m
         return self._marg
 
@@ -646,6 +650,50 @@ class CardCounter(HandBelief):
         self.stats["branching_events"] += 1
         if not self._update(g, "hidden discard"):
             self._reset(f"player {i} discarded {k} cards but holds fewer")
+
+    def observe_discards(self, hidden: Dict[int, int], bank: Optional[Sequence[int]] = None) -> None:
+        """Simultaneous discards whose cards were not shown (one 7): player ``i`` discarded
+        ``hidden[i]`` cards.  With the bank after them (public) only the combinations whose
+        per-resource total matches it are enumerated - a single discarder is then pinned down,
+        several keep only their split open - each weighted by its hypergeometric probability."""
+        players = sorted(i for i, k in hidden.items() if k > 0)
+        if not players:
+            return
+        ks = [int(hidden[i]) for i in players]
+        tot = self.total
+        rep = self._replace
+
+        def f(joint, w):
+            if bank is None:
+                need = None
+            else:
+                # what the discarders must hand back per resource for the totals to match the bank
+                need = [sum(joint[i][r] for i in players) - (tot - int(bank[r]) - sum(
+                    joint[j][r] for j in range(self.n) if j not in players)) for r in range(5)]
+                if min(need) < 0 or sum(need) != sum(ks):
+                    return []
+            out = []
+
+            def rec(idx, cur, left, weight):
+                if idx == len(players):
+                    if left is None or not any(left):
+                        out.append((cur, weight))
+                    return
+                i = players[idx]
+                for d, p in _sub_multisets(cur[i], ks[idx]):
+                    if left is not None and any(d[r] > left[r] for r in range(5)):
+                        continue
+                    nxt = rep(cur, i, [cur[i][r] - d[r] for r in range(5)])
+                    rec(idx + 1, nxt, None if left is None else [left[r] - d[r] for r in range(5)], weight * p)
+
+            rec(0, joint, need, w)
+            return out
+
+        for i, k in zip(players, ks):
+            self.size[i] -= k
+        self.stats["branching_events"] += 1
+        if not self._update(f, "hidden discards"):
+            self._reset(f"hidden discards {hidden} match no hypothesis")
 
     def observe_steal(self, victim: int, thief: int, res: Optional[int] = None) -> None:
         """A uniformly random card moved from ``victim`` to ``thief``; ``res`` when we saw it

@@ -55,9 +55,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import sequential as Q
-from .match import (BotServer, GameVoid, ServerSeat, Seat, VersionSkewError, play_match_game, server_env)
-from .registry import (Champion, LeagueError, Registry, atomic_write_json, materialize, now_iso, sha256_file,
-                       spec_model, spec_with_model, tree_commit)
+from .match import BotServer, GameVoid, ServerSeat, Seat, play_match_game, server_env
+from .registry import (Champion, LeagueError, Registry, atomic_write_json, now_iso, sha256_file, spec_with_model,
+                       tree_commit)
 from .stats import (binom_test_greater, binom_test_less, binom_test_two_sided, clopper_pearson, fisher_less, holm)
 
 DEFAULT_SEED_BASE = 20260925
@@ -376,6 +376,8 @@ def verdict(cfg: GateConfig, ev: Dict[str, Any], external: Optional[Dict[str, An
     if interim:
         reasons.append("interim failure boundary crossed (clearly worse) vs " + ", ".join(interim))
     b = {"passed": b_ok, "holm": rule.holm, "family": h, "interim_fail": interim}
+    # for information: which comparisons the candidate wins, Holm-adjusted over all of them
+    better = holm({k: s["p_greater"] for k, s in S.items()}, rule.alpha)
     # (c)
     if cfg.external:
         c = external or {"status": "pending"}
@@ -395,6 +397,7 @@ def verdict(cfg: GateConfig, ev: Dict[str, Any], external: Optional[Dict[str, An
     else:
         v = "FAIL"
     return {"verdict": v, "reasons": reasons, "stop": ev["stop"], "a": a, "b": b, "c": c, "valid": valid,
+            "better_holm": {k: {"p": x["p"], "p_adj": x["p_adj"]} for k, x in better.items()},
             "errors": errors, "voids": voids, "decided": now_iso(), "gate_id": cfg.gate_id,
             "candidate": cfg.candidate, "champions": [c_["name"] for c_ in cfg.champions],
             "comparisons": {k: {kk: s.get(kk) for kk in ("games", "decisive", "draws", "wins", "share", "p0", "ci", "ci_level",
@@ -509,7 +512,8 @@ class SeatPool:
         self.seats.clear()
 
 
-def play_gate_game(cfg: GateConfig, comp: Tuple[str, str], index: int, pool: SeatPool) -> Dict[str, Any]:
+def play_gate_game(cfg: GateConfig, comp: Tuple[str, str], index: int, pool: SeatPool,
+                   engine_id: Optional[str] = None) -> Dict[str, Any]:
     plan = game_plan(cfg, comp, index)
     n = plan["n"]
     seats: List[Seat] = []
@@ -553,8 +557,16 @@ def play_gate_game(cfg: GateConfig, comp: Tuple[str, str], index: int, pool: Sea
                    vp_diff=sum(cv) / len(cv) - sum(hv) / len(hv), turns=res["turns"], actions=res["actions"],
                    capped=res["capped"], seat_stats=res["seats"], error_log=res["error_log"],
                    serialize_ms=res["serialize_ms"], duration_s=res["duration_s"])
+    rec["engine"] = engine_id
     rec["finished"] = now_iso()
     return rec
+
+
+def current_engine_id() -> str:
+    """``<sha12>[+dirty]`` of the tree whose engine referees this process's games."""
+    import catanbot
+    commit, dirty = tree_commit(Path(catanbot.__file__).resolve().parents[1])
+    return f"{(commit or 'unknown')[:12]}{'+dirty' if dirty else ''}"
 
 
 class _Progress:
@@ -596,6 +608,12 @@ def run_gate(cfg: GateConfig, gate_dir: Path, seat_factory: Optional[SeatFactory
         atomic_write_json(cfg_path, cfg.to_dict())
     if seat_factory is None and not (gate_dir / "serve.py").exists():
         shutil.copy2(Path(__file__).with_name("serve.py"), gate_dir / "serve.py")
+    games_path = gate_dir / "games.jsonl"
+    if games_path.exists() and games_path.stat().st_size:
+        with open(games_path, "rb+") as f:      # a line cut by an interruption must not swallow the next record
+            f.seek(-1, 2)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
     recs = load_records(gate_dir)
     done = sum(1 for d in recs.values() for r in d.values() if not r.get("void"))
     progress = _Progress(gate_dir, cfg, done)
@@ -692,6 +710,7 @@ def _external(cfg: GateConfig, gate_dir: Path, runner, log) -> Dict[str, Any]:
 def _run_jobs(cfg, jobs, pools, recs, gate_dir, write_lock, progress, look, log) -> None:
     if not jobs:
         return
+    engine_id = current_engine_id()
     q: "queue.Queue" = queue.Queue()
     for j in jobs:
         q.put(j)
@@ -705,7 +724,7 @@ def _run_jobs(cfg, jobs, pools, recs, gate_dir, write_lock, progress, look, log)
             except queue.Empty:
                 return
             try:
-                rec = play_gate_game(cfg, comp, i, pool)
+                rec = play_gate_game(cfg, comp, i, pool, engine_id)
             except BaseException as exc:   # version skew, server start failures: abort the gate loudly
                 errors.append(exc)
                 return

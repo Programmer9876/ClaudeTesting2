@@ -647,9 +647,11 @@ def _play_one(job: tuple, opts: Dict[str, object]) -> Dict[str, object]:
         res["lineup"] = list(lineup)
         res["relative"] = [lineup[(seat + k) % len(COLORS)] for k in (1, 2, 3)]
         res["winner_name"] = lineup[res["winner_seat"]] if res["winner_seat"] >= 0 else None
-        res["timing"]["opp_by_name"] = {name: timing_summary([t for o, nm in zip(opps, opp_names) if nm == name
-                                                              for t in o.times])
-                                        for name in sorted(set(opp_names))}
+        by_name = {name: {"all": [t for o, nm in zip(opps, opp_names) if nm == name for t in o.times],
+                          "choice": [t for o, nm in zip(opps, opp_names) if nm == name for t in o.choice_times]}
+                   for name in sorted(set(opp_names))}
+        res["timing"]["opp_by_name"] = {name: timing_summary(ts["all"]) for name, ts in by_name.items()}
+        res["_times_by_name"] = by_name
     if log is not None:
         res["_log"] = _log_record(job, ours, log)
     return res
@@ -800,6 +802,15 @@ def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: 
         out["format"] = "1v3-mixed"
         out["opponents"] = list(mixed)
         out["mixed"] = mixed_table(results, mixed)
+        by_name: Dict[str, Dict[str, List[float]]] = {}
+        for r in results:
+            for nm, ts in (r.get("_times_by_name") or {}).items():
+                acc = by_name.setdefault(nm, {"all": [], "choice": []})
+                acc["all"].extend(ts["all"])
+                acc["choice"].extend(ts["choice"])
+        timing["opp_by_name"] = {nm: {"all": timing_summary(ts["all"]), "choice": timing_summary(ts["choice"]),
+                                      "s_per_game": sum(ts["all"]) / n if n else 0.0}
+                                 for nm, ts in by_name.items()}
     if our_seats == 2:
         out["by_arrangement"] = {k: {"wins": w, "games": g} for k, (w, g) in by_arr.items()}
     if game_range is not None:
@@ -935,8 +946,12 @@ def print_summary(s: Dict[str, object], wall: float) -> None:
         ours_n = int(s.get("our_seats", 1))
         print(_timing_row("catanbot" if ours_n == 1 else f"catanbot (each of {ours_n})", tm["ours"],
                           tm["ours_choice"], n, ours_n, tm["our_s_per_game"]))
-        print(_timing_row(f'{s["opponent_class"]} (each of {len(COLORS) - ours_n})', tm["opp"], tm["opp_choice"], n,
-                          len(COLORS) - ours_n, tm["opp_s_per_game_per_seat"]))
+        if tm.get("opp_by_name"):
+            for nm, t in tm["opp_by_name"].items():
+                print(_timing_row(f"{nm} (1 seat)", t["all"], t["choice"], n, 1, t["s_per_game"]))
+        else:
+            print(_timing_row(f'{s["opponent_class"]} (each of {len(COLORS) - ours_n})', tm["opp"], tm["opp_choice"], n,
+                              len(COLORS) - ours_n, tm["opp_s_per_game_per_seat"]))
         print(f'    (catanbot search alone {tm["our_search_s_per_game"]:.2f} s/game; "choices" = decisions with '
               f'more than one playable action)')
     print("  markdown    : | `%s` | %s | %d | %d | %.0f%% | %.2f | %.2f | %.1f | %.2f |" % (
@@ -949,7 +964,7 @@ def _strip_raw(obj):
     if isinstance(obj, list):
         return [_strip_raw(x) for x in obj]
     if isinstance(obj, dict):
-        return {k: _strip_raw(v) for k, v in obj.items() if k not in ("_times", "_log")}
+        return {k: _strip_raw(v) for k, v in obj.items() if k not in ("_times", "_log", "_times_by_name")}
     return obj
 
 

@@ -17,7 +17,7 @@ game records on every status call.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Mapping, Tuple
 
 __all__ = ["betainc", "beta_ppf", "binom_sf", "binom_cdf", "binom_pmf", "binom_test_greater", "binom_test_less",
            "binom_test_two_sided", "clopper_pearson", "holm", "fisher_less", "norm_cdf", "norm_ppf"]

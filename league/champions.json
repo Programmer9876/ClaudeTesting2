@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "league": "catanbot",
+  "description": "Champion ladder, append-only: each entry plays with its own commit's code (docs/LEAGUE.md). The last entry is the current champion; a candidate is promoted only through `scripts/league.py promote` after a PASSed gate against every entry.",
+  "champions": [
+    {
+      "name": "champion-0",
+      "commit": "99841816a73da67752418ba2b0e7f2fa7db689ea",
+      "spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+      "weights": null,
+      "created": "2026-09-25",
+      "notes": "default bot at the strength proof",
+      "gate": {
+        "kind": "seed",
+        "note": "seed champion, no gate: the bot of the pre-registered strength proof (proof snapshot at commit 9984181, docs/PROOF_PROTOCOL.md)"
+      }
+    }
+  ]
+}
