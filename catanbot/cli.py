@@ -392,6 +392,23 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
     report["state"] = state.to_dict()
     if parsed is not None:
         report["parsed"] = parsed
+    log_path = getattr(args, "log", None)
+    if log_path:
+        try:
+            with open(log_path, "a") as f:
+                f.write(json.dumps({
+                    "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "game": getattr(args, "game", None) or "default",
+                    "me": state.players[me].color,
+                    "turn": state.turn,
+                    "vp": [state.public_vp(i) for i in range(state.num_players)],
+                    "players": [p.color for p in state.players],
+                    "win_prob": report["actions"][0]["value"] if report["actions"] else None,
+                    "top_action": report["actions"][0]["text"] if report["actions"] else None,
+                    "evaluator": report["evaluator"],
+                }, default=float) + "\n")
+        except OSError as ex:  # pragma: no cover
+            report["warnings"].append(f"could not append to log {log_path}: {ex}")
     profiles = getattr(args, "profiles", None)
     if profiles:
         try:
@@ -595,6 +612,79 @@ def cmd_profiles(args) -> int:
     return 0
 
 
+def _reliability(pairs: List[Tuple[float, float]]) -> List[str]:
+    """Brier score and reliability bins for (predicted win prob, outcome) pairs."""
+    if not pairs:
+        return ["no predictions with outcomes yet"]
+    n = len(pairs)
+    brier = sum((p - y) ** 2 for p, y in pairs) / n
+    base = sum(y for _, y in pairs) / n
+    brier_ref = base * (1 - base)
+    lines = [f"{n} predictions, Brier {brier:.3f} (always-base-rate {brier_ref:.3f}; lower is better)"]
+    lines.append("  predicted   actual   n")
+    edges = [0.0, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 1.01]
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        grp = [(p, y) for p, y in pairs if lo <= p < hi]
+        if grp:
+            lines.append(f"  {sum(p for p, _ in grp) / len(grp):9.2f} {sum(y for _, y in grp) / len(grp):8.2f} {len(grp):3d}")
+    return lines
+
+
+def cmd_outcome(args) -> int:
+    """Record who won a logged game: catanbot outcome LOG --game ID --winner COLOR."""
+    with open(args.log, "a") as f:
+        f.write(json.dumps({"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "game": args.game, "outcome": args.winner.lower()}) + "\n")
+    print(f"recorded: game {args.game} won by {args.winner}")
+    return 0
+
+
+def cmd_calibrate(args) -> int:
+    """Score logged win estimates against recorded outcomes, or run a self-play calibration check."""
+    pairs: List[Tuple[float, float]] = []
+    if args.log:
+        rows = []
+        with open(args.log) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+        outcomes = {r["game"]: r["outcome"] for r in rows if "outcome" in r}
+        by_game: Dict[str, List[dict]] = {}
+        for r in rows:
+            if "win_prob" in r and r.get("win_prob") is not None:
+                by_game.setdefault(r["game"], []).append(r)
+        for g, recs in by_game.items():
+            if g not in outcomes:
+                print(f"game {g}: {len(recs)} positions, no outcome recorded yet (catanbot outcome {args.log} --game {g} --winner COLOR)")
+                continue
+            won = 1.0 if outcomes[g] == recs[0]["me"] else 0.0
+            traj = " -> ".join(f"{r['win_prob']:.2f}" for r in recs)
+            print(f"game {g}: {'won' if won else 'lost'}; win estimate trajectory {traj}")
+            pairs.extend((float(r["win_prob"]), won) for r in recs)
+        print("\n".join(_reliability(pairs)))
+    if args.selfplay:
+        from .selfplay import make_bot, play_game
+        evaluator, ev_name = load_evaluator(args.model)
+        print(f"self-play calibration of {ev_name}: {args.selfplay} games")
+        sp: List[Tuple[float, float]] = []
+        rng = random.Random(args.seed)
+        for g in range(args.selfplay):
+            bots = [make_bot(spec) for spec in ["heuristic:temp=0.3", "heuristic", "heuristic:temp=0.5", "heuristic:temp=0.15"][:4]]
+            preds: List[Tuple[int, float]] = []
+
+            def on_action(state, action, player, _preds=preds):
+                if state.turn % 4 == 0 and action[0] != A.ROLL:
+                    vals = evaluator.evaluate([state] * state.num_players, list(range(state.num_players)))
+                    for i, v in enumerate(vals):
+                        _preds.append((i, float(v)))
+
+            r = play_game(bots, rng=random.Random(rng.random()), max_turns=300, on_action=on_action)
+            if r.winner >= 0:
+                sp.extend((v, 1.0 if i == r.winner else 0.0) for i, v in preds)
+        print("\n".join(_reliability(sp)))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
@@ -612,6 +702,8 @@ def _add_recommend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--time", type=float, help="search time limit in seconds")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--json", action="store_true", help="machine readable output")
+    p.add_argument("--log", help="append this position's win estimate to a JSONL log (for `calibrate`)")
+    p.add_argument("--game", help="game id used with --log / outcome")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -665,6 +757,19 @@ def build_parser() -> argparse.ArgumentParser:
     pr = sub.add_parser("profiles", help="show a saved opponent profile file")
     pr.add_argument("file")
     pr.set_defaults(func=cmd_profiles)
+
+    oc = sub.add_parser("outcome", help="record the winner of a logged game")
+    oc.add_argument("log")
+    oc.add_argument("--game", required=True)
+    oc.add_argument("--winner", required=True, help="colour of the winner")
+    oc.set_defaults(func=cmd_outcome)
+
+    cb = sub.add_parser("calibrate", help="score logged win estimates against outcomes / self-play calibration")
+    cb.add_argument("--log", help="JSONL written by analyze/recommend --log")
+    cb.add_argument("--selfplay", type=int, default=0, help="also run N self-play games and score the evaluator")
+    cb.add_argument("--model", help="value net path or 'heuristic' (for --selfplay)")
+    cb.add_argument("--seed", type=int, default=0)
+    cb.set_defaults(func=cmd_calibrate)
     return p
 
 

@@ -74,7 +74,7 @@ def gen_board_tables() -> str:
     o.append("// GENERATED FILE - do not edit.\n")
     o.append("// Produced by scripts/gen_board_tables.py from catanbot/board.py.\n")
     o.append("// Re-run `PYTHONPATH=. python3 scripts/gen_board_tables.py` after changing board.py.\n")
-    o.append("#pragma once\n\nnamespace catan {\n\n")
+    o.append("#pragma once\n\nnamespace catanbot {\n\n")
     o.append("// ---- sizes -------------------------------------------------------------\n")
     o.append(f"constexpr int NUM_HEXES = {B.NUM_HEXES};\n")
     o.append(f"constexpr int NUM_VERTICES = {B.NUM_VERTICES};\n")
@@ -143,7 +143,7 @@ def gen_board_tables() -> str:
     o.append(_array1("STANDARD_PORTS", [B.STANDARD_PORTS.get(v, -1) for v in range(B.NUM_VERTICES)]))
     o.append("// (coastal edge, port type) of the standard port layout\n")
     o.append(_array2("STANDARD_PORT_EDGES", B.STANDARD_PORT_EDGES, 2))
-    o.append("\n}  // namespace catan\n")
+    o.append("\n}  // namespace catanbot\n")
     return "".join(o)
 
 
@@ -162,7 +162,7 @@ def gen_feature_layout() -> str:
     o.append("// GENERATED FILE - do not edit.\n")
     o.append("// Produced by scripts/gen_board_tables.py from catanbot/features.py (and state.py phases).\n")
     o.append("// Re-run `PYTHONPATH=. python3 scripts/gen_board_tables.py` after changing the feature layout.\n")
-    o.append("#pragma once\n\nnamespace catan {\n\n")
+    o.append("#pragma once\n\nnamespace catanbot {\n\n")
     o.append("// ---- phases, in the order of the phase one-hot block ----------------------------\n")
     phases = list(F._PHASES)
     o.append(f"constexpr int NUM_PHASES = {len(phases)};\n")
@@ -194,7 +194,7 @@ def gen_feature_layout() -> str:
     for name in F.FEATURE_NAMES:
         o.append(f'    "{name}",\n')
     o.append("};\n")
-    o.append("\n}  // namespace catan\n")
+    o.append("\n}  // namespace catanbot\n")
     return "".join(o)
 
 

@@ -34,11 +34,12 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from . import actions as A
 from . import board as B
 from .actions import Action
+from .coalitions import CoalitionDetector
 from .counting import expected_hidden_vp
 from .placement import (RESOURCE_DEMAND, blocking_value, player_production, reachable_spots,
                         resource_scarcity, score_settlement_spot)
 from .robber import hex_damage, hex_pips_for_player, threat
-from .state import GameState, PHASE_GAME_OVER
+from .state import GameState, PHASE_GAME_OVER, TradeOffer
 
 BASELINE = 0.1          # low-to-moderate goodwill until proven otherwise
 DECAY = 0.97            # per turn, deviation from baseline shrinks by this factor
@@ -97,6 +98,7 @@ class PoliticalState:
         self.baseline = baseline
         self.capital: List[List[float]] = [[baseline] * n for _ in range(n)]
         self.events: List[str] = []
+        self.coalitions = CoalitionDetector(n)
         self._last_lr: Optional[int] = None
         self._last_la: Optional[int] = None
         self._last_actor: Optional[int] = None
@@ -126,6 +128,7 @@ class PoliticalState:
     def ensure(self, n: int) -> None:
         if n != self.n:
             self.__init__(n, self.baseline)
+        self.coalitions.ensure(n)
 
     # --- observation -----------------------------------------------------------
     def observe(self, state: GameState, action: Action, player: int, state_after: Optional[GameState] = None) -> None:
@@ -138,6 +141,10 @@ class PoliticalState:
         self._detect_award_transfer(state)
         if kind in (A.MOVE_ROBBER, A.PLAY_KNIGHT):
             h, victim = action[1], action[2]
+            try:
+                self.coalitions.observe_robber(state, player, h, victim if victim is not None else -1)
+            except Exception:
+                pass
             # Selfish best alternative: the hex with the best damage score for the actor.
             best = -1e9
             chosen = -1e9
@@ -202,6 +209,10 @@ class PoliticalState:
             partner = action[1]
             offer = state.pending_trade
             if offer is not None:
+                try:
+                    self.coalitions.observe_trade(state, player, partner, offer, offer.responses)
+                except Exception:
+                    pass
                 # Goodwill grows with how good the deal is for the partner.
                 gain = sum((offer.give[r] - offer.get[r]) * RESOURCE_DEMAND[r] for r in range(5))
                 d = (0.04 + 0.03 * max(0.0, gain)) * sw
@@ -210,6 +221,10 @@ class PoliticalState:
         elif kind == A.REJECT_TRADE:
             offer = state.pending_trade
             if offer is not None and offer.proposer != player:
+                try:
+                    self.coalitions.observe_rejection(state, player, offer)
+                except Exception:
+                    pass
                 # Refusing an offer that was fair for us is a snub.
                 gain = sum((offer.give[r] - offer.get[r]) * RESOURCE_DEMAND[r] for r in range(5))
                 if gain >= -0.05:
@@ -220,6 +235,7 @@ class PoliticalState:
                 self.adjust(player, offer.proposer, 0.02 * sw)
         elif kind == A.END_TURN:
             self.decay()
+            self.coalitions.decay()
         # Award transfers: with ``state_after`` we can attribute immediately,
         # otherwise the next observe() call detects the change.
         self._last_actor = player
@@ -254,6 +270,23 @@ class PoliticalState:
             return -1
 
         a, verb, b = idx(toks[0]), toks[1], idx(toks[2])
+        if verb == "traded" and a >= 0 and b >= 0 and a != b and "give" in toks and "get" in toks:
+            # "blue traded orange give 2 ore get 1 wood": blue gave 2 ore and received 1 wood
+            def counts(words):
+                out = [0] * 5
+                n = 1
+                for w in words:
+                    if w.isdigit():
+                        n = int(w)
+                        continue
+                    r = B.RESOURCE_ALIASES.get(w)
+                    if r is not None and r != B.DESERT:
+                        out[r] += n
+                    n = 1
+                return out
+            gi, ge = toks.index("give"), toks.index("get")
+            offer = TradeOffer(a, counts(toks[gi + 1:ge]), counts(toks[ge + 1:]))
+            self.coalitions.observe_trade(state, a, b, offer)
         if a < 0 or b < 0 or a == b:
             return f"unknown players in '{text}'"
         sw = stage_weight(state)
@@ -278,13 +311,17 @@ class PoliticalState:
         p = PoliticalState(state.num_players, float(d.get("baseline", BASELINE)))
         colors = d.get("colors") or []
         cap = d.get("capital") or []
+        fav = (d.get("coalitions") or {}).get("favour") or []
         pos = {c: k for k, c in enumerate(colors)}
         for i in range(state.num_players):
             for j in range(state.num_players):
                 ci, cj = state.players[i].color, state.players[j].color
                 if ci in pos and cj in pos and pos[ci] < len(cap) and pos[cj] < len(cap[pos[ci]]):
                     p.capital[i][j] = float(cap[pos[ci]][pos[cj]])
+                if ci in pos and cj in pos and pos[ci] < len(fav) and pos[cj] < len(fav[pos[ci]]):
+                    p.coalitions.favour[i][j] = float(fav[pos[ci]][pos[cj]])
         p.events = list(d.get("events", []))
+        p.coalitions.events = list((d.get("coalitions") or {}).get("events", []))
         return p
 
     # --- queries -----------------------------------------------------------------
@@ -311,6 +348,13 @@ class PoliticalState:
             w = threat(state, j)
             w *= 1.0 + 1.2 * self.grudge(actor, j)          # grudges
             w *= 1.0 - 0.5 * max(0.0, self.get(j, actor) - self.baseline)  # friends get hit less
+            # Coalitions: an actor spares its allies; a bloc that includes the leader is a
+            # bigger threat than its members look individually.
+            ally = min(1.0, self.coalitions.strength(actor, j) / 2.0)
+            w *= 1.0 - 0.6 * ally
+            leader = max(range(state.num_players), key=lambda k: _vp(state, k))
+            if leader != j and leader != actor and self.coalitions.strength(j, leader) >= 1.0:
+                w *= 1.0 + 0.3 * min(2.0, self.coalitions.strength(j, leader))
             out.append(w)
         return out
 
@@ -326,6 +370,12 @@ class PoliticalState:
         cap = self.get(proposer, responder)          # how responder views proposer
         pos = relative_position(state, proposer)
         slack = 0.6 * (cap - self.baseline) - 0.35 * pos
+        # Allies float each other; a responder inside a bloc that excludes the proposer
+        # demands a premium instead.
+        ally = min(1.0, self.coalitions.strength(responder, proposer) / 2.0)
+        slack += 0.25 * ally
+        if ally <= 0.0 and self.coalitions.allies(responder):
+            slack -= 0.15
         return max(-MAX_SLACK, min(MAX_SLACK, slack))
 
     def trade_willingness(self, state: GameState, responder: int, proposer: int) -> float:
@@ -351,19 +401,29 @@ class PoliticalState:
         leader = max(range(state.num_players), key=lambda k: _vp(state, k))
         if leader != me and _vp(state, leader) >= 7:
             lines.append(f"Coalition target: {_pname(state, leader)} ({_vp(state, leader):.0f} VP)")
+        lines.extend(self.coalitions.summary(state, me))
+        against = self.coalitions.against(me)
+        if against >= 1.0:
+            lines.append(f"You are being ganged up on (bloc strength {against:.1f}): expect refused trades and "
+                         "robber hits; build hidden strength (dev cards), keep the hand small, and offer the "
+                         "weaker bloc member deals that pull them away.")
         if self.events:
             lines.append("Recent: " + "; ".join(self.events[-4:]))
         return lines
 
     # --- persistence ---------------------------------------------------------------
     def to_dict(self) -> dict:
-        return {"n": self.n, "baseline": self.baseline, "capital": self.capital, "events": self.events[-30:]}
+        return {"n": self.n, "baseline": self.baseline, "capital": self.capital, "events": self.events[-30:],
+                "coalitions": self.coalitions.to_dict()}
 
     @staticmethod
     def from_dict(d: dict) -> "PoliticalState":
         p = PoliticalState(int(d["n"]), float(d.get("baseline", BASELINE)))
         p.capital = [[float(x) for x in row] for row in d.get("capital", p.capital)]
         p.events = list(d.get("events", []))
+        if d.get("coalitions"):
+            p.coalitions = CoalitionDetector.from_dict(d["coalitions"])
+            p.coalitions.ensure(p.n)
         return p
 
 

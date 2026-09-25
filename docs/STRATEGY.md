@@ -125,6 +125,27 @@ manually with `--event "blue accepted give ore get wood"`.
   when our own win probability does not drop and the leader's does - buying
   runway.
 
+## Coalition detection (`coalitions.py`)
+
+Nash-style play cannot see alliances; revealed preferences can.  Every
+executed trade and robber choice is scored by the **EV sacrifice** of the
+actor - how much worse the choice was than their best alternative (the
+bank / port rate for the same cards, a losing deal accepted, a better
+robber target spared, a fair offer refused).  Sacrifices are accumulated
+**quadratically** per ordered pair with per-turn decay, so one blatant
+favour outweighs ten subtle ones and noise barely registers.  Pairs above a
+threshold form blocs (connected components).  Consequences:
+
+* opponents are expected to spare their allies with the robber and to
+  float them in trades, and to demand a premium from outsiders;
+* a bloc that contains the leader is treated as a bigger threat than its
+  members look individually when choosing robber targets;
+* the advice reports blocs, blatant-favour counts, and whether you are
+  being ganged up on (with the counter-play: hidden strength, small hand,
+  peel off the weaker member).
+
+Typed events feed it too: `--event "blue traded orange give 2 ore get 1 wood"`.
+
 ## Search (`search.py`)
 
 Beam-pruned expectimax over our turn (actions ordered by the priors above,

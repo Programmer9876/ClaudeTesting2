@@ -138,3 +138,24 @@ def test_train_smoke(tmp_path, capsys):
     assert rc == 0
     log = json.loads((tmp_path / "net_log.json").read_text())
     assert log["iterations"] and (tmp_path / "net_candidate.npz").exists()
+
+
+def test_log_outcome_calibrate(tmp_path, capsys):
+    s = played_state(seed=4, turns=40)
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps(s.to_dict()))
+    log = tmp_path / "games.jsonl"
+    for k in range(2):
+        rc = cli.main(["recommend", "--state", str(path), "--me", "red", "--depth", "1", "--model", "heuristic",
+                       "--log", str(log), "--game", "g1"])
+        capsys.readouterr()
+        assert rc == 0
+    rc = cli.main(["outcome", str(log), "--game", "g1", "--winner", "red"])
+    capsys.readouterr()
+    assert rc == 0
+    rc = cli.main(["calibrate", "--log", str(log)])
+    out = capsys.readouterr().out
+    assert rc == 0 and "Brier" in out and "game g1: won" in out
+    rc = cli.main(["calibrate", "--selfplay", "1", "--model", "heuristic", "--seed", "2"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "self-play calibration" in out

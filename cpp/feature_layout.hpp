@@ -3,7 +3,7 @@
 // Re-run `PYTHONPATH=. python3 scripts/gen_board_tables.py` after changing the feature layout.
 #pragma once
 
-namespace catan {
+namespace catanbot {
 
 // ---- phases, in the order of the phase one-hot block ----------------------------
 constexpr int NUM_PHASES = 9;
@@ -456,4 +456,4 @@ constexpr const char* FEATURE_NAMES[NUM_FEATURES] = {
     "g_trade_get_ore",
 };
 
-}  // namespace catan
+}  // namespace catanbot

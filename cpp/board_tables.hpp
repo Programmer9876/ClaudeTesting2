@@ -3,7 +3,7 @@
 // Re-run `PYTHONPATH=. python3 scripts/gen_board_tables.py` after changing board.py.
 #pragma once
 
-namespace catan {
+namespace catanbot {
 
 // ---- sizes -------------------------------------------------------------
 constexpr int NUM_HEXES = 19;
@@ -580,4 +580,4 @@ constexpr int STANDARD_PORT_EDGES[9][2] = {
     {23, 0}
 };
 
-}  // namespace catan
+}  // namespace catanbot

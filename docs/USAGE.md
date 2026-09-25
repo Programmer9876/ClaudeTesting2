@@ -86,10 +86,14 @@ python -m catanbot analyze shot.png --me red --profiles friends.json \
 ```
 
 Events update the opponent's implied resource valuations, acceptance
-tendencies and robber habits (with exponential decay), and the political
+tendencies and robber habits (with exponential decay), the political
 capital between players (`"blue robbed red"`, `"blue traded red"`,
 `"blue rejected red"`, `"blue blocked red"`, `"blue monopolized red"`,
-`"blue helped red"`).  `python -m catanbot profiles friends.json` shows
+`"blue helped red"`) and the coalition detector: give the deal detail
+(`"blue traded orange give 2 ore get 1 wood"`, i.e. blue gave 2 ore and got
+1 wood) and every trade is scored by how much value the parties sacrificed
+versus their best alternative; blatant favours count quadratically more
+than subtle ones, and blocs are reported in the Politics section.  `python -m catanbot profiles friends.json` shows
 what has been learned.  During self-play the bot maintains the same
 profiles automatically from the actions it observes.
 
