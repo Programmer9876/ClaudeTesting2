@@ -155,6 +155,28 @@ def test_divergence_classification():
     assert div["consistent"] is False
 
 
+def test_divergence_at_a_followup_is_consistent():
+    """A knight whose victim differs logs the same PLAY_KNIGHT_CARD in both arms; the games part at the
+    adapter's follow-up MOVE_ROBBER (action 38), which the tracer records as ``[index, hash, 1]``."""
+    base = [f"a{i}" for i in range(64)]
+    other = base[:38] + [f"b{i}" for i in range(26)]
+    v = AB.OURS_VERSION
+    ours_c = [[5, "h1"], [37, "knight"], [38, "robC", 1], [45, "x"]]
+    ours_d = [[5, "h1"], [37, "knight"], [38, "robD", 1], [47, "y"]]
+    div = AB.divergence({"trace": AB.make_trace(other), "ours": ours_c, "ours_v": v},
+                        {"trace": AB.make_trace(base), "ours": ours_d, "ours_v": v})
+    assert div["consistent"] is True and div["at"] == 38 and div["decision"] == 2
+    # without the follow-up entries (the tracer before OURS_VERSION 2) the first differing entry is at
+    # 45 / 47, after the logs parted: the old false alarm
+    old = AB.divergence({"trace": AB.make_trace(other), "ours": [x for x in ours_c if len(x) == 2]},
+                        {"trace": AB.make_trace(base), "ours": [x for x in ours_d if len(x) == 2]})
+    assert old["consistent"] is False
+    # a record from the older script paired with a new one: follow-ups are ignored on both sides
+    mixed = AB.divergence({"trace": AB.make_trace(other), "ours": ours_c, "ours_v": v},
+                          {"trace": AB.make_trace(base), "ours": [x for x in ours_d if len(x) == 2]})
+    assert mixed["decision"] == 2 and mixed["at"] == 45
+
+
 # ---------------------------------------------------------------------------
 # runs / arms
 # ---------------------------------------------------------------------------

@@ -66,6 +66,8 @@ HASH_PROBE_TEXT = "catanbot-ablate-hash-probe"
 PINNED_HASHSEED = "0"
 TRACE_EVERY = 16          # action-log fingerprint checkpoint every N actions
 OURS_MAX = 32             # first N non-trivial catanbot decisions fingerprinted per game
+OURS_VERSION = 2          # 2: ``ours`` also holds the adapter's follow-ups ([index, hash, 1]); records
+                          # without ``ours_v`` (older script) hold consulted decisions only
 MIN_VERDICT_PAIRS = 30
 Z95 = 1.959964
 # catanbot/ files that cannot change a game (screenshot parsing, training, CLI); everything else
@@ -461,13 +463,21 @@ def _traced_class():
         class TracedCatanbotPlayer(CatanbotPlayer):
             """Records ``[action index, hash of the returned action]`` for the first ``OURS_MAX`` decisions
             in which the bot was consulted (its ParamBot counters moved) - with 3.3 trading that includes
-            prompts with a single playable action, where the bot may still choose to offer a trade."""
+            prompts with a single playable action, where the bot may still choose to offer a trade - and
+            ``[action index, hash, 1]`` for the adapter's FOLLOW-UPS of an earlier decision, played without
+            consulting the bot: the robber move of a knight (the bot picks hex and victim with the
+            ``PLAY_KNIGHT``, catanatron logs ``PLAY_KNIGHT_CARD`` then ``MOVE_ROBBER``) and the 2nd..nth
+            card of a 3.3 per-card discard.  Two arms whose knights differ only in the victim log the same
+            ``PLAY_KNIGHT_CARD`` and part at the ``MOVE_ROBBER``; without the follow-up entry that pair was
+            classified "inconsistent" although only our own decision made it diverge (``OURS_VERSION``)."""
 
             def decide(self, game, playable_actions):
                 playable = list(playable_actions)
                 self._ab_game = game
                 st = getattr(self.bot, "stats", None)
                 before = st.get("decisions", 0) + st.get("trivial", 0) if isinstance(st, dict) else None
+                mine = self.stats
+                follow_before = mine.get("pending_robber", 0) + mine.get("pending_discard", 0)
                 a = super().decide(game, playable)
                 ours = self.__dict__.setdefault("_ab_ours", [])
                 if len(ours) < OURS_MAX:
@@ -477,6 +487,8 @@ def _traced_class():
                         consulted = len(playable) > 1
                     if consulted:
                         ours.append([len(action_log(game.state)), short_hash(repr(a))])
+                    elif mine.get("pending_robber", 0) + mine.get("pending_discard", 0) != follow_before:
+                        ours.append([len(action_log(game.state)), short_hash(repr(a)), 1])
                 return a
 
         _TRACED = TracedCatanbotPlayer
@@ -597,7 +609,8 @@ def _real_game(job: Dict[str, Any], arm: Dict[str, Any], s: int) -> Dict[str, An
         "overhead_ms": round(1000.0 * pb.stats["overhead"], 3),
         "opp_dec": timing_summary(opp_times), "opp_trade_stats": _num(opp_extra),
         "adapter": _num(dict(me.stats)), "unmapped": _num(dict(getattr(me, "unmapped_kinds", {}))),
-        "trace": make_trace(items), "ours": list(me.__dict__.get("_ab_ours", [])), "extra": extra,
+        "trace": make_trace(items), "ours": list(me.__dict__.get("_ab_ours", [])), "ours_v": OURS_VERSION,
+        "extra": extra,
     }
 
 
@@ -808,11 +821,14 @@ def divergence(c: Dict[str, Any], d: Dict[str, Any]) -> Dict[str, Any]:
     lo = (k if k is not None else min(len(ckc), len(ckd))) * every      # first differing action index >= lo
     hi = (k + 1) * every if k is not None else None                     # ... and < hi when a checkpoint differs
     oc, od = c.get("ours") or [], d.get("ours") or []
+    full = min(len(oc), len(od)) >= OURS_MAX
+    if not (c.get("ours_v") == d.get("ours_v") == OURS_VERSION):
+        # a record from an older script has no follow-up entries: compare the consulted decisions only
+        oc = [x for x in oc if len(x) == 2]
+        od = [x for x in od if len(x) == 2]
     j = next((i for i, (a, b) in enumerate(zip(oc, od)) if list(a) != list(b)), None)
     if j is None:
         last = max([x[0] for x in oc[-1:]] + [x[0] for x in od[-1:]] + [-1])
-        stored = min(len(oc), len(od))
-        full = stored >= OURS_MAX
         # no stored decision differs: consistent only if the logs part after the last stored decision
         consistent = (hi is None or hi > last) if full else False
         return {"known": True, "identical": False, "decision": None, "at": None, "diverge_from": lo,

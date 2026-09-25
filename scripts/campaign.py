@@ -271,12 +271,30 @@ def fmt_h(hours: Optional[float]) -> str:
     return f"{hours:.1f} h"
 
 
+def rate_class(e: Dict[str, Any]) -> Tuple[Any, ...]:
+    """Experiments whose games cost about the same: same interpreter, opponent (and its parameters),
+    trade mode and evaluator (a tunable the Python evaluator reads runs the whole experiment ~3-4x
+    slower, CATANBOT_NO_ACCEL=1).  An experiment without its own measured rate borrows one from its class."""
+    names = [e.get("tunable")] + list((e.get("cand_set") or {}) if isinstance(e.get("cand_set"), dict) else [])
+    names += list((e.get("set") or {}) if isinstance(e.get("set"), dict) else [])
+    pyeval = False
+    try:
+        if ROOT not in sys.path:
+            sys.path.insert(0, ROOT)
+        from catanbot import tuning
+        pyeval = any(tuning.find(n).needs_python_evaluator for n in names if n)
+    except Exception:  # noqa: BLE001
+        pass
+    return (e["interpreter"], e["opponent"], json.dumps(e.get("opponent_params"), sort_keys=True),
+            e.get("trades") or "off", pyeval)
+
+
 def print_status(exps: List[Dict[str, Any]], d: str, plan: str) -> None:
     rows = [(e, progress(e, d)) for e in exps]
-    rates: Dict[Tuple[str, str], float] = {}
+    rates: Dict[Tuple[Any, ...], float] = {}
     for e, p in rows:
         if p["rate"]:
-            rates.setdefault((e["interpreter"], e["opponent"]), p["rate"])
+            rates.setdefault(rate_class(e), p["rate"])
     total_eta = 0.0
     unknown = False
     print(f"campaign {d} (plan {plan}): {len(exps)} experiment(s), "
@@ -284,7 +302,7 @@ def print_status(exps: List[Dict[str, Any]], d: str, plan: str) -> None:
     print(f"  {'prio':>4} {'name':34} {'interp':6} {'opponent':10} {'cands':>5} {'games done/planned':>19} "
           f"{'err':>4} {'reused':>6} {'rate g/h':>9} {'ETA':>8}  pairs per candidate")
     for e, p in rows:
-        rate = p["rate"] or rates.get((e["interpreter"], e["opponent"]))
+        rate = p["rate"] or rates.get(rate_class(e))
         eta = None
         if p["complete"]:
             eta = 0.0
