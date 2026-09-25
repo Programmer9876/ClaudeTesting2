@@ -31,6 +31,39 @@ Design notes
   only way a settlement can shorten a trail).
 * Every rule violation raises :class:`IllegalActionError` (a ``ValueError``)
   and leaves the state untouched.
+* **Counter-offers** (Colonist.io) are a rules variant, off by default
+  (``GameState.allow_counters``).  With the flag off nothing below changes:
+  ``COUNTER_TRADE`` is refused and the legal lists are the base game's.  With it
+  on, the protocol is (see :func:`_h_counter_trade`):
+
+  1. The current player P proposes offer O (unchanged; it counts toward
+     :data:`MAX_TRADE_PROPOSALS_PER_TURN`, counters count toward nothing).
+  2. Every other player answers in seat order: ``ACCEPT_TRADE``,
+     ``REJECT_TRADE`` or ``(COUNTER_TRADE, give, get)`` - a modified deal aimed
+     back at P, ``give`` / ``get`` from the counterer's side.  A counter
+     declines O as is (``O.responses[i] = False``) and is stored in
+     ``O.counters``; one answer per responder per offer, so at most one counter
+     each.  Under the flag a responder who cannot pay O is still asked (it may
+     counter with cards it holds) unless its hand is empty.
+  3. When everyone has answered, P sees the counters one at a time in seat
+     order.  Each is represented as an **ordinary pending offer**: a
+     ``TradeOffer`` whose proposer is the counterer, ``trade_responder = P``,
+     phase ``PHASE_TRADE_RESPONSE``, the other seats pre-filled as rejections
+     and the suspended O in ``counter.origin``.  A bot unaware of counters
+     just sees an offer it may ACCEPT / REJECT (a counter cannot be countered).
+     Counters P cannot pay are dropped.
+  4. P ``ACCEPT_TRADE``: the counter executes at once and the whole round is
+     closed (pending trade cleared, back to ``PHASE_MAIN``) - like completing a
+     counter in Colonist, which closes the offer.  P ``REJECT_TRADE``: O is
+     restored and the next counter is shown; after the last one O finishes as
+     in the base game (``PHASE_TRADE_SELECT`` among the plain accepters, or
+     back to ``PHASE_MAIN``).
+
+  :func:`legal_actions` lists a bounded set of counters (:func:`counter_candidates`:
+  ask one more card, give one fewer, swap one of the cards given); :func:`apply`
+  accepts any well-formed counter the counterer can pay.  The C++ engine does not
+  implement the variant: ``accel`` routes every state with the flag on to this
+  module.
 """
 from __future__ import annotations
 
@@ -75,6 +108,7 @@ __all__ = [
     "buildable_city_vertices",
     "discard_options",
     "robber_victims",
+    "counter_candidates",
 ]
 
 Action = A.Action
@@ -600,6 +634,8 @@ def legal_actions(state: GameState) -> List[Action]:
         offer = state.pending_trade
         if offer is None or state.trade_responder < 0:
             return []
+        if state.allow_counters and offer.origin is None:
+            return _legal_response_with_counters(state, offer)
         if _can_pay(state.players[state.trade_responder], offer.get):
             return [_ACCEPT_ACTION, _REJECT_ACTION]
         return [_REJECT_ACTION]
@@ -614,6 +650,69 @@ def legal_actions(state: GameState) -> List[Action]:
         out.append(_CANCEL_ACTION)
         return out
     return []
+
+
+def _legal_response_with_counters(state: GameState, offer: TradeOffer) -> List[Action]:
+    """PHASE_TRADE_RESPONSE under the counters rule: accept / reject as usual, then the bounded counters."""
+    out: List[Action] = ([_ACCEPT_ACTION, _REJECT_ACTION] if _can_pay(state.players[state.trade_responder], offer.get)
+                         else [_REJECT_ACTION])
+    out.extend(counter_candidates(state))
+    return out
+
+
+def counter_candidates(state: GameState, responder: Optional[int] = None) -> List[Action]:
+    """The bounded ``COUNTER_TRADE`` list for the responder to the pending offer (counters rule only).
+
+    Small edits of the mirrored deal (the responder would pay ``offer.get`` and receive ``offer.give``):
+    ask for one more card (any resource the responder does not pay), give one card fewer (when paying
+    two or more), or swap one card paid for another resource.  Only counters the responder can pay and
+    the proposer could pay are listed (the rest of the engine is perfect information too); :func:`apply`
+    accepts any well-formed counter the counterer holds.  ``[]`` when no counter is allowed (flag off,
+    no pending offer, or the pending offer is itself a counter).
+    """
+    offer = state.pending_trade
+    if not state.allow_counters or offer is None or offer.origin is not None:
+        return []
+    i = state.trade_responder if responder is None else responder
+    if i < 0 or i == offer.proposer:
+        return []
+    mine = state.players[i].resources
+    theirs = state.players[offer.proposer].resources
+    base_give = tuple(offer.get)     # what the responder pays in the offer as proposed
+    base_get = tuple(offer.give)     # what it receives
+    out: List[Action] = []
+    seen = set()
+
+    def add(g, w) -> None:
+        g, w = tuple(g), tuple(w)
+        if not any(g) or not any(w) or (g, w) == (base_give, base_get) or (g, w) in seen:
+            return
+        for r in range(5):
+            if (g[r] and w[r]) or mine[r] < g[r] or theirs[r] < w[r]:
+                return
+        seen.add((g, w))
+        out.append((A.COUNTER_TRADE, g, w))
+
+    for r in range(5):                                   # ask for one more card
+        if not base_give[r]:
+            w = list(base_get)
+            w[r] += 1
+            add(base_give, w)
+    if sum(base_give) >= 2:                              # give one fewer
+        for r in range(5):
+            if base_give[r]:
+                g = list(base_give)
+                g[r] -= 1
+                add(g, base_get)
+    for r in range(5):                                   # swap one card we give
+        if base_give[r]:
+            for t in range(5):
+                if t != r and not base_get[t]:
+                    g = list(base_give)
+                    g[r] -= 1
+                    g[t] += 1
+                    add(g, base_get)
+    return out
 
 
 def _legal_roll(state: GameState) -> List[Action]:
@@ -1182,9 +1281,39 @@ def _next_responder(s: GameState, offer: TradeOffer) -> int:
     return -1
 
 
+def _present_counter(s: GameState, offer: TradeOffer) -> bool:
+    """Counters rule: show the next stored counter of ``offer`` to its proposer (see the module docstring).
+
+    The counter becomes the pending offer (proposer = counterer, responder = the current player, every
+    other seat pre-filled as a rejection, ``origin`` = the suspended ``offer``).  Counters the current
+    player cannot pay are dropped.  Returns False (and clears ``offer.counters``) when none is left.
+    """
+    cur = offer.proposer
+    n = len(s.players)
+    counters = offer.counters or {}
+    for k in range(1, n):
+        i = (cur + k) % n
+        c = counters.pop(i, None)
+        if c is None:
+            continue
+        give, get = c
+        if not _can_pay(s.players[cur], get) or not _can_pay(s.players[i], give):
+            continue
+        ctr = TradeOffer(i, list(give), list(get), {j: False for j in range(n) if j != i and j != cur})
+        ctr.origin = offer
+        s.pending_trade = ctr
+        s.trade_responder = cur
+        s.phase = PHASE_TRADE_RESPONSE
+        return True
+    offer.counters = None
+    return False
+
+
 def _finish_responses(s: GameState, offer: TradeOffer) -> None:
-    """Called when no responder is left: go to TRADE_SELECT or back to MAIN."""
+    """Called when no responder is left: show a counter (counters rule), go to TRADE_SELECT or back to MAIN."""
     s.trade_responder = -1
+    if offer.counters and _present_counter(s, offer):
+        return
     if any(offer.responses.values()):
         s.phase = PHASE_TRADE_SELECT
     else:
@@ -1219,8 +1348,8 @@ def _h_propose_trade(s: GameState, a: Action, rng: Optional[random.Random]) -> T
     n = len(s.players)
     for k in range(1, n):
         i = (cur + k) % n
-        if not _can_pay(s.players[i], get):
-            offer.responses[i] = False  # auto-reject: cannot pay
+        if not _can_pay(s.players[i], get) and not (s.allow_counters and any(s.players[i].resources)):
+            offer.responses[i] = False  # auto-reject: cannot pay (and cannot counter: counters rule off / no cards)
     s.pending_trade = offer
     s.trades_this_turn += 1
     nxt = _next_responder(s, offer)
@@ -1241,7 +1370,86 @@ def _respond(s: GameState, a: Action, accepted: bool) -> Tuple[int, ...]:
         _fail("no trade response pending")
     if accepted and not _can_pay(s.players[i], offer.get):
         _fail("responder cannot pay")
+    if offer.origin is not None:
+        return _answer_counter(s, offer, i, accepted)
     offer.responses[i] = accepted
+    nxt = _next_responder(s, offer)
+    if nxt < 0:
+        _finish_responses(s, offer)
+    else:
+        s.trade_responder = nxt
+    return ()
+
+
+def _answer_counter(s: GameState, ctr: TradeOffer, cur: int, accepted: bool) -> Tuple[int, ...]:
+    """The current player answers a counter-offer (counters rule): accept = trade now and close the round,
+    reject = restore the original offer and continue with its next counter / partner selection."""
+    other = ctr.proposer
+    if accepted:
+        if not _can_pay(s.players[other], ctr.give):
+            _fail("cards no longer available")
+        cr, orr = s.players[cur].resources, s.players[other].resources
+        for r in range(5):
+            g, t = ctr.give[r], ctr.get[r]
+            if g:
+                orr[r] -= g
+                cr[r] += g
+            if t:
+                cr[r] -= t
+                orr[r] += t
+        s.pending_trade = None
+        s.trade_responder = -1
+        s.phase = PHASE_MAIN
+        return (cur, other)
+    orig = ctr.origin
+    s.pending_trade = orig
+    _finish_responses(s, orig)
+    return ()
+
+
+def _h_counter_trade(s: GameState, a: Action, rng: Optional[random.Random]) -> Tuple[int, ...]:
+    """``(COUNTER_TRADE, give, get)``: the responder answers the current player's offer with a modified deal.
+
+    Counters rule only (``GameState.allow_counters``).  ``give`` / ``get`` are from the counterer's side;
+    both non-empty, disjoint, non-negative, the counterer must hold ``give`` and the deal must differ from
+    simply accepting.  The original offer counts it as a rejection; the counter is shown to the current
+    player once everyone has answered (see the module docstring).  A counter cannot be countered.
+    """
+    if len(a) != 3:
+        _fail("bad action")
+    if not s.allow_counters:
+        _fail("counter-offers are off (GameState.allow_counters)")
+    if s.phase != PHASE_TRADE_RESPONSE:
+        _fail("no trade response pending")
+    offer = s.pending_trade
+    i = s.trade_responder
+    if offer is None or i < 0 or i in offer.responses or i == offer.proposer:
+        _fail("no trade response pending")
+    if offer.origin is not None:
+        _fail("a counter-offer cannot be countered")
+    give, get = a[1], a[2]
+    try:
+        if len(give) != 5 or len(get) != 5:
+            _fail("trade vectors need 5 counts")
+        give = [int(x) for x in give]
+        get = [int(x) for x in get]
+    except (TypeError, ValueError):
+        _fail("trade vectors need 5 counts")
+    for r in range(5):
+        if give[r] < 0 or get[r] < 0:
+            _fail("negative trade counts")
+        if give[r] and get[r]:
+            _fail("give and get must be disjoint")
+    if not any(give) or not any(get):
+        _fail("trade must be non-empty on both sides")
+    if give == list(offer.get) and get == list(offer.give):
+        _fail("a counter must change the deal (accept it instead)")
+    if not _can_pay(s.players[i], give):
+        _fail("counterer does not hold the offered cards")
+    offer.responses[i] = False
+    if offer.counters is None:
+        offer.counters = {}
+    offer.counters[i] = (give, get)
     nxt = _next_responder(s, offer)
     if nxt < 0:
         _finish_responses(s, offer)
@@ -1348,6 +1556,7 @@ _HANDLERS: Dict[str, Callable[[GameState, Action, Optional[random.Random]], Tupl
     A.EXECUTE_TRADE: _h_execute_trade,
     A.CANCEL_TRADE: _h_cancel_trade,
     A.END_TURN: _h_end_turn,
+    A.COUNTER_TRADE: _h_counter_trade,     # counters rule only (refused while GameState.allow_counters is off)
 }
 
 

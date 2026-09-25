@@ -94,6 +94,15 @@ class SearchConfig:
     paths_crowd: float = 1.0        # crowding strength: scales the waste cost of fighting a crowded race (0 = none)
     paths_priors: int = 1           # with paths = 1: race-aware move-ordering nudges (dev buys, Longest Road roads)
     paths_spots: int = 0            # with paths = 1: rescale the settlement-reach terms by our chance at contested spots
+    # Counter-offers and out-of-turn trade analysis (docs/STRATEGY.md "Counter-offers").  Off by default: with
+    # counters = 0 COUNTER_TRADE is never a candidate (it only exists under the rules flag
+    # GameState.allow_counters anyway) and with respond_lookahead = 0 an answer to an offer is valued exactly as
+    # before.  None of the four fields reaches C++ (native_level_dict is unchanged); a state with the rules flag
+    # on always takes the Python lookahead (accel.python_only).
+    counters: int = 0               # 1 = consider counter-offers when answering an offer (needs the rules flag)
+    counter_candidates: int = 2     # counters expanded per offer, ranked by P(proposer accepts) x our gain
+    counter_aggr: float = 1.0       # ranking score P^(1 / aggr) x gain: > 1 greedier counters, < 1 safer ones
+    respond_lookahead: int = 0      # 1 = value accept / reject / counter after the rest of the proposer's turn
 
 
 @dataclass
@@ -157,7 +166,9 @@ def reduced_config(cfg: SearchConfig, depth: int, budget: int) -> SearchConfig:
                         trade_cap_early=cfg.trade_cap_early, trade_cap_late=cfg.trade_cap_late,
                         opponent_proposals=0, dump_candidates=min(2, cfg.dump_candidates),
                         native_future=cfg.native_future, paths=cfg.paths, paths_w=cfg.paths_w,
-                        paths_crowd=cfg.paths_crowd, paths_priors=cfg.paths_priors, paths_spots=cfg.paths_spots)
+                        paths_crowd=cfg.paths_crowd, paths_priors=cfg.paths_priors, paths_spots=cfg.paths_spots,
+                        counters=cfg.counters, counter_candidates=cfg.counter_candidates,
+                        counter_aggr=cfg.counter_aggr, respond_lookahead=cfg.respond_lookahead)
 
 
 def lookahead_weight(cfg: SearchConfig) -> float:
@@ -220,6 +231,7 @@ class Searcher:
         self._arb_cache: Dict[tuple, list] = {}        # arbitrage deals per (hands, trades) within one search
         self._shift = 0.0            # mean(future - static) of the lookahead set, applied to static leaves
         self._paths = None           # winpaths.PathsEvaluator of the current search (config.paths = 1 only)
+        self._counter_rank: Dict[Action, int] = {}     # counters kept by _counter_filter (config.counters = 1)
         # Native lookahead (C++): the evaluator's twin handle, or None -> the Python _future_values below.
         self._native_ev = None
         self._native_key = None
@@ -250,6 +262,7 @@ class Searcher:
         self._chain_next = {}
         self._arb_cache = {}
         self._paths = None
+        self._counter_rank = {}
         if self._native_ev is not None and _accel.evaluator_key(self.evaluator) != self._native_key:
             # The net's arrays were replaced (set_params / load): rebuild the native twin.
             self._native_ev = _accel.native_evaluator(self.evaluator)
@@ -268,6 +281,9 @@ class Searcher:
         frontier = [root]
         self._shift = 0.0
         group_id = 0
+        # Answering another player's offer with respond_lookahead: every outcome has the rest of the proposer's
+        # turn played out (_outcomes), so it is an end-of-decision node even when we are the next to roll.
+        out_of_turn = bool(cfg.respond_lookahead) and state.phase == PHASE_TRADE_RESPONSE and state.current != me
         for level in range(cfg.max_actions_per_turn + 1):
             if not frontier or self._budget_exhausted():
                 break
@@ -284,7 +300,7 @@ class Searcher:
                     group_id += 1
                     for p, s2 in outcomes:
                         child = _Node(s2, node.prob * p, node.line + [a], group_id)
-                        child.finished = self._is_finished(s2, me)
+                        child.finished = out_of_turn or self._is_finished(s2, me)
                         kids.append((p, child))
                         new_nodes.append(child)
                     if kids:
@@ -449,7 +465,41 @@ class Searcher:
                         priors[i] = max(priors[i], 62.0 - k)                     # plan bank trades sit at 60
         if self._paths is not None and cfg.paths_priors:
             priors = self._paths.ctx.adjust_priors(state, legal, priors)
+        if state.phase == PHASE_TRADE_RESPONSE and self._counter_rank:
+            for i, a in enumerate(legal):          # our ranked counters (_counter_filter) are always expanded
+                k = self._counter_rank.get(a)
+                if k is not None:
+                    priors[i] = max(priors[i], 75.0 - k)
         return priors
+
+    def _counter_filter(self, state: GameState, legal: List[Action], me: int) -> List[Action]:
+        """Counter-offer rules: which COUNTER_TRADE candidates this node keeps.
+
+        ``counters = 0`` (default) drops all of them.  Otherwise the engine's bounded edits are ranked by
+        ``counteroffers.rank_counters`` (P(the proposer accepts) x our gain, affordable, never feeding the
+        leader, no counters in the late-game "no trades with a player ahead" situation) and the best
+        ``counter_candidates`` are kept; their explanation records the deal and the acceptance probability.
+        """
+        counters = [a for a in legal if a[0] == A.COUNTER_TRADE]
+        if not counters:
+            return legal
+        rest = [a for a in legal if a[0] != A.COUNTER_TRADE]
+        cfg = self.config
+        if not cfg.counters or cfg.counter_candidates <= 0:
+            return rest
+        from .counteroffers import rank_counters     # lazy: never imported while counters = 0
+        ev = self.evaluator if self._paths is None else self._paths
+        model = self.model if cfg.use_opponent_model else None
+        try:
+            ranked = rank_counters(state, me, counters, evaluator=ev, model=model, belief=self.belief,
+                                   politics=self.politics, aggr=cfg.counter_aggr)
+        except Exception:
+            ranked = []
+        keep = [d for d in ranked if d["score"] > 0.0][:cfg.counter_candidates]
+        for k, d in enumerate(keep):
+            self._counter_rank[d["action"]] = k
+            self._political_reasons.setdefault(d["action"], d["reason"])
+        return rest + [d["action"] for d in keep]
 
     def _candidates(self, state: GameState, me: int, force_end: bool,
                     line: Optional[Sequence[Action]] = None) -> List[Action]:
@@ -457,6 +507,8 @@ class Searcher:
         legal = E.legal_actions(state)
         if not legal:
             return []
+        if state.allow_counters and state.phase == PHASE_TRADE_RESPONSE:
+            legal = self._counter_filter(state, legal, me)
         if force_end and (A.END_TURN,) in legal:
             return [(A.END_TURN,)]
         if len(legal) == 1:
@@ -537,22 +589,78 @@ class Searcher:
             outs = self._trade_outcomes(state, action, me)
         elif kind in (A.ACCEPT_TRADE, A.REJECT_TRADE) and state.phase == PHASE_TRADE_RESPONSE:
             outs = self._response_outcomes(state, action, me)
+        elif kind == A.COUNTER_TRADE:
+            outs = self._counter_outcomes(state, action, me)
         else:
             outs = [(1.0, self._apply(state, action))]
-        return [(p, self._autoplay_others(s, me)) for p, s in outs]
+        outs = [(p, self._autoplay_others(s, me)) for p, s in outs]
+        if self.config.respond_lookahead and state.phase == PHASE_TRADE_RESPONSE and state.current != me:
+            # (2) out-of-turn analysis: value every answer after the rest of the proposer's turn.
+            outs = [(p, self._finish_proposer_turn(s, me)) for p, s in outs]
+        return outs
+
+    def _finish_proposer_turn(self, s: GameState, me: int) -> GameState:
+        """The rest of the current (proposing) player's turn, played greedily like the lookahead's opponents
+        (``_greedy_turn``; they have rolled already, so only dev draws / steals are random) up to and including
+        their END_TURN.  ``s`` is returned unchanged when the game is over or it is our turn."""
+        if s.phase == PHASE_GAME_OVER or s.current == me:
+            return s
+        return self._greedy_turn(s, s.current, 0, me)
 
     def _response_outcomes(self, state: GameState, action: Action, me: int) -> List[Tuple[float, GameState]]:
         """Our ACCEPT / REJECT: let the other responders answer and the proposer choose a
         partner (uniformly among accepters), so the leaf contains the executed trade."""
-        offer = state.pending_trade
-        s = self._apply(state, action)
+        return self._resolve_offer(self._apply(state, action), me)
+
+    def _counter_accept_probability(self, s: GameState, ctr, me: int) -> float:
+        """P(the current player accepts our counter ``ctr``, shown to them now); lower when somebody accepted
+        the original offer as proposed (they could trade with them instead)."""
+        cur = s.current
+        orig = ctr.origin
+        alternatives = orig is not None and any(orig.responses.values())
+        if self.model is not None and self.config.use_opponent_model:
+            return self.model.predict_counter_accept(s, cur, orig, ctr.give, ctr.get, counterer=me,
+                                                     belief=self.belief, politics=self.politics,
+                                                     alternatives=alternatives)
+        ok, _ = should_accept(s, cur, ctr, politics=self.politics)
+        return (0.75 if ok else 0.1) * (0.5 if alternatives else 1.0)
+
+    def _counter_outcomes(self, state: GameState, action: Action, me: int) -> List[Tuple[float, GameState]]:
+        """Our COUNTER_TRADE: the other responders answer the original offer (accept / reject, as in
+        ``_response_outcomes``), then the proposer sees our counter - a chance node with
+        :meth:`_counter_accept_probability`: taken (the trade executes, the round closes) or rejected (the
+        original offer continues: other counters, then the proposer's partner choice)."""
+        outs: List[Tuple[float, GameState]] = []
+        for q, s1 in self._resolve_offer(self._apply(state, action), me):
+            ctr = s1.pending_trade
+            if not (s1.phase == PHASE_TRADE_RESPONSE and ctr is not None and ctr.origin is not None
+                    and ctr.proposer == me):
+                outs.append((q, s1))             # dropped (they cannot pay) or the round closed earlier
+                continue
+            p = min(1.0, max(0.0, self._counter_accept_probability(s1, ctr, me)))
+            if p > 1e-4:
+                outs.append((q * p, self._apply(s1, (A.ACCEPT_TRADE,))))
+            if 1.0 - p > 1e-4:
+                for q2, s2 in self._resolve_offer(self._apply(s1, (A.REJECT_TRADE,)), me):
+                    outs.append((q * (1.0 - p) * q2, s2))
+        return outs
+
+    def _resolve_offer(self, s: GameState, me: int) -> List[Tuple[float, GameState]]:
+        """After our answer: the remaining responders answer (``should_accept``), then the proposer picks a
+        partner uniformly among the accepters.  Stops early (one outcome) at a decision of ours (counter-offer
+        rules: a counter shown to us as the current player, or our own partner choice) and when our own counter
+        is shown to the proposer (``_counter_outcomes`` makes that a chance node)."""
         guard = 0
-        while s.phase == PHASE_TRADE_RESPONSE and s.pending_trade is not None and guard < 8:
+        while (s.phase == PHASE_TRADE_RESPONSE and s.pending_trade is not None and guard < 8
+               and E.acting_player(s) != me):
+            po = s.pending_trade
+            if po.origin is not None and po.proposer == me:
+                break
             j = E.acting_player(s)
-            ok, _ = should_accept(s, j, s.pending_trade, politics=self.politics)
+            ok, _ = should_accept(s, j, po, politics=self.politics)
             s = self._apply(s, (A.ACCEPT_TRADE,) if ok and (A.ACCEPT_TRADE,) in E.legal_actions(s) else (A.REJECT_TRADE,))
             guard += 1
-        if s.phase != PHASE_TRADE_SELECT or s.pending_trade is None:
+        if s.phase != PHASE_TRADE_SELECT or s.pending_trade is None or s.current == me:
             return [(1.0, s)]
         accepters = [j for j, ok in s.pending_trade.responses.items() if ok]
         legal = E.legal_actions(s)
@@ -780,6 +888,9 @@ class Searcher:
         Returns ``None`` when a state cannot be represented natively; the caller then runs the Python body.
         """
         cfg = self.config
+        if any(s.allow_counters for s in states):
+            # Counter-offer rules: the C++ engine does not implement them (accel.python_only), Python lookahead.
+            return None
         if any(s.phase == PHASE_TRADE_RESPONSE and s.pending_trade is not None for s in states):
             # Other responders still have to answer a pending offer: the Python simulation asks should_accept
             # for them, the extension only rejects.  Searcher.search never produces such end-of-turn states

@@ -233,6 +233,35 @@ class HandBelief:
             if get[r]:
                 self.observe_gain(a, r, get[r])
 
+    def observe_counter(self, i: int, gives: Sequence[int], asks: Sequence[int], strength: float = 0.5) -> None:
+        """Player ``i`` made a counter-offer giving ``gives`` for ``asks`` (counter-offer rules).
+
+        Only held cards can be offered, so ``i`` holds at least ``gives`` (those expectations are raised to
+        it); asking for a resource hints they are short of it (soft: its expectation shrinks by ``strength``).
+        The hand size is unchanged (the other resources absorb the difference proportionally).
+        """
+        if self.exact[i] or self.size[i] <= 0:
+            return
+        e = self.expected[i]
+        for r in range(5):
+            if asks[r] and not gives[r]:
+                e[r] *= (1.0 - strength)
+        pinned = [r for r in range(5) if gives[r]]
+        for r in pinned:
+            e[r] = max(e[r], float(gives[r]))
+        free = [r for r in range(5) if not gives[r]]
+        room = self.size[i] - sum(e[r] for r in pinned)
+        tot = sum(e[r] for r in free)
+        if room < -1e-9:
+            self._renormalise(i)
+            return
+        if tot > 1e-9:
+            for r in free:
+                e[r] *= room / tot
+        elif free:
+            for r in free:
+                e[r] = room / len(free)
+
     def observe_discard(self, i: int, counts: Optional[Sequence[int]] = None, n: Optional[int] = None) -> None:
         """Player ``i`` discarded ``counts`` (shown) or ``n`` cards whose types were not shown
         (expected removal of a uniformly random discard)."""
@@ -616,6 +645,27 @@ class CardCounter(HandBelief):
         """``a`` gives ``give`` to ``b`` and receives ``get`` from ``b``."""
         self.observe_delta(a, [get[r] - give[r] for r in range(5)])
         self.observe_delta(b, [give[r] - get[r] for r in range(5)])
+
+    def observe_counter(self, i: int, gives: Sequence[int], asks: Sequence[int], strength: float = 0.5) -> None:
+        """Player ``i`` made a counter-offer giving ``gives`` for ``asks`` (counter-offer rules).
+
+        Hard: hypotheses where ``i`` does not hold ``gives`` are dropped (only held cards can be offered).
+        Soft: every asked resource ``i`` already holds as many of as asked for scales the hypothesis by
+        ``1 - strength`` (asking hints they are short of it).  A contradiction leaves the mixture unchanged.
+        """
+        g = [int(x) for x in gives]
+        k = [int(x) for x in asks]
+
+        def f(joint, w):
+            h = joint[i]
+            if any(h[r] < g[r] for r in range(5)):
+                return ()
+            for r in range(5):
+                if k[r] and h[r] >= k[r]:
+                    w *= (1.0 - strength)
+            return ((joint, w),)
+
+        self._update(f, "counter")
 
     def observe_discard(self, i: int, counts: Optional[Sequence[int]] = None, n: Optional[int] = None) -> None:
         """Player ``i`` discarded ``counts`` (shown; weighted by its random-discard likelihood) or

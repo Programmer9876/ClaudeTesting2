@@ -252,6 +252,14 @@ class PoliticalState:
             offer = state.pending_trade
             if offer is not None and offer.proposer != player:
                 self.adjust(player, offer.proposer, 0.02 * sw)
+                if offer.origin is not None:
+                    # Counter-offer rules: the current player took a counter, which executes at once (there is
+                    # no EXECUTE_TRADE): the same goodwill as a completed trade, the counterer is the partner.
+                    gain = sum((offer.give[r] - offer.get[r]) * RESOURCE_DEMAND[r] for r in range(5))
+                    d = (0.04 + 0.03 * max(0.0, gain)) * sw
+                    self.adjust(player, offer.proposer, d, f"{_pname(state, player)} traded with "
+                                                           f"{_pname(state, offer.proposer)}")
+                    self.adjust(offer.proposer, player, d)
         elif kind == A.END_TURN:
             self.decay()
             self.coalitions.decay()

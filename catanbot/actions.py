@@ -24,6 +24,10 @@ easy to serialise.  ``kind`` is one of the string constants below.
     (EXECUTE_TRADE, partner)              # in PHASE_TRADE_SELECT: proposer chooses a partner
     (CANCEL_TRADE,)                       # in PHASE_TRADE_SELECT
     (END_TURN,)
+    (COUNTER_TRADE, give_counts, get_counts)   # rules variant (GameState.allow_counters): a responder answers
+                                          #   the current player's offer with a modified deal; give / get
+                                          #   are from the COUNTERER's side (what it hands over / wants).
+                                          #   Not in ALL_KINDS (the default rules never produce it).
 """
 from __future__ import annotations
 
@@ -51,12 +55,16 @@ REJECT_TRADE = "reject_trade"
 EXECUTE_TRADE = "execute_trade"
 CANCEL_TRADE = "cancel_trade"
 END_TURN = "end_turn"
+# Rules variant (off by default): Colonist.io counter-offers, see engine._h_counter_trade.
+COUNTER_TRADE = "counter_trade"
 
 ALL_KINDS = [
     SETUP_SETTLEMENT, SETUP_ROAD, ROLL, DISCARD, MOVE_ROBBER, BUILD_ROAD, BUILD_SETTLEMENT,
     BUILD_CITY, BUY_DEV, PLAY_KNIGHT, PLAY_ROAD_BUILDING, PLAY_YEAR_OF_PLENTY, PLAY_MONOPOLY,
     BANK_TRADE, PROPOSE_TRADE, ACCEPT_TRADE, REJECT_TRADE, EXECUTE_TRADE, CANCEL_TRADE, END_TURN,
 ]
+# Kinds that only exist under a non-default rules flag (kept out of ALL_KINDS: a default game never plays them).
+VARIANT_KINDS = [COUNTER_TRADE]
 
 Action = Tuple
 
@@ -123,6 +131,8 @@ def describe(action: Action, state=None) -> str:
         return f"Complete the trade with {pname(action[1])}"
     if kind == CANCEL_TRADE:
         return "Cancel the trade offer"
+    if kind == COUNTER_TRADE:
+        return f"Counter-offer: give {_counts_str(action[1])} for {_counts_str(action[2])}"
     if kind == END_TURN:
         return "End turn"
     return str(action)

@@ -115,6 +115,10 @@ class OpponentProfile:
         self.builds = {"road": 0.0, "settlement": 0.0, "city": 0.0, "dev": 0.0}
         self.surprise = _EW()                        # action != our heuristic's top pick
         self.observations = 0
+        # Counter-offers (rules variant GameState.allow_counters; all stay empty in a default game):
+        self.counters = _EW()                        # answers an offer with a counter (vs accept / reject)
+        self.counter_accept = _EW()                  # as the current player, accepts a counter made to them
+        self.short = [0.0] * 5                       # card-counting hint: recently asked for r in a counter
 
     # --- valuation updates -------------------------------------------------
     def _shift_value(self, up: Sequence[int], down: Sequence[int], lr: float) -> None:
@@ -142,6 +146,34 @@ class OpponentProfile:
         else:
             self._shift_value(pays, receives, VALUE_LR * 0.5)
         self.observations += 1
+
+    def note_counter(self, receives: Sequence[int], pays: Sequence[int]) -> None:
+        """They countered an offer: they would receive ``receives`` and pay ``pays``.
+
+        Strong evidence (stronger than an accept): they want this trade and named the price themselves, so
+        the implied valuation moves 1.5x an accept's step towards what they ask for, the per-resource
+        tendencies count an acceptance for every card on both sides, and the overall acceptance counts half
+        (they declined the deal as proposed but want a deal).  The resources they asked for are recorded as
+        a shortage hint (``short``, decays every turn): they probably do not hold enough of them.
+        """
+        self.counters.add(1.0)
+        self.accept.add(0.5)
+        for r in range(5):
+            if receives[r]:
+                self.accept_get[r].add(1.0)
+                self.short[r] = min(1.0, self.short[r] + 0.6)
+            if pays[r]:
+                self.accept_give[r].add(1.0)
+        self._shift_value(receives, pays, VALUE_LR * 1.5)
+        self.observations += 1
+
+    def note_counter_answer(self, accepted: bool) -> None:
+        """As the current player they answered a counter-offer made to them."""
+        self.counter_accept.add(1.0 if accepted else 0.0)
+
+    def decay_shortage(self, factor: float = 0.6) -> None:
+        if any(self.short):
+            self.short = [x * factor for x in self.short]
 
     def note_proposal(self, gives: Sequence[int], wants: Sequence[int]) -> None:
         self.proposes.add(1.0)
@@ -220,6 +252,10 @@ class OpponentProfile:
             parts.append(f"favours {fav}s")
         if self.surprise.weight >= 3:
             parts.append(f"deviates from expected play {self.surprise_rate():.0%}")
+        if self.counters.num >= 0.5:
+            parts.append("makes counter-offers")
+        if self.counter_accept.weight >= 1:
+            parts.append(f"takes {self.counter_accept.mean():.0%} of counter-offers")
         return "; ".join(parts)
 
     # --- persistence --------------------------------------------------------
@@ -238,6 +274,9 @@ class OpponentProfile:
             "builds": dict(self.builds),
             "surprise": self.surprise.to_list(),
             "observations": self.observations,
+            "counters": self.counters.to_list(),
+            "counter_accept": self.counter_accept.to_list(),
+            "short": list(self.short),
         }
 
     @staticmethod
@@ -255,6 +294,9 @@ class OpponentProfile:
         p.builds = {k: float(v) for k, v in d.get("builds", p.builds).items()}
         p.surprise = _EW.from_list(d.get("surprise", [0, 0]))
         p.observations = int(d.get("observations", 0))
+        p.counters = _EW.from_list(d.get("counters", [0, 0]))
+        p.counter_accept = _EW.from_list(d.get("counter_accept", [0, 0]))
+        p.short = [float(x) for x in d.get("short", [0.0] * 5)]
         return p
 
 
@@ -337,12 +379,15 @@ class OpponentModel:
             offer = state_before.pending_trade
             if offer is not None:
                 prof.note_accept(offer.give, offer.get, kind == A.ACCEPT_TRADE)
+                if offer.origin is not None:          # the current player answered a counter-offer
+                    prof.note_counter_answer(kind == A.ACCEPT_TRADE)
+                    if kind == A.ACCEPT_TRADE:        # the counter executes at once (no EXECUTE_TRADE follows)
+                        self._note_traded(state_before, player, offer.proposer)
+        elif kind == A.COUNTER_TRADE:
+            # (COUNTER_TRADE, give, get): the counterer would pay ``give`` and receive ``get``.
+            prof.note_counter(action[2], action[1])
         elif kind == A.EXECUTE_TRADE:
-            partner = _pname(state_before, action[1])
-            prof.traded_with[partner] = prof.traded_with.get(partner, 0.0) * DECAY + 1.0
-            pp = self.profile(partner)
-            me = _pname(state_before, player)
-            pp.traded_with[me] = pp.traded_with.get(me, 0.0) * DECAY + 1.0
+            self._note_traded(state_before, player, action[1])
         elif kind == A.BANK_TRADE:
             ratio = state_before.port_ratio(player, action[1])
             prof.note_bank_trade(action[1], ratio, action[2])
@@ -365,6 +410,18 @@ class OpponentModel:
             p = state_before.players[player]
             n = p.total_resources if p.hand_known else p.hand_size
             prof.risk_over7.add(1.0 if n > 7 else 0.0)
+            for q in self.profiles.values():      # the counter shortage hints fade turn by turn
+                q.decay_shortage()
+
+    def _note_traded(self, state: GameState, a: int, b: int) -> None:
+        pa, pb = self.profile_of(state, a), self.profile_of(state, b)
+        na, nb = _pname(state, a), _pname(state, b)
+        pa.traded_with[nb] = pa.traded_with.get(nb, 0.0) * DECAY + 1.0
+        pb.traded_with[na] = pb.traded_with.get(na, 0.0) * DECAY + 1.0
+
+    def shortage_hint(self, state: GameState, j: int) -> List[float]:
+        """Per resource 0..1: how strongly ``j``'s recent counter-offers say they are short of it."""
+        return list(self.profile_of(state, j).short)
 
     def observe_event(self, state: GameState, text: str) -> Optional[str]:
         """Parse a human-typed event such as::
@@ -470,6 +527,11 @@ class OpponentModel:
             if can_pay <= 0.0:
                 return 0.0
         prof = self.profile_of(state, j)
+        if not p.hand_known and any(prof.short):
+            # They recently asked for these in a counter-offer: less likely to hold them (card-counting hint).
+            for r in range(5):
+                if pays[r] > 0 and prof.short[r] > 0:
+                    can_pay *= 1.0 - 0.5 * prof.short[r]
         # Value of the deal for them by their implied valuation, plus their needs.
         vals = list(prof.value)
         # Needs: resources they are short of for a city / settlement / dev, shaded by
@@ -499,6 +561,61 @@ class OpponentModel:
             if lead == proposer:
                 pvp = state.public_vp(proposer) + expected_hidden_vp(state, proposer)
                 logit -= 0.6 * max(0.0, pvp - 5.0)
+        prob = 1.0 / (1.0 + math.exp(-logit))
+        return max(0.0, min(1.0, prob * can_pay))
+
+    def predict_counter_accept(self, state: GameState, j: int, original: Optional[TradeOffer],
+                               receives: Sequence[int], pays: Sequence[int], counterer: Optional[int] = None,
+                               belief: Optional[HandBelief] = None, politics=None,
+                               alternatives: bool = False) -> float:
+        """P(the current player ``j`` accepts a counter-offer: they receive ``receives`` and pay ``pays``).
+
+        ``j`` proposed ``original`` (they give ``original.give`` and want ``original.get``), so they want this
+        trade: the logit starts from a strong prior for their own deal (+1.4) and moves by 1.8 x the change of
+        the deal's worth for them (implied valuation x their needs, like :meth:`predict_accept`) - a counter
+        asking one card more is ~30 %, a swap for a card they value alike ~75 %.  Their observed record on
+        counters, the game stage, favour slack towards the counterer and the leader penalty shift it;
+        ``alternatives`` (somebody accepted the original as proposed) costs 1.2 logits.  ``original=None``
+        falls back to :meth:`predict_accept`.
+        """
+        if original is None:
+            return self.predict_accept(state, j, receives, pays, proposer=counterer, belief=belief, politics=politics)
+        p = state.players[j]
+        can_pay = 1.0
+        if p.hand_known:
+            if any(p.resources[r] < pays[r] for r in range(5)):
+                return 0.0
+        elif belief is not None:
+            for r in range(5):
+                if pays[r] > 0:
+                    can_pay *= belief.probability_has(j, r, pays[r])
+            if can_pay <= 0.0:
+                return 0.0
+        prof = self.profile_of(state, j)
+        vals = prof.value
+        prod = player_production(state, j, ignore_robber=True)
+        pref = prof.build_preference()
+
+        def worth(recv: Sequence[int], pay: Sequence[int]) -> float:
+            g = 0.0
+            for r in range(5):
+                boost = (1.0 + 0.6 / (1.0 + 8.0 * prod[r])) * (0.8 + 0.2 * pref[r])
+                g += vals[r] * boost * (recv[r] - pay[r])
+            return g + 0.15 * (sum(recv) - sum(pay))
+
+        logit = 1.4 + 1.8 * (worth(receives, pays) - worth(original.get, original.give))
+        acc = prof.acceptance_rate()
+        logit += 2.5 * (acc - 0.45) * (0.3 + 0.7 * prof.confidence())
+        if prof.counter_accept.weight >= 1:
+            logit += 2.0 * (prof.counter_accept.mean() - 0.5) * min(1.0, prof.counter_accept.weight / 3.0)
+        logit += 1.2 * (trade_stage_factor(state) - 0.65)
+        if politics is not None and counterer is not None:
+            logit += politics.favor_slack(state, j, counterer)
+        if counterer is not None and _leader(state, j) == counterer:
+            cvp = state.public_vp(counterer) + expected_hidden_vp(state, counterer)
+            logit -= 0.6 * max(0.0, cvp - 5.0)
+        if alternatives:
+            logit -= 1.2
         prob = 1.0 / (1.0 + math.exp(-logit))
         return max(0.0, min(1.0, prob * can_pay))
 

@@ -307,6 +307,10 @@ def action_priors(state: GameState, actions: Sequence[Action], player: Optional[
             v = 1.0 if feeding else 70.0 - 10.0 * (threat(state, a[1]) - 1.0)
         elif k == A.CANCEL_TRADE:
             v = 5.0
+        elif k == A.COUNTER_TRADE:
+            # Counter-offer rules only: below both answers, so rule-based play never counters; the search bot
+            # (SearchConfig.counters) ranks its own counters (catanbot/counteroffers.py).
+            v = 2.0
         elif k == A.END_TURN:
             v = 12.0
         else:

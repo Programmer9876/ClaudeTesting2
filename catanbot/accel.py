@@ -33,7 +33,7 @@ __all__ = ["AVAILABLE", "extract", "extract_batch", "longest_road_length", "stat
            "ENGINE_ACTIVE", "ENGINE_ENV", "engine_enabled_by_env", "engine_available", "engine_legal_actions",
            "engine_apply", "engine_apply_inplace", "engine_apply_forced", "random_playout_fast",
            "NATIVE_SEARCH_ENV", "native_search_disabled_by_env", "native_search_available", "native_evaluator",
-           "evaluator_key", "robber_weights_bundle", "future_values"]
+           "evaluator_key", "robber_weights_bundle", "future_values", "python_only"]
 
 # Entry points every usable build provides; an older build missing one is stale and gets disabled by verify().
 _REQUIRED = ("extract_batch", "extract", "longest_road_length", "static_values", "static_value", "heuristic_evaluate",
@@ -215,8 +215,21 @@ def engine_available() -> bool:
 ENGINE_ACTIVE: bool = AVAILABLE and engine_enabled_by_env() and engine_available()
 
 
+def python_only(state) -> bool:
+    """True for a state the C++ engine / native search must never see: the counter-offer rules variant.
+
+    ``GameState.allow_counters`` (off by default) enables ``COUNTER_TRADE`` and the counter protocol, which only
+    the Python engine implements (docs/DESIGN.md "Counter-offers").  The engine wrappers below return ``None``
+    for such a state (the caller then runs the Python engine) and :func:`future_values` returns ``None`` (the
+    search then runs its Python lookahead).  A default state (flag off) is never affected.
+    """
+    return bool(getattr(state, "allow_counters", False))
+
+
 def engine_legal_actions(state):
     """C++ ``engine.legal_actions`` (same tuples, same order); ``None`` when the state is unsupported."""
+    if python_only(state):
+        return None
     try:
         return _core.legal_actions(state)
     except ValueError as exc:
@@ -231,6 +244,8 @@ def engine_apply(state, action, rng=None):
     ``rng`` may be ``None``, an int seed (C++ generator) or a ``random.Random``, which the extension
     consults exactly like the Python engine does (same calls, same order, same results).
     """
+    if python_only(state):
+        return None
     try:
         return _core.apply(state, action, rng)
     except ValueError as exc:
@@ -241,6 +256,8 @@ def engine_apply(state, action, rng=None):
 
 def engine_apply_inplace(state, action, rng=None):
     """C++ ``engine.apply_inplace`` (written back into the same objects); ``None`` when unsupported."""
+    if python_only(state):
+        return None
     try:
         return _core.apply_inplace(state, action, rng)
     except ValueError as exc:
@@ -251,11 +268,15 @@ def engine_apply_inplace(state, action, rng=None):
 
 def engine_apply_forced(state, action, drawn_index: int):
     """``engine.apply`` with the random choice given (steal / dev draw index, or a 2d6 pair index for ``(ROLL,)``)."""
+    if python_only(state):
+        raise ValueError("the C++ engine does not implement the counter-offer rules (GameState.allow_counters)")
     return _core.apply_forced(state, action, int(drawn_index))
 
 
 def random_playout_fast(state, seed=None, max_turns=None, max_actions: int = 2_000_000, trace: bool = False):
     """``engine.random_playout`` entirely in C++ (see ``core.random_playout_fast``); needs the extension."""
+    if python_only(state):
+        raise ValueError("the C++ engine does not implement the counter-offer rules (GameState.allow_counters)")
     return _core.random_playout_fast(state, seed, max_turns, int(max_actions), bool(trace))
 
 
@@ -435,7 +456,10 @@ def robber_weights_bundle(state, politics, model) -> Optional[dict]:
 
 def future_values(states, me: int, depth: int, levels, rolls, evaluator, robber=None, rng=None, deadline=None,
                   node_budget=None):
-    """``core.future_values`` -> ``(values, nodes)``; ``None`` for a state the extension cannot represent."""
+    """``core.future_values`` -> ``(values, nodes)``; ``None`` for a state the extension cannot represent
+    (or one under the counter-offer rules, :func:`python_only`)."""
+    if any(python_only(s) for s in states):
+        return None
     try:
         vals, nodes = _core.future_values(states, int(me), int(depth), levels, rolls, evaluator, robber, rng, deadline,
                                           node_budget, False)

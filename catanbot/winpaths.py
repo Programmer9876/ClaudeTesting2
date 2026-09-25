@@ -57,7 +57,8 @@ H_B = 2.0            #   (fitted on 7.6k turn-start states: remaining rounds = 0
 H_MIN = 1.0
 H_MAX = 16.0
 R_STAY = 2.0         # rounds the robber is expected to stay on a hex (share of the blocked income that counts)
-TAU = 0.35           # share of the port-converted income that counts as supply of another resource
+TAU = 0.35           # share of the port-converted income that counts as supply of another resource (one budget
+                     #   shared by a bundle's missing resources in the race rates, see bundle_rate)
 ETA = 0.6            # share of future roads that extend the longest trail
 HAND_W = 0.5         # cards in hand count half: flexible, but not committed
 TIE_LR = 1.5         # holder's tie bonus (a tie keeps the holder), Longest Road
@@ -153,6 +154,48 @@ def horizon(state: GameState, params: Optional[Dict[str, Any]] = None) -> float:
     vmax = max(_vp_estimate(state, i) for i in range(state.num_players))
     h = p["H_A"] + p["H_B"] * (B.VP_TO_WIN - vmax)
     return min(p["H_MAX"], max(p["H_MIN"], h))
+
+
+_ROAD_BUNDLE = (1, 1, 0, 0, 0)     # wood, brick
+_DEV_BUNDLE = (0, 0, 1, 1, 1)      # sheep, wheat, ore
+
+
+def bundle_rate(e: Sequence[float], ratio: Sequence[float], need: Sequence[int], eff: float) -> float:
+    """Bundles per round a seat can pay for: the largest ``k >= 0`` with
+
+        sum_r max(0, k need_r - e_r)  <=  eff * sum_r max(0, e_r - k need_r) / ratio_r
+
+    i.e. the missing cards of ``k`` bundles are bought with the surplus left after the bundle's own
+    cards, converted at the seat's port ratios.  One conversion budget is shared by every missing
+    resource (a per-resource ``TAU`` share would credit the same converted cards to each of them, so
+    a seat producing none of a bundle's resources would pay as fast as one missing a single card).
+    ``f(k) = rhs - lhs`` is decreasing and piecewise linear with breaks at ``e_r / need_r``: exact.
+    """
+    idx = [r for r in range(5) if need[r] > 0]
+
+    def f(k: float) -> float:
+        sur = 0.0
+        dfc = 0.0
+        for r in range(5):
+            x = e[r] - k * need[r]
+            if x > 0.0:
+                sur += x / ratio[r]
+            else:
+                dfc -= x
+        return eff * sur - dfc
+
+    prev = 0.0
+    fprev = f(0.0)
+    if fprev <= 0.0:
+        return 0.0
+    for bp in sorted({e[r] / need[r] for r in idx}):
+        if bp <= prev:
+            continue
+        fb = f(bp)
+        if fb < 0.0:
+            return prev + fprev * (bp - prev) / (fprev - fb)
+        prev, fprev = bp, fb
+    return prev + fprev / float(sum(need[r] for r in idx))
 
 
 def _sigmoid(x: float) -> float:
@@ -272,6 +315,19 @@ def _osig(state: GameState) -> tuple:
     return tuple(tuple(sorted(p.settlements + p.cities)) for p in state.players)
 
 
+def _rsig(state: GameState) -> tuple:
+    """Every seat's roads: the occupied edges that bound a network's frontier and a spot's reach / expansion."""
+    return tuple([tuple(p.roads) for p in state.players])
+
+
+def _strong_flags(state: GameState, me: int) -> tuple:
+    """Which opponents count as strong in static's spot blockability term (``placement.strong_opponent_hexes``):
+    ``robber.threat`` reads their estimated VP, which moves with the dev pool (our own dev buy / knight play)."""
+    from .robber import threat
+    lim = placement.PLACEMENT_STRONG_THREAT
+    return tuple([j != me and threat(state, j) >= lim for j in range(state.num_players)])
+
+
 def _name(state: GameState, i: int) -> str:
     p = state.players[i]
     return p.name or p.color
@@ -280,7 +336,7 @@ def _name(state: GameState, i: int) -> str:
 class _Leaf:
     """Race inputs of one state (per seat lists; the race tuples are rounded to 1e-4)."""
 
-    __slots__ = ("osig", "hands", "kn", "rb", "L", "l", "room", "sup", "lr", "la", "lr_holder", "la_holder",
+    __slots__ = ("osig", "rsig", "hands", "kn", "rb", "L", "l", "room", "sup", "lr", "la", "lr_holder", "la_holder",
                  "played", "la_scale")
 
 
@@ -391,14 +447,17 @@ class PathsContext:
             return hit
         self.stats["supply_misses"] += 1
         inc = self._income(state, i)
-        conv = [inc[q] / state.port_ratio(i, q) for q in range(5)]
+        ratio = [state.port_ratio(i, q) for q in range(5)]
+        conv = [inc[q] / ratio[q] for q in range(5)]
         sc = sum(conv)
         tau = self.params["TAU"]
         bf = self.bf
         s = [(inc[r] + tau * (sc - conv[r])) * bf[r] for r in range(5)]
         tot = sum(inc)
-        road_rate = min(s[_WOOD], s[_BRICK], tot / 2.0)
-        dev_rate = min(s[_SHEEP], s[_WHEAT], s[_ORE], tot / 3.0)
+        # race rates: one shared conversion budget per bundle (see bundle_rate), on bank-limited income
+        e = [inc[r] * bf[r] for r in range(5)]
+        road_rate = min(bundle_rate(e, ratio, _ROAD_BUNDLE, tau), tot / 2.0)
+        dev_rate = min(bundle_rate(e, ratio, _DEV_BUNDLE, tau), tot / 3.0)
         sup = Supply(tuple(inc), tuple(s), road_rate, dev_rate)
         entry = (sup, self._eta * self.H * road_rate, min(1.0, self.p_k * dev_rate) * self.H)
         return self._put(self._supply, key, entry)
@@ -438,14 +497,18 @@ class PathsContext:
                     edges.add(e)
         return min(B.MAX_ROADS - len(p.roads), 2 * len(edges))
 
-    def room(self, state: GameState, i: int, osig: tuple) -> int:
-        """Roads seat ``i`` can still add to its network (ours per leaf, the opponents' from the root)."""
+    def room(self, state: GameState, i: int, osig: tuple, rsig: Optional[tuple] = None) -> int:
+        """Roads seat ``i`` can still add to its network (ours per leaf, the opponents' from the root).
+
+        Our memo is keyed on every seat's roads (``rsig``), not only ours: an opponent's road on one of our
+        frontier edges shrinks the room (depth >= 2 leaves, where the opponents' simulated turns build).
+        """
         if i != self.me:
             r = self._room_root.get(i)
             if r is not None:
                 return r
             return self._compute_room(state, i)
-        key = (tuple(state.players[i].roads), osig)
+        key = (rsig if rsig is not None else _rsig(state), osig)
         hit = self._room.get(key)
         if hit is not None:
             return hit
@@ -492,6 +555,7 @@ class PathsContext:
         robber = state.robber
         sup_memo = self._supply
         osig = tuple([tuple(sorted(p.settlements + p.cities)) for p in players])
+        rsig = tuple([tuple(p.roads) for p in players])
         lr_memo = self._lr.get(osig)
         if lr_memo is None:
             lr_memo = self._put(self._lr, osig, {})
@@ -529,7 +593,7 @@ class PathsContext:
             Ll = lr_memo.get(key)
             if Ll is None:
                 Ll = self._lr_miss(state, i, key, osig)
-            room = room_root[i] if i != me else self.room(state, i, osig)
+            room = room_root[i] if i != me else self.room(state, i, osig, rsig)
             w = hand[_WOOD]
             bk = hand[_BRICK]
             a_raw = (w if w < bk else bk) + 2 * r
@@ -571,6 +635,7 @@ class PathsContext:
             la_G = [g * scale for g in la_G]
         leaf = _Leaf()
         leaf.osig = osig
+        leaf.rsig = rsig
         leaf.hands = hands
         leaf.kn = kns
         leaf.rb = rbs
@@ -662,20 +727,23 @@ class PathsContext:
         return Races(lr, la, S, C, inputs)
 
     # --- contested settlement spots -----------------------------------------------------------
-    def _reach_of(self, state: GameState, j: int, osig: tuple) -> dict:
-        key = (j, tuple(state.players[j].roads), osig, tuple(state.players[self.me].roads))
+    def _reach_of(self, state: GameState, j: int, osig: tuple, rsig: Optional[tuple] = None) -> dict:
+        # every seat's roads are in the key: a third seat's road can block j's paths (depth >= 2 leaves)
+        key = (j, rsig if rsig is not None else _rsig(state), osig)
         hit = self._reach.get(key)
         if hit is not None:
             return hit
         self.stats["reach_misses"] += 1
         return self._put(self._reach, key, placement.reachable_spots(state, j, max_roads=2))
 
-    def _spot_prefix(self, state: GameState, osig: tuple) -> tuple:
-        # our roads and the award owners are in the key as well (the spot's expansion term reads every road,
-        # its blockability term the opponents' VP): the memo stays a pure function of its key
+    def _spot_prefix(self, state: GameState, osig: tuple, rsig: Optional[tuple] = None) -> tuple:
+        # Everything static's spot score reads besides the spot: our settlements / cities (own production,
+        # stacking), every building (osig) and every road (the expansion term), and which opponents count as
+        # strong in the blockability term (their estimated VP: buildings, awards and - for hidden dev cards -
+        # the dev pool, which our own dev buy or knight play changes).  The memo stays a pure function of its key.
         p = state.players[self.me]
-        return (tuple(p.settlements), tuple(p.cities), tuple(p.roads), osig, state.longest_road_owner,
-                state.largest_army_owner)
+        return (tuple(p.settlements), tuple(p.cities), rsig if rsig is not None else _rsig(state), osig,
+                _strong_flags(state, self.me))
 
     def _spot_value(self, state: GameState, v: int, osig: tuple, prefix: Optional[tuple] = None) -> float:
         """static's score of spot ``v`` for us (memo: ``v`` and our position, see ``_spot_prefix``)."""
@@ -697,21 +765,21 @@ class PathsContext:
                     t = x
         return min(self.params["SPOT_MAX_T"], t)
 
-    def _contest(self, state: GameState, osig: tuple) -> tuple:
+    def _contest(self, state: GameState, osig: tuple, rsig: Optional[tuple] = None) -> tuple:
         """``((v, d, ((rival, d_j, o_j), ...)), ...)`` for our spots within 2 roads, and whether any is contested.
 
         A pure function of every player's roads and the buildings (memo); the rivals' reach is the
         ``placement.reachable_spots(max_roads=2)`` of each seat.
         """
-        players = state.players
-        key = (tuple([tuple(p.roads) for p in players]), osig)
+        rsig = rsig if rsig is not None else _rsig(state)
+        key = (rsig, osig)
         hit = self._contest_memo.get(key)
         if hit is not None:
             return hit
         me = self.me
         n = self.n
-        reach_me = self._reach_of(state, me, osig)
-        rivals = [(j, self._reach_of(state, j, osig)) for j in range(n) if j != me] if reach_me else []
+        reach_me = self._reach_of(state, me, osig, rsig)
+        rivals = [(j, self._reach_of(state, j, osig, rsig)) for j in range(n) if j != me] if reach_me else []
         struct = []
         contested = False
         for v, (d, _e) in reach_me.items():
@@ -723,7 +791,7 @@ class PathsContext:
     def _spot_table(self, state: GameState, leaf: _Leaf) -> List[tuple]:
         """``[(v, d, P_me, [(rival, d_j, T_j + o_j), ...]), ...]`` for every spot within 2 roads of us."""
         me = self.me
-        struct, contested = self._contest(state, leaf.osig)
+        struct, contested = self._contest(state, leaf.osig, leaf.rsig)
         if not contested:
             return [(v, d, 1.0, []) for v, d, _riv in struct]
         turns: Dict[tuple, float] = {}
@@ -754,11 +822,12 @@ class PathsContext:
         if len(p.settlements) >= B.MAX_SETTLEMENTS:
             return 0.0
         osig = leaf.osig if leaf is not None else _osig(state)
-        if not self._contest(state, osig)[1]:
+        rsig = leaf.rsig if leaf is not None else _rsig(state)
+        if not self._contest(state, osig, rsig)[1]:
             return 0.0              # uncontested: P_me = 1 everywhere, the rescaled terms equal static's
         leaf = leaf if leaf is not None else self._inputs(state)
         table = self._spot_table(state, leaf)
-        prefix = self._spot_prefix(state, leaf.osig)
+        prefix = self._spot_prefix(state, leaf.osig, leaf.rsig)
         best_now = 0.0
         best_base = 0.0
         sum_p0 = 0.0

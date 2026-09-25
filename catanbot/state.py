@@ -133,18 +133,47 @@ class TradeOffer:
     give: List[int]        # resources the proposer gives (5 counts)
     get: List[int]         # resources the proposer wants (5 counts)
     responses: Dict[int, bool] = field(default_factory=dict)  # responder idx -> accepted?
+    # --- counter-offers (rules variant ``GameState.allow_counters``; both stay None in a default game) ---
+    # On the current player's offer: responder -> (give, get) of the counter it made (from the counterer's
+    # side), not yet shown to the current player.  On a counter being shown to the current player (whose
+    # ``proposer`` is the counterer): the suspended original offer, restored when the counter is rejected.
+    # Plain class-level defaults, so TradeOffer objects built without __init__ (the C++ engine) read None.
+    counters: Optional[Dict[int, Tuple[List[int], List[int]]]] = None
+    origin: Optional["TradeOffer"] = None
 
     def copy(self) -> "TradeOffer":
-        return TradeOffer(self.proposer, list(self.give), list(self.get), dict(self.responses))
+        t = TradeOffer(self.proposer, list(self.give), list(self.get), dict(self.responses))
+        if self.counters:
+            t.counters = {k: (list(g), list(w)) for k, (g, w) in self.counters.items()}
+        if self.origin is not None:
+            t.origin = self.origin.copy()
+        return t
+
+    @property
+    def is_counter(self) -> bool:
+        """True for a counter-offer shown to the current player (``proposer`` is the counterer)."""
+        return self.origin is not None
 
     def to_dict(self) -> dict:
-        return {"proposer": self.proposer, "give": list(self.give), "get": list(self.get),
-                "responses": {str(k): v for k, v in self.responses.items()}}
+        d = {"proposer": self.proposer, "give": list(self.give), "get": list(self.get),
+             "responses": {str(k): v for k, v in self.responses.items()}}
+        # Only present under the counters rule, so a default game's dict is unchanged (old readers ignore them).
+        if self.counters:
+            d["counters"] = {str(k): {"give": list(g), "get": list(w)} for k, (g, w) in sorted(self.counters.items())}
+        if self.origin is not None:
+            d["origin"] = self.origin.to_dict()
+        return d
 
     @staticmethod
     def from_dict(d: dict) -> "TradeOffer":
-        return TradeOffer(int(d["proposer"]), [int(x) for x in d["give"]], [int(x) for x in d["get"]],
-                          {int(k): bool(v) for k, v in d.get("responses", {}).items()})
+        t = TradeOffer(int(d["proposer"]), [int(x) for x in d["give"]], [int(x) for x in d["get"]],
+                       {int(k): bool(v) for k, v in d.get("responses", {}).items()})
+        cs = d.get("counters")
+        if cs:
+            t.counters = {int(k): ([int(x) for x in v["give"]], [int(x) for x in v["get"]]) for k, v in cs.items()}
+        if d.get("origin"):
+            t.origin = TradeOffer.from_dict(d["origin"])
+        return t
 
 
 @dataclass
@@ -178,6 +207,10 @@ class GameState:
     # Bookkeeping useful for training / explanations
     rolls_history_len: int = 0
     max_turns: int = 400          # safety cap for simulations
+    # Rules variant (off by default): Colonist.io counter-offers (``actions.COUNTER_TRADE``, engine
+    # ``_h_counter_trade``).  A plain class-level default, so states built without __init__ (the C++ engine,
+    # ``copy``) read False; ``to_dict`` only writes the key when it is on.
+    allow_counters: bool = False
 
     # ------------------------------------------------------------------
     def copy(self) -> "GameState":
@@ -206,6 +239,8 @@ class GameState:
         s.winner = self.winner
         s.rolls_history_len = self.rolls_history_len
         s.max_turns = self.max_turns
+        if self.allow_counters:
+            s.allow_counters = True
         return s
 
     @property
@@ -277,7 +312,7 @@ class GameState:
 
     # --- serialisation ----------------------------------------------------
     def to_dict(self) -> dict:
-        return {
+        d = {
             "version": 1,
             "hexes": [{"resource": B.RESOURCE_NAMES[r], "number": n} for r, n in self.hexes],
             "robber": self.robber,
@@ -302,6 +337,9 @@ class GameState:
             "largest_army_owner": self.largest_army_owner,
             "winner": self.winner,
         }
+        if self.allow_counters:          # absent by default: old readers (league champions) see the old format
+            d["allow_counters"] = True
+        return d
 
     @staticmethod
     def from_dict(d: dict) -> "GameState":
@@ -359,6 +397,7 @@ class GameState:
         s.longest_road_len = int(d.get("longest_road_len", 0))
         s.largest_army_owner = int(d.get("largest_army_owner", -1))
         s.winner = int(d.get("winner", -1))
+        s.allow_counters = bool(d.get("allow_counters", False))
         return s
 
 
