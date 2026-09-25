@@ -260,12 +260,17 @@ def test_robber_never_on_own_tile_and_discard_keeps_next_build():
     assert chosen in state.playable_actions
     assert not (own_nodes & set(tables.tile_nodes[chosen.value[0]]))
 
-    # discard: 8 cards holding a city (2 wheat 3 ore) keeps the city cards
-    set_hand(game, color, wood=2, brick=1, sheep=0, wheat=2, ore=3)
+    # discard: 10 cards holding a city (2 wheat 3 ore) discards exactly the other five
+    set_hand(game, color, wood=2, brick=2, sheep=1, wheat=2, ore=3)
+    discard = plan_discard(game, color)
+    assert len(discard) == 5
+    assert sorted(discard) == ["BRICK", "BRICK", "SHEEP", "WOOD", "WOOD"]
+    # 8 cards: one city card has to go, the three non-city cards go first
+    set_hand(game, color, wood=1, brick=1, sheep=1, wheat=2, ore=3)
     discard = plan_discard(game, color)
     assert len(discard) == 4
-    assert discard.count("ORE") == 0 and discard.count("WHEAT") == 0
-    assert set(discard) <= {"WOOD", "BRICK"}
+    assert {"WOOD", "BRICK", "SHEEP"} <= set(discard)
+    assert discard.count("WHEAT") + discard.count("ORE") == 1
 
 
 def test_opening_book_picks_a_high_production_spot():
