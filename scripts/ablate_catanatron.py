@@ -869,10 +869,15 @@ def pair_stats(pairs: Sequence[Tuple[Dict[str, Any], Dict[str, Any]]]) -> Dict[s
         dk, sek = mean_se([int(bool(c["won"])) - int(bool(d["won"])) for c, d in sub])
         seats[str(k)] = {"n": len(sub), "cand_wins": sum(1 for c, _ in sub if c["won"]),
                          "def_wins": sum(1 for _, d in sub if d["won"]), "delta": dk, "se": sek}
-    tc = pool_timing(c.get("dec") for c, _ in pairs)
-    td = pool_timing(d.get("dec") for _, d in pairs)
-    oc = pool_timing(c.get("opp_dec") for c, _ in pairs)
-    od = pool_timing(d.get("opp_dec") for _, d in pairs)
+    # Decision times are only comparable between games played together (same worker, same load): a
+    # default game copied from another run (``reused_from``) ran at another time, so timing uses the
+    # co-played pairs when there are any.
+    co = [(c, d) for c, d in pairs if not c.get("reused_from") and not d.get("reused_from")]
+    tpairs = co or list(pairs)
+    tc = pool_timing(c.get("dec") for c, _ in tpairs)
+    td = pool_timing(d.get("dec") for _, d in tpairs)
+    oc = pool_timing(c.get("opp_dec") for c, _ in tpairs)
+    od = pool_timing(d.get("opp_dec") for _, d in tpairs)
 
     def total(recs, key):
         out: Dict[str, float] = collections.Counter()
@@ -902,6 +907,7 @@ def pair_stats(pairs: Sequence[Tuple[Dict[str, Any], Dict[str, Any]]]) -> Dict[s
         "ms_def": td["mean"], "ms_p95_def": td["p95"], "decisions_def": td["n"],
         "extra_ms": tc["mean"] - td["mean"] if tc["n"] and td["n"] else float("nan"),
         "opp_ms_cand": oc["mean"], "opp_ms_p95_cand": oc["p95"], "opp_ms_def": od["mean"], "opp_ms_p95_def": od["p95"],
+        "timing_pairs": len(tpairs), "timing_coplayed": bool(co),
         "turns_cand": _mean_of(c["turns"] for c, _ in pairs), "turns_def": _mean_of(d["turns"] for _, d in pairs),
         "sec_cand": _mean_of(c["duration"] for c, _ in pairs), "sec_def": _mean_of(d["duration"] for _, d in pairs),
         "truncated_cand": sum(1 for c, _ in pairs if c.get("truncated")),
@@ -993,7 +999,9 @@ def print_run(run: Dict[str, Any], st: Dict[str, Any], stopped: Optional[Dict[st
     seats = "  ".join(f"s{k} n={v['n']} {v['cand_wins']}-{v['def_wins']} {fmt_pp(v['delta'])}+-{fmt_pp(v['se'], sign=False)}"
                       for k, v in st["seats"].items())
     p(f"  by seat   {seats}")
-    p(f"  time      catanbot ms/decision cand {fmt(st['ms_cand'])} (p95 {fmt(st['ms_p95_cand'], 1)}) vs default "
+    tnote = (f"{st['timing_pairs']} co-played pairs" if st.get("timing_coplayed") else
+             "WARNING: every default game was reused from another run, times not comparable")
+    p(f"  time      [{tnote}] catanbot ms/decision cand {fmt(st['ms_cand'])} (p95 {fmt(st['ms_p95_cand'], 1)}) vs default "
       f"{fmt(st['ms_def'])} (p95 {fmt(st['ms_p95_def'], 1)}), extra {fmt(st['extra_ms'])} ms; opponents "
       f"{fmt(st['opp_ms_cand'])} (p95 {fmt(st['opp_ms_p95_cand'], 1)}) / {fmt(st['opp_ms_def'])} ms; "
       f"s/game {fmt(st['sec_cand'])} / {fmt(st['sec_def'])}; turns {fmt(st['turns_cand'], 1)} / {fmt(st['turns_def'], 1)}; "
@@ -1194,16 +1202,22 @@ class Stop(Exception):
     pass
 
 
-def _terminate(executor: Optional[ProcessPoolExecutor]) -> None:
+def _close(executor: Optional[ProcessPoolExecutor], force: bool = False) -> None:
+    """Shut a pool down and join its manager thread; ``force`` first terminates the worker processes
+    (interrupt, broken pool).  Joining matters: an executor left half shut down makes the interpreter's
+    exit hook write to a closed pipe."""
     if executor is None:
         return
-    procs = list((getattr(executor, "_processes", None) or {}).values())
-    for p in procs:
-        try:
-            p.terminate()
-        except Exception:  # noqa: BLE001
-            pass
-    executor.shutdown(wait=False, cancel_futures=True)
+    if force:
+        for p in list((getattr(executor, "_processes", None) or {}).values()):
+            try:
+                p.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+    try:
+        executor.shutdown(wait=True, cancel_futures=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _new_pool(workers: int) -> ProcessPoolExecutor:
@@ -1223,7 +1237,7 @@ def _run_solo(camp: Campaign, job: Dict[str, Any]) -> None:
         except Exception as ex:  # noqa: BLE001
             res = camp.error_result(one, f"{type(ex).__name__}: {ex}")
         finally:
-            _terminate(pool)
+            _close(pool)
         camp.handle(res)
 
 
@@ -1246,6 +1260,7 @@ def execute(camp: Campaign, workers: int, deadline: Optional[float] = None) -> s
     retry: collections.deque = collections.deque()   # jobs a broken pool refused (not suspects)
     exhausted = False
     status = "done"
+    clean = False
     try:
         while True:
             broken = False
@@ -1283,15 +1298,16 @@ def execute(camp: Campaign, workers: int, deadline: Optional[float] = None) -> s
             if broken:
                 suspects.extend(inflight.values())
                 inflight.clear()
-                _terminate(pool)
+                _close(pool, force=True)
                 if suspects:
                     print(f"  a worker process died; re-playing seed(s) {[j['s'] for j in suspects]} one game per "
                           f"process", file=camp.log, flush=True)
                 for job in suspects:
                     _run_solo(camp, job)
                 pool = _new_pool(workers)
+        clean = True
     finally:
-        _terminate(pool)
+        _close(pool, force=not clean)
     return status
 
 

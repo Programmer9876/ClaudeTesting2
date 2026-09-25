@@ -116,6 +116,20 @@ def test_verdicts_and_identical_pairs():
     assert AB.should_stop(AB.pair_stats(better), 0.1, 100) is False   # not enough pairs yet
 
 
+def test_timing_uses_coplayed_pairs_only():
+    co = [(_rec(s, True, 10, ms=(30.0,)), _rec(s, False, 8, arm="def", ms=(10.0,))) for s in range(4)]
+    reused = []
+    for s in range(4, 8):
+        d = _rec(s, False, 8, arm="def", ms=(100.0,))
+        d["reused_from"] = "other.jsonl"            # played by another experiment at another time / load
+        reused.append((_rec(s, True, 10, ms=(30.0,)), d))
+    st = AB.pair_stats(co + reused)
+    assert st["pairs"] == 8 and st["timing_coplayed"] and st["timing_pairs"] == 4
+    assert st["ms_def"] == pytest.approx(10.0) and st["extra_ms"] == pytest.approx(20.0)
+    st = AB.pair_stats(reused)
+    assert not st["timing_coplayed"] and st["ms_def"] == pytest.approx(100.0)   # flagged, not silently mixed
+
+
 def test_pool_timing_mean_is_exact():
     a = AB.timing_summary([0.001, 0.003])
     b = AB.timing_summary([0.010])
@@ -432,6 +446,8 @@ def test_campaign_plan_validation_and_command(tmp_path):
     assert "--opponent-params depth=1" in joined and "--cand-set danger.TURNS_HALF=2" in joined
     assert "--max-minutes 15.00" in joined and "--stop-at-se 0.02" in joined and "--workers 2" in joined
     assert camp.expected_candidates(e) == 2
+    assert "--reuse" in cmd
+    assert "--reuse" not in camp.command(dict(e, reuse=False), str(tmp_path), interps, None)
 
 
 # ---------------------------------------------------------------------------

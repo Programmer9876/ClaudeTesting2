@@ -301,6 +301,250 @@ game; everything else in `s / game` is the opponents' thinking time.
   its `timeout` loses everything but the `--verbose` log; keep the per-run
   game counts of the commands above.
 
+## Domestic trading against catanatron 3.3
+
+catanatron 3.3.0 (the GitHub checkout) has player-to-player trading; 3.2.1
+has none.  The adapter used to decline every trade prompt and never offer.
+It now plays catanbot's trade decisions through catanatron's protocol, and
+`--trades` decides how the opponents answer (2026-09-25).
+
+### The protocol (from `catanatron/game.py`, `models/actions.py`, `apply_action.py`)
+
+1. **Offer.**  `OFFER_TRADE`, value `(5 offered counts, 5 asked counts)` in
+   WOOD, BRICK, SHEEP, WHEAT, ORE order (catanbot's order).  It is never in
+   `playable_actions`: `Game.execute` accepts one (`is_valid_action`) from
+   the current player at a `PLAY_TURN` prompt after the roll when both halves
+   are non-empty and share no resource.  There is **no per-turn limit** and
+   **no check that the offerer holds the offered cards** (`CONFIRM_TRADE`
+   would drive its hand negative).  `State.current_trade` becomes
+   `offer + (offerer seat,)` and the prompt `DECIDE_TRADE`.
+2. **Answers.**  The seats are asked one at a time in seat order, starting
+   at the first seat that is not the offerer.  Playable: `REJECT_TRADE` and,
+   if the seat holds the asked cards, `ACCEPT_TRADE` (both carry
+   `current_trade`).  Accepting only sets `State.acceptees[seat]`; no card
+   moves yet.  **Engine quirk:** the next seat asked is "the next higher seat
+   that is not the one answering", so the offerer is asked about its *own*
+   offer whenever it is not seat 0 (offerer in seat 2: seats 0, 1, 2, 3 are
+   asked).  `CatanbotPlayer` answers that prompt `REJECT_TRADE` without a
+   search (`stats["self_offer_prompts"]`), `BenchOpponent` likewise.
+3. **Resolution.**  After the last seat: nobody accepted -> back to
+   `PLAY_TURN` (the offerer may offer again); otherwise `DECIDE_ACCEPTEES`
+   for the offerer with `CANCEL_TRADE` and one `CONFIRM_TRADE` per accepter
+   (value: the 10 counts + the accepter's `Color`).  `CONFIRM_TRADE` swaps
+   the cards; either way the offerer is back at `PLAY_TURN`.
+
+### How catanatron's players answer an offer (measured)
+
+`--probe-trades 200 --seed 1` on 3.3.0: 100 mid-game positions (post-roll,
+turns 20-90 of games between four catanatron `ValueFunctionPlayer`s); at
+each the turn player offers the first seat catanatron asks a random trade
+that seat can pay, in one of three categories - **1:1** (the responder
+receives one card and pays one), **2:1** (receives two, pays one:
+favourable to it) and **1:2** (receives one, pays two: unfavourable).  200
+offers per category, the same 600 offers for every player.  "Native" is the
+player's own `decide` (errors: the call raised); the two rule columns are
+our response rules evaluated with that player's value function (below).
+The standard error of a 200-offer rate is at most 3.5 points.
+
+| player (preset) | native 1:1 / 2:1 / 1:2 | native errors | `value` rule 1:1 / 2:1 / 1:2 | `fair` rule 1:1 / 2:1 / 1:2 | ms / answer |
+|---|---|---|---|---|---|
+| `ValueFunctionPlayer` (`value`) | 0 / 0 / 0 % | 0 | 29.5 / 65.0 / 23.5 % | 28.5 / 60.0 / 0 % | 0.9 |
+| `AlphaBetaPlayer` (`alphabeta`) | - | 600 / 600 `RuntimeError` | 29.5 / 65.0 / 23.5 % | 28.5 / 60.0 / 0 % | 0.1 |
+| `SameTurnAlphaBetaPlayer` (`sameturn`) | - | 600 / 600 `RuntimeError` | 29.5 / 65.0 / 23.5 % | 28.5 / 60.0 / 0 % | 0.1 |
+| `MCTSPlayer` (`mcts`) | - | 600 / 600 `RuntimeError` | 29.5 / 65.0 / 23.5 % | 28.5 / 60.0 / 0 % | 0.1 |
+| `GreedyPlayoutsPlayer` (`playouts`, 25 playouts) | 35.5 / 39.5 / 46.5 % | 0 | 29.5 / 65.0 / 23.5 % | 28.5 / 60.0 / 0 % | 1215 |
+| `RandomPlayer` (`random`) | 54.0 / 49.5 / 49.0 % | 0 | 29.5 / 65.0 / 23.5 % | 28.5 / 60.0 / 0 % | 0.0 |
+| `WeightedRandomPlayer` (`weighted`) | 45.5 / 50.5 / 49.0 % | 0 | 29.5 / 65.0 / 23.5 % | 28.5 / 60.0 / 0 % | 0.0 |
+| `VictoryPointPlayer` (`vp`) | 44.0 / 55.0 / 52.5 % | 0 | 29.5 / 65.0 / 23.5 % | 28.5 / 60.0 / 0 % | 0.3 |
+| our stand-in `vf` | 0 / 0 / 0 % | 0 | 32.0 / 67.5 / 27.5 % | 30.5 / 63.0 / 0 % | 0.4 |
+| our stand-in `ab` | 0 / 0 / 0 % | 0 | 32.0 / 67.5 / 27.5 % | 30.5 / 63.0 / 0 % | 0.4 |
+
+Why:
+
+* **`ValueFunctionPlayer` always rejects.**  It executes each playable
+  action on a copy and evaluates its value function; `ACCEPT_TRADE` moves no
+  card (the swap happens at `CONFIRM_TRADE`), so both answers score the same
+  and its strict `>` keeps the first listed one, `REJECT_TRADE`.  The terms
+  of the offer never enter the decision.  Our stand-ins `vf` / `ab` make the
+  same 1-ply comparison and also always reject.
+* **`AlphaBetaPlayer`, `SameTurnAlphaBetaPlayer` and `MCTSPlayer` crash.**
+  Their outcome expansion (`tree_search_utils.execute_spectrum`) has no case
+  for trade actions and raises `RuntimeError: Unknown ActionType
+  ActionType.REJECT_TRADE` on every offer they could accept (a seat that
+  cannot pay has a single playable action, returned before any search).
+  Unwrapped, the exception leaves `Game.play()` and ends the game.
+* **`RandomPlayer`, `WeightedRandomPlayer` and `VictoryPointPlayer` flip a
+  coin** (the VP player sees a VP tie and picks at random): about 50 %
+  whatever the terms.
+* **`GreedyPlayoutsPlayer` answers by noise.**  It plays 25 random
+  playouts after each answer (in which the offerer confirms or cancels at
+  random) and keeps the answer with more wins; the terms barely matter
+  (35.5 / 39.5 / 46.5 % - it accepts the unfavourable 1:2 offers *most*
+  often) and each answer costs 1.2 s.
+* **No catanatron player ever offers a trade** (none of them generates
+  `OFFER_TRADE`), so in the bench only catanbot proposes.
+
+"Native" trading is therefore degenerate against every catanatron player:
+against `value` every offer is refused (trading can only cost catanbot
+compute), against `alphabeta` / `sameturn` / `mcts` the game would crash
+(the bench turns the exception into a rejection and counts it), and against
+the random players and `vp` half of all offers succeed regardless of their
+terms, which a proposer can exploit.  Hence the switch.
+
+### `--trades {off,native,value,fair}`
+
+| mode | catanbot | the opponents answer an offer |
+|---|---|---|
+| `off` (default) | never offers, declines any prompt | - (nobody offers) |
+| `native` | offers | with their own `decide` (degenerate, above); an exception is counted (`opp_errors`) and answered `REJECT_TRADE` |
+| `value` | offers | by **our** rule: accept iff the player's value function is strictly higher after the trade (both hands changed as `CONFIRM_TRADE` would) than before |
+| `fair` | offers | `value`, and never give more cards than received, and never trade with a proposer holding `vps_to_win - 2` (8) or more public VP |
+
+`value` and `fair` are **our model of a sensible opponent, not catanatron's
+behaviour**.  `catanatron_adapter.BenchOpponent` wraps every opponent (it
+also times them, next section); only the answer to an offer is replaced,
+every other decision is the catanatron player's.  The value function is
+the player's own where it has one (catanatron's `value` / `alphabeta` /
+`sameturn`: their `value_fn` and weights, `base_fn` by default; our `vf` /
+`ab`: their `_value`), otherwise catanatron's `base_fn` with its default
+weights (`random`, `weighted`, `vp`, `mcts`, `playouts`).  Caveats:
+`base_fn` sees a trade only through the responder's own hand - the
+`hand_synergy` term (distance to a city / settlement, weight 100), the card
+count (weight 1) and the >7-card penalty - so the `value` rule ignores what
+the proposer gains and accepts some trades that cost it a card (23.5 % of
+the 1:2 offers above); `fair` removes those and refuses near-winners.  Our
+stand-ins' value function subtracts the best opponent's score, so for `vf` /
+`ab` the rule also weighs the proposer's gain.
+
+The catanbot side (`CatanbotPlayer(suppress_trades=False)`, any `--trades`
+but `off`): the search's `PROPOSE_TRADE` choices are played as
+`OFFER_TRADE` (only cards we hold, at most catanbot's 4 offers per turn, the
+search's own cap of 4 early / 2 late applies first), `DECIDE_ACCEPTEES`
+is decided in `PHASE_TRADE_SELECT` (`EXECUTE_TRADE` -> `CONFIRM_TRADE` with
+that partner; the search's "never hand a build to a player about to win"
+filter applies) and an incoming `DECIDE_TRADE` in `PHASE_TRADE_RESPONSE`.
+Every logged trade action is observed (`OFFER_TRADE` -> `PROPOSE_TRADE`,
+answers -> `ACCEPT_TRADE` / `REJECT_TRADE`, `CONFIRM_TRADE` ->
+`EXECUTE_TRADE`, `CANCEL_TRADE`), so the opponent model learns each
+opponent's acceptance rate and resource valuations exactly as in self-play;
+the offerer's answer to its own offer and the forced rejection of a seat
+that cannot pay (which catanbot's engine never asks) are not observed.
+
+### Smoke: 40 games against `value`, trades off vs on (same seeds)
+
+```bash
+PY=/home/user/venv_cat33/bin/python
+for t in off native value fair; do
+  PYTHONPATH=/home/user/ClaudeTesting2 timeout 1150 $PY scripts/bench_catanatron.py --opponent value \
+      --games 40 --workers 2 --seed 7 --trades $t --verbose --json smoke_$t.json
+done
+```
+
+Depth-1 heuristic bot (default spec), `PYTHONHASHSEED=0`, so the four runs
+play the same 40 boards / dice sequences and coincide until catanbot's
+first offer (every game had one).
+
+| `--trades` | catanbot wins | avg VP (catanbot / opp.) | turns | offers / game | accepted by >= 1 seat | executed | opponents accept (answerable offers) | could not pay | adapter errors / fallbacks | s / game |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `off` | 28/40 = 70.0 % | 9.07 / 5.97 | 84.6 | 0 | 0 | 0 | - | - | 0 / 0 | 1.63 |
+| `native` | 27/40 = 67.5 % | 9.03 / 5.99 | 84.8 | 59.0 | 0 | 0 | 0 / 5 087 (0 %) | 1 999 | 0 / 0 | 5.38 |
+| `value` | 34/40 = 85.0 % | 9.78 / 5.13 | 68.7 | 41.0 | 10.1 | 8.6 | 515 / 3 504 (14.7 %) | 1 416 | 0 / 0 | 4.21 |
+| `fair` | 34/40 = 85.0 % | 9.78 / 5.18 | 69.6 | 41.5 | 9.8 | 8.4 | 502 / 3 544 (14.2 %) | 1 430 | 0 / 0 | 5.07 |
+
+No adapter errors, fallbacks, unmapped actions or observe errors in any
+run, and no opponent error (`value` never raises).  Paired against `off`
+(the same 40 games): `value` **+15.0 points** (9 games won only with
+trading, 3 only without; paired s.e. 8.4), `fair` +15.0 (the same 9 / 3:
+catanbot proposes 1-for-1 and 2-for-1 deals in the responder's favour, so
+`fair`'s card-count condition never binds and its near-winner guard hardly
+fires), `native` -2.5 (4 / 5; s.e. 7.6: against a player that refuses
+everything the offers only cost time).  The direction agrees with
+self-play's +17.5 points for search trade proposals (`docs/ABLATIONS.md`),
+but 40 games resolve nothing below ~15 points.  With pinned hashing the
+on / off runs are paired; the discordant-game rate here (12/40 = 30 %)
+gives a paired standard error of about `sqrt(0.30 / n)`: 1.2 points at
+2 000 games.
+
+Two catanbot behaviours show up.  (1) It offers a lot: 41 offers per game
+under `value` (2.4 per own turn, 16-62 per game), of which 25 % find an
+accepter and 21 % are executed (catanbot cancels 1.4 accepted offers per
+game in `PHASE_TRADE_SELECT`).  (2) It does not stop offering to players who
+never accept: 59 offers per game and not one accepted under `native`.  The
+opponent model's acceptance rate for such a player bottoms out near 0.075
+(decayed average with its prior; `OpponentModel.predict_accept` then still
+gives roughly 10-20 % per seat) and a refused offer costs nothing in the
+search, so offering keeps a positive expected value.  The result does not
+suffer (-2.5 +- 7.6) but our compute per game triples.
+
+Cost: catanbot's time per game rises from 0.93 s to 3.5-4.4 s (151-187
+decisions per game instead of 84, proposals in every main-phase search),
+so at `--workers 2` against `value` the bench plays about 4 300 games per
+hour with trades off and 1 300-1 700 with trades on (wall 33 s / 85-110 s
+for 40 games, measured while a trade probe loaded a third core).  Games
+with trading are 16 turns shorter (68.7 vs 84.6 catanatron turns).
+
+## Compute per decision
+
+`BenchOpponent` times every `decide` of the three opponents and
+`CatanbotPlayer` every one of its own (including the adapter's state
+conversion and the replay of the log, i.e. everything the seat costs); each
+game record carries `timing` (mean / p50 / p95 / max ms, count, total
+seconds per side, both over all decisions and over "choices" - decisions
+with more than one playable action - plus our search time alone) and the
+summary pools them.  `--trades off`, default spec (depth-1 heuristic
+search), `--workers 2`, 3.3.0 unless noted:
+
+| opponent (`--opponent-params`) | trades | games | catanbot ms / decision: mean / p95 (choices: mean / p95) | catanbot s / game | opponent ms / decision: mean / p95 / max (choices: mean / p95) | opponent s / game / seat | catanbot / opponent compute | wall s / game at 2 workers (games / hour) | catanbot wins |
+|---|---|---|---|---|---|---|---|---|---|
+| `value` | off | 40 | 11.2 / 43 (17.0 / 75) | 0.93 | 3.0 / 13 / 102 (4.8 / 16) | 0.23 | 4.14 | 0.8 (4307) | 28/40 |
+| `alphabeta` | off | 8 | 8.5 / 30 (13.0 / 54) | 0.72 | 105.4 / 232 / 6057 (189.7 / 1432) | 8.10 | 0.09 | 13.2 (273) | 7/8 |
+| `alphabeta` (depth=1) | off | 4 | 12.1 / 76 (18.2 / 89) | 0.96 | 4.5 / 22 / 133 (7.8 / 35) | 0.30 | 3.25 | 1.0 (3497) | 4/4 |
+| `sameturn` | off | 8 | 9.8 / 38 (15.2 / 67) | 0.77 | 103.0 / 249 / 4607 (190.8 / 1547) | 7.17 | 0.11 | 11.9 (303) | 7/8 |
+| `mcts` | off | 4 | 11.2 / 39 (18.3 / 60) | 0.63 | 123.7 / 375 / 601 (236.7 / 431) | 5.90 | 0.11 | 10.0 (361) | 4/4 |
+| `playouts` (num_playouts=5) | off | 2 | 8.9 / 39 (15.5 / 50) | 0.60 | 734.5 / 3556 / 10951 (1507.9 / 7303) | 42.72 | 0.01 | 78.9 (46) | 2/2 |
+| `vf` | off | 8 | 7.3 / 26 (10.7 / 38) | 0.59 | 1.2 / 5 / 19 (2.0 / 7) | 0.09 | 6.25 | 0.5 (7198) | 4/8 |
+| `ab` | off | 8 | 7.9 / 36 (12.1 / 51) | 0.60 | 30.7 / 172 / 711 (49.3 / 225) | 2.22 | 0.27 | 3.9 (932) | 1/8 |
+| `value` | value | 40 | 23.3 / 98 (37.6 / 132) | 3.51 | 2.2 / 12 / 113 (3.5 / 15) | 0.22 | 15.82 | 2.1 (1693) | 34/40 |
+
+(3.3.0, `--workers 2 --seed 7 --verbose --json ...` with `--opponent
+alphabeta --games 8`, `--opponent alphabeta --opponent-params depth=1
+--games 4`, `--opponent sameturn --games 8`, `--opponent mcts --games 4`,
+`--opponent playouts --opponent-params num_playouts=5 --games 2`,
+`--opponent vf,ab --games 8`; `PYTHONHASHSEED=0`, no other benchmark
+running; the `value` rows are the smoke runs above, during which a
+single-process trade probe also ran.  "Choices" = decisions with
+more than one playable action; the opponents' numbers pool all three
+seats.  Win counts of 2-8 games are only a sanity check.)
+
+* **Compute is not equal, and the direction depends on the opponent.**
+  catanbot's depth-1 heuristic search costs 0.6-1.0 s per game (8-12 ms
+  per decision, p95 30-75 ms).  Against catanatron's `value` player (0.23 s
+  per seat per game) and our `vf` stand-in it spends 4-6x more; against
+  `alphabeta` (8.1 s per seat per game, 105 ms per decision, p95 232 ms,
+  slowest 6.1 s), `sameturn` (7.2 s) and `mcts` (5.9 s) it spends about
+  **10x less**, against `ab` about 4x less and against `playouts` (even at
+  `num_playouts=5`: 43 s per seat per game) 70x less.  So catanbot's 60-66 %
+  against `alphabeta` / `sameturn` (results section) is not bought with more
+  compute, while its ~65 % against `value` uses about 4x the opponent's.
+* **Trading changes our side only**: with `--trades value` catanbot spends
+  3.5 s per game (23 ms per decision, p95 98 ms) - 16x a `value` seat.
+  Compute-matched comparisons with trading on need that factor in mind (or
+  a cheaper spec).
+* catanatron's `AlphaBetaPlayer` stops a search after 20 s of wall time;
+  its slowest decision here was 6.1 s (`sameturn` 4.6 s), so no search was
+  cut short, but a machine loaded far beyond 2 workers could reach the
+  limit and change its play.
+* **Throughput for the campaign** (2 workers): `value` about 4 300 games /
+  hour (1 700 with `--trades value`), `vf` 7 200, `ab` 930, `alphabeta`
+  270, `sameturn` 300, `mcts` 360, `playouts` (5 playouts) 46.  A 2 000-game
+  run against `alphabeta` or `sameturn` therefore takes about 7 hours of
+  2-worker time, i.e. about 25-35 commands of 60-80 games under a 20-minute
+  limit (distinct `--seed`s, merged afterwards; the JSON is written only
+  when a command completes); against `value` it is
+  about 30 minutes with trades off and 70 minutes with trades on.
+  `--opponent-params depth=1` makes `alphabeta` 25x cheaper (0.30 s per
+  seat per game) but it is then a different, weaker opponent (4/4 wins).
+
 ## How the mapping works
 
 ### Board ids
@@ -443,8 +687,8 @@ cannot pay).
    bot decides it in `PHASE_TRADE_RESPONSE` / `PHASE_TRADE_SELECT` like any
    other decision, except the engine's question about our *own* offer,
    which is rejected without a search (`stats["trade_prompts"]`,
-   `"offers_received"`, `"self_offer_prompts"`, ...).
-0b. 3.3 with trades on, at our post-roll `PLAY_TURN`: the catanbot
+   `"offers_received"`, `"self_offer_prompts"`, ...).  With trades on, at
+   our post-roll `PLAY_TURN` the catanbot
    `PROPOSE_TRADE` candidates are added as `OFFER_TRADE` actions (cards we
    hold, fewer than 4 offers so far this turn), also when the only playable
    catanatron action is `END_TURN`; a proposal the search ranks from outside

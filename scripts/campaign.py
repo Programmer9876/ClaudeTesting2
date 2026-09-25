@@ -17,7 +17,8 @@ Each experiment::
      # ... or instead of the tunable: "cand_spec": "...", "def_spec": "...", optional "cand_set": {"NAME": v}
      "seeds": {"count": 2000, "base": 0}, "workers": 2, "priority": 1,
      # optional: "set", "adapter_opts", "cand_adapter_opts", "trades", "opponent_params", "stop_at_se",
-     #           "stop_min_pairs", "game_timeout", "vps_to_win", "discard_limit", "enabled", "notes", "extra_args"}
+     #           "stop_min_pairs", "game_timeout", "vps_to_win", "discard_limit", "enabled", "notes", "extra_args",
+     #           "reuse": false  (play this experiment's own default games: needed to compare decision times)}
 
 Experiments run in ascending ``priority`` (ties: plan order), one after another, each through the
 right interpreter with ``PYTHONHASHSEED=0``; every experiment appends to its own JSONL and reuses the
@@ -51,7 +52,7 @@ DEFAULT_INTERPRETERS = {
 EXPERIMENT_KEYS = {"name", "interpreter", "opponent", "tunable", "values", "flag_off", "base_spec", "cand_spec",
                    "def_spec", "cand_set", "set", "adapter_opts", "cand_adapter_opts", "trades", "opponent_params",
                    "seeds", "workers", "priority", "stop_at_se", "stop_min_pairs", "game_timeout", "vps_to_win",
-                   "discard_limit", "enabled", "notes", "extra_args"}
+                   "discard_limit", "enabled", "notes", "extra_args", "reuse"}
 NAME_RE = re.compile(r"^[A-Za-z0-9_.@+=-]+$")
 IDLE_GAP_S = 600.0     # gaps between records longer than this are not counted as playing time
 
@@ -140,7 +141,9 @@ def jsonl_path(d: str, e: Dict[str, Any]) -> str:
 def command(e: Dict[str, Any], d: str, interps: Dict[str, str], max_minutes: Optional[float]) -> List[str]:
     cmd = [interps[e["interpreter"]], ABLATE, "--out", jsonl_path(d, e), "--exp-name", e["name"],
            "--opponent", e["opponent"], "--seeds", str(e["seeds"]["count"]), "--seed-base", str(e["seeds"]["base"]),
-           "--workers", str(e["workers"]), "--reuse", os.path.join(d, "*.jsonl")]
+           "--workers", str(e["workers"])]
+    if e.get("reuse", True):
+        cmd += ["--reuse", os.path.join(d, "*.jsonl")]
     if e.get("tunable"):
         cmd += ["--tunable", e["tunable"]]
         vt = _values_text(e.get("values"))
@@ -317,8 +320,9 @@ def summary_markdown(exps: List[Dict[str, Any]], d: str, plan: str) -> str:
              "each seed is played once per arm (candidate / default catanbot seat, same board, dice seed and seat "
              "`s % 4`, 3 copies of the opponent).  `delta` = candidate minus default win rate (paired over seeds, "
              "+- one standard error; 95% CI = +-1.96 s.e.), `dVP` = paired difference of catanbot's final VP.  "
-             "`ms/dec` = mean catanbot decision time (candidate / default), `opp ms` = the opponents' mean decision "
-             "time.  `ident` = pairs whose two games were identical (the change never altered a decision).  A verdict "
+             "`ms/dec` = mean catanbot decision time (candidate / default) over the pairs whose two games were played "
+             "together (`(reused)`: every default game came from another experiment, run at another time and load, so "
+             "the two times are not comparable), `opp ms` = the opponents' mean decision time.  `ident` = pairs whose two games were identical (the change never altered a decision).  A verdict "
              "needs >= 30 pairs; `stopped` = sequential stop (--stop-at-se), whose estimate is biased away from 0.",
              "",
              "| prio | experiment | candidate | default | opponent | engine | pairs / planned | cand win % | def win % "
@@ -352,7 +356,8 @@ def summary_markdown(exps: List[Dict[str, Any]], d: str, plan: str) -> str:
                 f"{ctx.get('catanatron', '?')} | {st['pairs']} / {e['seeds']['count']} | {pct(st['win_rate_cand'])} | "
                 f"{pct(st['win_rate_def'])} | {AB.fmt_pp(st['delta']).replace('pp', '')} +- "
                 f"{pct(st['se'])} | [{pct(lo)}, {pct(hi)}] | "
-                f"{vpd} +- {AB.fmt(st['vp_se'])} | {AB.fmt(st['ms_cand'], 1)} / {AB.fmt(st['ms_def'], 1)} | "
+                f"{vpd} +- {AB.fmt(st['vp_se'])} | {AB.fmt(st['ms_cand'], 1)} / {AB.fmt(st['ms_def'], 1)}"
+                f"{'' if st.get('timing_coplayed', True) else ' (reused)'} | "
                 f"{AB.fmt(st['opp_ms_cand'], 1)} / {AB.fmt(st['opp_ms_def'], 1)} | {st['identical']}/{st['pairs']} | "
                 f"{st['verdict']} | {status} |")
     return "\n".join(lines) + "\n"

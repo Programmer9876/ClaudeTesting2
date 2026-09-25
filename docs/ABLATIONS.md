@@ -322,3 +322,167 @@ the late-game trade damping may be slightly too strong (stage drop 0.0 /
 the right side (removing it -1.7 pp, halving it -2.5 pp).  Knight value,
 dump candidates and the feed-the-leader guard are neutral at this sample
 size in self-play.
+
+## Paired ablations against Catanatron
+
+Self-play tells us whether a term helps against *catanbot*; the question that matters next is
+whether it helps against strong bots that share none of our code.  `scripts/ablate_catanatron.py`
+runs the same paired ablations with catanbot in **one** seat against **three copies of a Catanatron
+opponent**, and `scripts/campaign.py` strings many of them into a resumable campaign with thousands
+of games per candidate.  Tests: `tests/test_ablate_catanatron.py`.
+
+### Design
+
+* **Arms and pairing.**  For a registry tunable (`--tunable`, same `--values` / `--flag-off`
+  semantics as `scripts/ablate.py`) or two bot specs (`--cand-spec` / `--def-spec`, e.g. heuristic vs
+  search bot, depth 2 vs depth 1; `--cand-set NAME=VALUE` adds overrides to the candidate), every
+  seed `s` is played once per **arm**: the candidate catanbot and the default catanbot, each against
+  the same three opponents (`--opponent`: a `scripts/bench_catanatron.py` preset - `value`,
+  `alphabeta`, `sameturn` on the 3.3 engine, `vf`, `ab`, `vp`, `weighted`, `random` on both - with
+  `--opponent-params` passed through), with the **same board / dev deck / dice seed** (`s + 1`,
+  which is what `bench_catanatron.py --seed 0` uses for its game `s`) and the **same seat** (`s % 4`).
+  The default arm is played once per seed and shared by every candidate value of the invocation
+  (3 values cost 4 games per seed, not 6).  A worker process plays all arms of a seed back to back.
+* **Determinism.**  catanatron iterates sets of `Color` enums, whose order depends on Python's
+  string-hash seed, so the script re-executes itself with `PYTHONHASHSEED=0` when it is not set
+  (like `ablate.py`'s `CATANBOT_NO_ACCEL` re-exec; forked workers inherit it).  Measured: with the
+  seed pinned, a game is a deterministic function of (seed, arm) across processes, on 3.2.1 and 3.3,
+  and even across the C++ / Python evaluators (bit-exact port); without it two runs of the same seed
+  differ.  So the two arms of a pair are **identical up to the first catanbot decision that
+  differs**, which every pair verifies (below).
+* **Overrides.**  The catanbot seat is `CatanbotPlayer(bot=ParamBot(make_bot(spec), overrides))`:
+  weights / flags through `tuning.apply`, search knobs through `tuning.apply_to_bot`, restored after
+  every hook; a tunable read by the static evaluator (`needs_python_evaluator`) makes the script
+  re-execute with `CATANBOT_NO_ACCEL=1`, so both arms run the Python evaluator.  Players are built
+  exactly as `bench_catanatron.py` builds them: opponents through its `opponent_factory` and wrapped
+  in the adapter's `BenchOpponent` (per-decision timing, trade-answer rule), `suppress_trades =
+  (trades == "off")` for catanbot.  `--trades off|native|value|fair` (3.3 only) enables domestic
+  trading for both arms; `--cand-adapter-opt trades=MODE` for the candidate only; `--adapter-opt
+  KEY=VALUE` passes any other `CatanbotPlayer` keyword (an unknown one is an error, not a no-op).
+* **Pairing check.**  Each game record carries a fingerprint of the action log (a hash every 16
+  actions) and of catanbot's first 32 consulted decisions.  Per pair the report counts *identical*
+  games (the change never altered a decision), *diverged / consistent* (the logs agree up to the
+  first catanbot decision that differs, as they must) and *inconsistent* (the logs part before any
+  catanbot decision differs: nondeterminism, e.g. an opponent's time limit - catanatron's
+  `AlphaBetaPlayer` stops searching after 20 s).  The median first differing decision shows how
+  early a change starts to matter.
+
+### Statistics (per candidate, from the JSONL alone)
+
+Only complete pairs count (both arms finished without error, played by the same code).  With
+`c_s`, `d_s` = 1 if the candidate / default seat won seed `s`:
+
+* wins and win rate per arm; `delta` = mean of `c_s - d_s` = the difference of the two win rates;
+  `se` = standard deviation of the per-seed differences (unbiased) / `sqrt(n)`; 95% CI `delta +-
+  1.96 se`; `mde80 = 2.8 se`, the difference this sample detects with 80% power;
+* the same for catanbot's final VP (`vp_delta +- vp_se`): VP is the more sensitive statistic (every
+  game contributes a graded value, not just the ~25-65% that are wins);
+* the concordance table (both won / only candidate / only default / neither): only the discordant
+  pairs carry information, which is why pairing helps: `se ~ sqrt(discordant fraction) / sqrt(n)`;
+* per-seat breakdown (seat 0-3; seeds rotate seats, so use a multiple of 4 seeds);
+* catanbot decision time per arm (`inner.decide` of consulted decisions, mean and p95 pooled over
+  games from per-game log2 histograms), extra ms, the opponents' decision time, seconds per game,
+  turns, games truncated at the turn cap, adapter statistics (errors, fallbacks, unmapped top actions,
+  trade prompts / offers / confirmed trades) and the opponents' trade answers;
+* verdict: `candidate better` / `candidate worse` when the 95% interval excludes 0 with at least 30
+  pairs, else `no detectable difference at 95%` (or `inconclusive (< 30 pairs)`); the same for VP.
+
+Sample size.  An unpaired comparison at win rate `p` has `se = sqrt(2 p (1 - p) / n)`: 1.5 pp at
+`n = 2000` for `p = 0.64` (catanbot vs `value`), 1.4 pp at `p = 0.25`.  Pairing only lowers it (by
+the fraction of pairs whose outcome cannot change), so **2000 seeds detect ~4 pp with 80% power**
+and 1000 seeds ~6 pp.  A change that alters decisions in only a small fraction of games (see the
+identical-pair counts) has a correspondingly small possible effect.
+
+### JSONL, resume, reuse
+
+`--out FILE.jsonl` is append-only; one line per event, each written with a single `write` and
+fsynced:
+
+* `{"kind": "run", "run_key", "cand_key", "def_key", "cand": {spec, overrides, adapter, label},
+  "def": {...}, "ctx": {opponent, opponent_params, python, catanatron, evaluator, vps_to_win,
+  discard_limit, hashseed}, "seeds", "seed_base", "code", ...}` declares a comparison.  An *arm key*
+  hashes the arm's role, spec, overrides, adapter options and the context; the *run key* hashes the
+  two arm keys.
+* `{"kind": "game", "arm_key", "arm": "cand"|"def", "s", "game_seed", "seat", "status": "ok"|"error",
+  "winner", "winner_seat", "won", "our_vp", "opp_vps", "vps", "turns", "actions", "truncated",
+  "duration", "dec": {n, ms, mean, p95, max, h}, "dec_adapter", "opp_dec", "adapter": {...},
+  "opp_trade_stats", "trace", "ours", "code", "evaluator", "hashseed", "hash_probe", "pid", "t", ...}`
+  per finished game (candidate records also carry `run_key`); an `"error"` record holds the
+  exception (a game that raises, exceeds `--game-timeout`, or kills its worker process).
+* `{"kind": "stop", ...}` when a sequential stop ended a candidate.
+
+Rerunning the same command skips every (arm, seed) already in the file, so a killed run resumes
+where it stopped (a line cut short by the kill is skipped by the reader and terminated before the
+next append); `--seeds` can be raised later to extend a run; error records count as played unless
+`--retry-errors`.  `code` is a hash of every file that can change a game (the `catanbot` package
+except vision / CLI / training, the C++ extension, `bench_catanatron.py`, the catanatron version): a
+pair is only formed from two games with the same code, and a seed whose other arm was played by
+older code is re-played as a whole pair.  `--reuse GLOB` copies default-arm games with the same arm
+key and code from other files (marked `reused_from`) instead of replaying them; the campaign passes
+its whole directory.  `--report --out FILE` prints the statistics from the file alone
+(`--report-json` writes them).  `--max-minutes M` starts no new seed after M minutes (in-flight games
+finish).  A worker that dies (a hard crash, no Python exception) is detected, the in-flight seeds are
+re-played one game per fresh process and the game that kills its process again becomes an error
+record.
+
+`--stop-at-se X` (with `--stop-min-pairs`, default 100) ends a candidate once its paired s.e. is
+at most `X` **and** `|delta| > 3 s.e.`.  Caveat: looking repeatedly and stopping on a large
+difference biases the stopped estimate away from 0 (the winner's curse) and raises the false-positive
+rate above the nominal level of one look; the 3-s.e. threshold (two-sided p ~ 0.003 per look) keeps
+it small, but a stopped row is a screening result - confirm a surprising one with a fresh seed range
+(`--seed-base`).
+
+### Commands
+
+```bash
+export PYTHONPATH=/home/user/ClaudeTesting2
+PY33=/home/user/venv_cat33/bin/python       # catanatron 3.3: value / alphabeta / sameturn, domestic trading
+# a registry tunable vs 3 x catanatron's ValueFunctionPlayer, 2000 seeds (4000 games), 2 workers
+$PY33 scripts/ablate_catanatron.py --tunable danger.TURNS_HALF --values 2,4.5 --opponent value \
+    --seeds 2000 --workers 2 --out runs/turns_half@value.jsonl
+# search vs the heuristic bot, and depth 2 vs depth 1 (3.2.1 stand-ins, fast)
+python3 scripts/ablate_catanatron.py --cand-spec heuristic:temp=0 \
+    --def-spec search:depth=1,beam=4,expand=8,evaluator=heuristic --opponent vf --seeds 1000 --workers 2 --out runs/heur@vf.jsonl
+python3 scripts/ablate_catanatron.py --tunable search.depth --values 2 --opponent vf --seeds 1000 --workers 2 --out runs/depth2@vf.jsonl
+# trade proposals need domestic trading (3.3) and an answer rule for the opponents
+$PY33 scripts/ablate_catanatron.py --tunable search.trade_proposals --values 0 --opponent value --trades value \
+    --seeds 2000 --workers 2 --out runs/trades@value.jsonl
+python3 scripts/ablate_catanatron.py --report --out runs/turns_half@value.jsonl           # statistics only
+python3 scripts/ablate_catanatron.py ... --plan                                            # keys and progress only
+timeout 1200 $PY33 scripts/ablate_catanatron.py ... --max-minutes 15                      # a bounded chunk; rerun to resume
+```
+
+### Campaigns
+
+`scripts/campaign.py --plan plan.json --dir DIR` runs a list of experiments one after another in
+ascending `priority` (ties: plan order), each through the right interpreter (`py321` = system
+`python3` with catanatron 3.2.1, `py330` = `/home/user/venv_cat33/bin/python`; override with
+`"interpreters"` in the plan) with `PYTHONHASHSEED=0`, each appending to `DIR/<name>.jsonl` (its log
+in `DIR/logs/<name>.log`, events in `DIR/campaign_events.log`) and reusing the default-arm games other
+experiments in `DIR` already played.  After every experiment it rewrites the markdown summary
+(`--summary PATH`, default `DIR/SUMMARY.md`): one row per candidate with games, both arms' win rates,
+delta +- s.e., 95% CI, VP delta +- s.e., ms/decision of both arms, the opponents' ms/decision,
+identical pairs, verdict and status.  It is idempotent and resumable: a complete experiment is
+skipped, an incomplete one resumes, a failing experiment is logged and the campaign moves on, a
+crashing game is an error record.  `--status` prints per experiment the games done / planned, errors,
+reused games, measured throughput (games/hour from the record timestamps, idle gaps excluded) and
+the ETA; `--max-minutes M` bounds one invocation (run it under `timeout` in chunks and rerun);
+`--only a,b`, `--dry-run`, `--summary-only`, `--max-workers` (default 2 caps every experiment).
+
+```json
+{"defaults": {"seeds": {"count": 2000, "base": 0}, "workers": 2},
+ "experiments": [
+  {"name": "search_vs_heur@value", "interpreter": "py330", "opponent": "value", "priority": 1,
+   "cand_spec": "heuristic:temp=0", "def_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic"},
+  {"name": "trades@value", "interpreter": "py330", "opponent": "value", "priority": 1,
+   "tunable": "search.trade_proposals", "values": [0], "trades": "value"},
+  {"name": "depth2@value", "interpreter": "py330", "opponent": "value", "priority": 2,
+   "tunable": "search.depth", "values": [2], "seeds": {"count": 1000, "base": 0}},
+  {"name": "turns_half@value", "interpreter": "py330", "opponent": "value", "priority": 3,
+   "tunable": "danger.TURNS_HALF", "values": [2, 4.5], "stop_at_se": 0.012}
+ ]}
+```
+
+Other experiment fields: `flag_off`, `base_spec`, `cand_set` / `set` (`{"NAME": value}`),
+`adapter_opts` / `cand_adapter_opts`, `trades`, `opponent_params`, `stop_at_se`, `stop_min_pairs`,
+`game_timeout`, `vps_to_win`, `discard_limit`, `enabled`, `notes`, `extra_args` (passed through).
