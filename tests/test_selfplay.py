@@ -50,12 +50,15 @@ def test_sibling_recording_main_phase():
     assert len(main_nodes) >= 5
     main_rows = np.isin(r.s_node, main_nodes)
     # every main-phase sibling is the state after the action *and* END_TURN: the next player's roll phase, so
-    # no "still my turn" feature can separate END_TURN from the other actions
-    assert np.all(X[main_rows, F.feature_index("g_my_turn")] == 0.0)
+    # no "still my turn" feature can separate END_TURN from the other actions (a sibling that wins the game ends
+    # in game over on our own turn, which is the only exception)
+    over = X[:, F.feature_index("g_phase_game_over")] == 1.0
+    assert np.all(X[main_rows & ~over, F.feature_index("g_my_turn")] == 0.0)
     assert np.all(X[main_rows, F.feature_index("g_phase_roll")] + X[main_rows, F.feature_index("g_phase_game_over")] == 1.0)
     # the mid-turn twin of every main-phase sibling is still my main phase (the decision state itself for END_TURN)
-    assert np.all(Xm[main_rows, F.feature_index("g_my_turn")] == 1.0)
-    assert np.all(Xm[main_rows, F.feature_index("g_phase_main")] == 1.0)
+    over_m = Xm[:, F.feature_index("g_phase_game_over")] == 1.0
+    assert np.all(Xm[main_rows & ~over_m, F.feature_index("g_my_turn")] == 1.0)
+    assert np.all(Xm[main_rows & ~over_m, F.feature_index("g_phase_main")] == 1.0)
     for node in main_nodes:
         rows = r.s_node == node
         assert rows.sum() >= 2

@@ -37,6 +37,16 @@ def give_spot(s, i):
     raise AssertionError("no free vertex on the board")
 
 
+def no_dev_cards(s, *players):
+    """No dev cards (so no hidden VP) for the given players: the scenarios fix VP exactly."""
+    for i in players:
+        p = s.players[i]
+        p.dev_cards = [0] * 5
+        p.dev_cards_new = [0] * 5
+        p.dev_known = True
+        p.dev_count = 0
+
+
 def no_awards(s):
     """Put Longest Road / Largest Army out of everyone's reach (player 3 holds both, far ahead)."""
     s.longest_road_owner = 3
@@ -89,6 +99,7 @@ def test_loaded_runner_up_outranks_overextended_leader():
     q.resources = [1, 1, 1, 3, 3]
     give_spot(s, run)
     no_awards(s)
+    no_dev_cards(s, lead, run)
     assert s.public_vp(lead) == 9 and s.public_vp(run) == 8
     paths = win_paths(s)
     assert paths[run].can_win_now and paths[run].danger == 1.0
@@ -116,6 +127,7 @@ def test_block_factor_tracks_need_hand_and_port():
     # even though a settlement is cheaper in total.
     p.resources = [0, 0, 0, 2, 1]
     no_awards(s)
+    no_dev_cards(s, i)
     wp = win_path(s, i)
     assert wp.need_vp == 1 and wp.steps == ["city"]
     assert wp.need_share[B.ORE] > 0.99 and wp.missing[B.ORE] == 2.0

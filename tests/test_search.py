@@ -647,9 +647,14 @@ def test_depth3_sub_search_runs_for_every_lookahead_leaf_or_for_none():
             return super()._reduced_search_values(leaves, me, depth)
 
     s = mid_game(seed=13)
-    d2 = Searcher(ev, SearchConfig(depth=2, max_nodes=4000, **base))
+    # the budget is set from what depth 2 actually uses on this position, so the test does not depend on the
+    # size of the tree: 400 spare nodes can never cover REDUCED_SEARCH_MIN_NODES x (>= 1) leaves
+    probe = Searcher(ev, SearchConfig(depth=2, max_nodes=10 ** 6, **base))
+    probe.search(s, 0, random.Random(1))
+    tight_budget = probe.nodes + REDUCED_SEARCH_MIN_NODES - 100
+    d2 = Searcher(ev, SearchConfig(depth=2, max_nodes=tight_budget, **base))
     r2 = d2.search(s, 0, random.Random(1))
-    tight = Spy(ev, SearchConfig(depth=3, max_nodes=4000, **base))
+    tight = Spy(ev, SearchConfig(depth=3, max_nodes=tight_budget, **base))
     r3 = tight.search(s, 0, random.Random(1))
     assert not hasattr(tight, "sub_leaves")                      # not affordable: no leaf was searched ...
     assert tight.nodes == d2.nodes                               # ... and nothing else changed

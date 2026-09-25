@@ -486,3 +486,55 @@ the ETA; `--max-minutes M` bounds one invocation (run it under `timeout` in chun
 Other experiment fields: `flag_off`, `base_spec`, `cand_set` / `set` (`{"NAME": value}`),
 `adapter_opts` / `cand_adapter_opts`, `trades`, `opponent_params`, `stop_at_se`, `stop_min_pairs`,
 `game_timeout`, `vps_to_win`, `discard_limit`, `enabled`, `notes`, `extra_args` (passed through).
+`"reuse": false` makes an experiment play its own default games: reused default games were played
+at another time and load, so the decision-time comparison then only uses co-played pairs (the report
+prints how many; a row whose default games were all reused is marked `(reused)` in the summary).
+
+### Smoke and pilot results (2026-09-25; 4 shared cores, another benchmark on the other 2)
+
+Throughput at `--workers 2` (both arms counted; the default bot `search:depth=1,beam=4,expand=8,evaluator=heuristic`):
+
+| engine | opponent | games | wall | games / hour | s / game | 2000 seeds x 2 arms |
+|---|---|---|---|---|---|---|
+| 3.2.1 | `vf` (our stand-in) | 40 | 25 s | 5,800 | 1.2 | 0.7 h |
+| 3.2.1 | `vf`, Python evaluator (pyeval tunables) | 40 | 74 s | 1,950 | ~3.5 | 2.1 h |
+| 3.3.0 | `value` | 40 | 40 s | 3,560 | 2.0 | 1.1 h |
+| 3.3.0 | `value`, depth-2 candidate | 16 | 25 s | 2,280 | 4.0 / 2.0 | 1.8 h |
+| 3.3.0 | `sameturn` | 8 | 80 s | 360 | 17.5 | 11 h |
+| 3.3.0 | `alphabeta` | 8 | 118 s | 244 | 21.6 | 16 h |
+
+Each further candidate value of the same experiment (or any experiment sharing the default arm)
+costs only its own games, i.e. half of the last column.
+
+Pairing checks (all measured with this harness):
+* A/A runs (`search.trade_proposals=0`: with trading off, catanbot can never propose, so the arms are
+  the same bot): 20/20 identical games vs `value`, 4/4 vs `alphabeta`, 4/4 vs `sameturn`, 20/20 vs `vf`;
+  every paired difference exactly 0.  catanatron's 20-s AlphaBeta deadline did not break determinism
+  at these game lengths (21 s per whole game).
+* Every non-identical pair was consistent (the action logs agree up to the first catanbot decision
+  that differs): `danger.TURNS_HALF=2` vs `vf` 1/1 (decision #24, action 144, reproduced in a second
+  process), `search.depth=2` vs `value` 8/8 (decision #1), trade proposals 0 vs 3 with `--trades value`
+  on 3.3 8/8.
+* The default arm reproduces `scripts/bench_catanatron.py --seed 0` game for game (8/8 identical
+  VPs and turn counts vs `vf`).
+
+Pilot: which terms change a decision at all against Catanatron?  21 tunables at one extreme value,
+20 seeds each vs `vf` on 3.2.1 (trading off), run as one campaign (6.8 minutes; the default games
+were played once and reused).  "Identical" = pairs whose two games were the same game:
+
+| identical pairs | tunables |
+|---|---|
+| 20/20 (no decision ever changed) | `search.trade_proposals=0`, `coalitions.BLOC_THRESHOLD=100`, `coalitions.SCALE=2`, `politics.MAX_SLACK=0`, `opponent_model.VALUE_LR=0`, `opponent_model.stage_late_drop=0`, `trading.accept_margin=0.03`, `trading.feed_leader_guard=off`, `devcards.MONOPOLY_BASE_VALUE=0.9` |
+| 15-19/20 | `danger.TURNS_HALF=6` 19, `danger.BLOCK_NEED=0` 19, `danger.danger_multiplier=off` 18, `devcards.KNIGHT_VALUE=0.3` 18, `danger.BLOCK_FLOOR=0` 17, `placement.PLACEMENT_BLOCK_WEIGHT=0` 15, `placement.PLACEMENT_ROBBER_Q=0` 15 |
+| 0-12/20 | `search.dump_candidates=0` 12, `heuristic.EXPOSURE_WEIGHT=0` 7, `search.beam=2` 1, `search.expand=4` 1, `placement.RESOURCE_DEMAND=1/1/1/1/1` 1 |
+
+Reading: the trading / politics / coalition / opponent-model terms only act through domestic trades,
+so **against Catanatron they can only be tested on 3.3 with `--trades value` or `fair`** (our model of
+how an opponent answers an offer: catanatron's own players answer degenerately - `value` always
+rejects, `alphabeta` / `sameturn` raise and are counted as rejecting, see docs/BENCHMARKS.md), and
+there they measure the term against that answer rule, not against Catanatron.  The danger / robber /
+placement-block terms change a decision in only 5-25% of games; a term that changes a fraction `f`
+of games can move the win rate by at most `f`, and its paired s.e. is at most `sqrt(f / n)` (0.7 pp
+at `f = 0.1`, 2000 seeds), so thousands of seeds are needed and the possible effect is small.  The
+search knobs, the evaluator weights and the placement demand vector change almost every game and are
+where a 2000-seed run can find 3-4 pp.  (Win rates in this 20-seed pilot are noise: +-10 pp s.e.)

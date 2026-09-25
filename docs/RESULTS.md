@@ -4,6 +4,23 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 17:10 UTC - boards now fully random (port types were fixed)
+
+Our engine shuffled tiles and number tokens per game but always put the
+same port type at each of the 9 harbour slots, so every self-play game,
+every self-play ablation and the whole value-net replay buffer shared one
+harbour layout (an overfitting risk for the net and for port-related
+terms).  `new_game(rng=...)` now also shuffles the 9 port types over the
+standard slots (as Catanatron's base map does); the shuffle is seeded from
+the random tiles, so a seed's dice stream is unchanged.  200 seeds give 200
+distinct harbour layouts.  The Catanatron benchmarks were unaffected
+(Catanatron already randomises ports).  Self-play ablation results so far
+were measured on the fixed layout; the Catanatron campaign is the one to
+trust.  Also found and fixed: the installed C++ extension was older than
+its sources (a verification agent had built the depth-3 budget fix into a
+staged file and never installed it); rebuilt.  Full suite: 474 passed, 14
+skipped.
+
 ## 2026-09-25 16:30 UTC - five trade proposals vs three (200 paired games)
 
 Five proposals per node instead of three: -3.0 pp (s.e. 3.5), +1.9 ms per

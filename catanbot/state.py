@@ -13,6 +13,8 @@ screenshot parsers and the tests.
 """
 from __future__ import annotations
 
+import random
+
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -360,13 +362,24 @@ class GameState:
         return s
 
 
-def new_game(num_players: int = 4, rng=None, hexes=None, ports=None, colors=None) -> GameState:
-    """Fresh game in the setup phase.  ``rng`` is a ``random.Random`` (random board if given)."""
+def new_game(num_players: int = 4, rng=None, hexes=None, ports=None, colors=None,
+             random_ports: bool = True) -> GameState:
+    """Fresh game in the setup phase.  ``rng`` is a ``random.Random`` (random board if given).
+
+    With an ``rng`` and no explicit ``hexes``/``ports`` the whole board is random:
+    tiles, number tokens and the port types over the 9 standard harbour slots
+    (``random_ports=False`` keeps the standard harbours).  The port shuffle is
+    seeded from the random tiles, not drawn from ``rng``, so the dice / steal /
+    dev-card stream of a seeded game is the same as before ports were random.
+    """
     s = GameState()
     if hexes is not None:
         s.hexes = list(hexes)
     elif rng is not None:
         s.hexes = B.random_hexes(rng)
+        if ports is None and random_ports:
+            # tuple-of-int hashes are deterministic (no PYTHONHASHSEED dependence)
+            s.ports = B.random_ports(random.Random(hash(tuple(s.hexes)) & 0xFFFFFFFF))
     s.robber = next(i for i, (r, _) in enumerate(s.hexes) if r == B.DESERT)
     if ports is not None:
         s.ports = dict(ports)

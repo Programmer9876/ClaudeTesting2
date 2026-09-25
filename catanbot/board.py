@@ -227,6 +227,18 @@ def ports_from_edges(port_edges) -> Dict[int, int]:
 
 STANDARD_PORTS: Dict[int, int] = ports_from_edges(STANDARD_PORT_EDGES)
 
+
+def random_port_edges(rng) -> List[Tuple[int, int]]:
+    """Standard harbour positions with the 9 port types shuffled (as Catanatron's base map does)."""
+    types = list(_STANDARD_PORT_TYPES)
+    rng.shuffle(types)
+    return [(COASTAL_EDGES[s], t) for s, t in zip(_STANDARD_PORT_SLOTS, types)]
+
+
+def random_ports(rng) -> Dict[int, int]:
+    """``{vertex: port_type}`` for :func:`random_port_edges`."""
+    return ports_from_edges(random_port_edges(rng))
+
 # Official beginner layout (rows top to bottom): (resource, number)
 STANDARD_HEXES: List[Tuple[int, int]] = [
     (ORE, 10), (SHEEP, 2), (WOOD, 9),
