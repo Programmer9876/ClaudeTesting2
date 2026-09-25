@@ -282,6 +282,79 @@ def test_build_pairs():
     assert set((int(perm[i]), int(perm[j])) for i, j in zip(pos3, neg3)) == pairs
 
 
+def test_pair_delta_mode_gradient_and_magnitude():
+    """Delta mode regresses the sibling logit difference onto its target: exact gradient, and the fitted
+    differences match the targets in magnitude where the hinge only orders (and keeps pushing)."""
+    from catanbot.model import PAIR_MODES, pair_rank_loss
+    assert PAIR_MODES == ("hinge", "delta")
+    l, g = pair_rank_loss(np.array([1.0, 0.5]), np.array([0.0, 0.0]), np.array([0.4, 0.5]), np.array([1.0, 2.0]), "delta")
+    assert l == pytest.approx((1.0 * 0.6 ** 2 + 2.0 * 0.0 ** 2) / 2) and g[0] == pytest.approx(2 * 0.6 / 2) and g[1] == 0.0
+    with pytest.raises(ValueError):
+        pair_rank_loss(np.zeros(1), np.zeros(1), 0.1, None, "nope")
+    rng = np.random.default_rng(21)
+    net = ValueNet(n_in=3, hidden=(4,), seed=2, dtype=np.float64)
+    net.fit_normalisation(rng.normal(size=(40, 3)))
+    X = rng.normal(size=(6, 3))
+    y = rng.integers(0, 2, size=6).astype(np.float64)
+    P = (rng.normal(size=(5, 3)), rng.normal(size=(5, 3)), np.array([0.3, 0.0, 0.5, 0.2, 0.4]), np.array([2.0, 0.5, 1.0, 1.5, 0.0]))
+    kw = dict(weight_decay=0.01, pairs=P, pair_weight=0.7, pair_mode="delta")
+    loss, gW, gb = net.loss_and_grads(X, y, **kw)
+    analytic = np.concatenate([np.concatenate([w.ravel(), b.ravel()]) for w, b in zip(gW, gb)])
+    theta = net.get_params()
+    numeric = np.empty_like(theta)
+    h = 1e-6
+    for i in range(theta.size):
+        tp = theta.copy(); tp[i] += h; net.set_params(tp)
+        lp = net.loss_and_grads(X, y, **kw)[0]
+        tm = theta.copy(); tm[i] -= h; net.set_params(tm)
+        lm = net.loss_and_grads(X, y, **kw)[0]
+        numeric[i] = (lp - lm) / (2 * h)
+    net.set_params(theta)
+    rel = np.linalg.norm(analytic - numeric) / (np.linalg.norm(analytic) + np.linalg.norm(numeric))
+    assert rel < 1e-6, rel
+    # synthetic siblings: pairs differ in f1 by one unit; targets 0.2 for "road-like" pairs, 1.0 for
+    # "settlement-like" pairs (f3 marks the kind).  Delta mode reproduces the two magnitudes; the hinge with
+    # the same values as margins drives both differences well past them.
+    N = 3000
+    X = rng.normal(size=(N, 4)).astype(np.float32)
+    y = (X[:, 0] + 0.3 * rng.normal(size=N) > 0).astype(np.float32)
+    Xp = rng.normal(size=(2000, 4)).astype(np.float32)
+    Xp[:, 3] = rng.integers(0, 2, size=2000)
+    Xn = Xp.copy()
+    Xn[:, 1] -= 1.0
+    target = np.where(Xp[:, 3] > 0.5, 1.0, 0.2)
+    fit_kw = dict(epochs=15, batch_size=64, lr=0.01, weight_decay=0.0, X_val=X[:400], y_val=y[:400], pair_weight=1.0,
+                  patience=0, input_noise=0.05, pair_batch=64)
+    dnet = ValueNet(n_in=4, hidden=(16,), seed=0)
+    hd = dnet.fit(X, y, pairs=(Xp[200:], Xn[200:], target[200:]), val_pairs=(Xp[:200], Xn[:200], target[:200]),
+                  pair_mode="delta", **fit_kw)
+    hnet = ValueNet(n_in=4, hidden=(16,), seed=0)
+    hh = hnet.fit(X, y, pairs=(Xp[200:], Xn[200:], target[200:]), val_pairs=(Xp[:200], Xn[:200], target[:200]),
+                  pair_mode="hinge", **fit_kw)
+    dd = dnet.logits(Xp[:200]) - dnet.logits(Xn[:200])
+    dh = hnet.logits(Xp[:200]) - hnet.logits(Xn[:200])
+    big, small = target[:200] > 0.5, target[:200] < 0.5
+    assert abs(dd[big].mean() - 1.0) < 0.25 and abs(dd[small].mean() - 0.2) < 0.15, (dd[big].mean(), dd[small].mean())
+    assert dh[small].mean() > 0.6 and dh[big].mean() > 1.5, (dh[small].mean(), dh[big].mean())   # the hinge overshoots
+    assert hd["val_pair_acc"][-1] > 0.9 and hd["val_pair_loss"][-1] < hd["val_pair_loss"][0]
+    assert hd["val_auc"][-1] > hh["val_auc"][-1] - 0.05
+
+
+def test_pair_weights():
+    from catanbot.selfplay import SIBLING_KIND_SETUP, sibling_kind_id
+    from catanbot.train import pair_weights
+    from catanbot import actions as A
+    acc, rej = sibling_kind_id((A.ACCEPT_TRADE,)), sibling_kind_id((A.REJECT_TRADE,))
+    kp = np.array([acc, rej, SIBLING_KIND_SETUP, 2, 14], np.int8)
+    kn = np.array([rej, acc, SIBLING_KIND_SETUP, 0, 14], np.int8)
+    w = pair_weights(kp, kn, offer_weight=3.0, setup_weight=0.5)
+    raw = np.array([3.0, 3.0, 0.5, 1.0, 1.0])
+    np.testing.assert_allclose(w, raw / raw.mean())
+    assert w.mean() == pytest.approx(1.0)
+    np.testing.assert_array_equal(pair_weights(kp, kn), np.ones(5))      # defaults: no reweighting
+    assert pair_weights(np.zeros(0, np.int8), np.zeros(0, np.int8)).shape == (0,)
+
+
 def test_build_pairs_other_phase_gap():
     """Offer / robber / discard nodes (all rows of ``SIBLING_OTHER_KINDS``) use the smaller ``gap_other``:
     accept vs reject differ by a card or two, far below the main-phase gap."""
@@ -320,7 +393,8 @@ def test_pair_rank_gradient_and_fit():
     net.fit_normalisation(rng.normal(size=(40, 3)))
     X = rng.normal(size=(6, 3))
     y = rng.integers(0, 2, size=6).astype(np.float64)
-    P = (rng.normal(size=(5, 3)), rng.normal(size=(5, 3)), np.array([0.3, 0.1, 0.5, 0.2, 0.4]))
+    P = (rng.normal(size=(5, 3)), rng.normal(size=(5, 3)), np.array([0.3, 0.1, 0.5, 0.2, 0.4]),
+         np.array([2.0, 0.5, 1.0, 1.5, 0.0]))    # per-pair margins and weights
     C = (rng.normal(size=(4, 3)), rng.normal(size=(4, 3)))
     kw = dict(weight_decay=0.01, pairs=P, pair_weight=0.7, consistency=C, consistency_weight=0.4)
     loss, gW, gb = net.loss_and_grads(X, y, **kw)
@@ -339,6 +413,9 @@ def test_pair_rank_gradient_and_fit():
     assert rel < 1e-6, rel
     l0, g0 = pair_rank_loss(np.array([2.0, 0.0]), np.array([0.0, 0.0]), 0.5)
     assert l0 == pytest.approx((np.log1p(np.exp(-1.5)) + np.log1p(np.exp(0.5))) / 2) and g0.shape == (2,) and (g0 < 0).all()
+    # per-pair weights scale each pair's loss and gradient; a zero weight removes the pair
+    lw, gw = pair_rank_loss(np.array([2.0, 0.0]), np.array([0.0, 0.0]), 0.5, np.array([3.0, 0.0]))
+    assert lw == pytest.approx(3 * np.log1p(np.exp(-1.5)) / 2) and gw[0] == pytest.approx(3 * g0[0]) and gw[1] == 0.0
     # ranking is learned without hurting the outcome fit: y depends on f0, the pairs order f1
     N = 3000
     X = rng.normal(size=(N, 4)).astype(np.float32)
@@ -397,6 +474,22 @@ def test_fit_replay_with_siblings(tmp_path):
     # without the mid-turn twins (older sibling data) only the ranking term is used
     _, hist4, _, _ = T.fit_replay(X, y, g, args, seed=0, siblings=(Xs, sn, sh, sk))
     assert hist4["n_cons"] == 0 and "cons_loss" not in hist4 and hist4["n_pairs"] == hist["n_pairs"]
+    # offer nodes (accept / reject, a 0.002 gap) only form pairs through --rank-gap-other
+    from catanbot.selfplay import sibling_kind_id
+    from catanbot import actions as A
+    n_off = 30
+    Xo = rng.normal(size=(2 * n_off, F.NUM_FEATURES)).astype(np.float16)
+    so = np.repeat(np.arange(n_off, dtype=np.int64) * 7 + 100000, 2)
+    ho = np.tile(np.array([0.300, 0.302], np.float32), n_off)
+    ko = np.tile(np.array([sibling_kind_id((A.REJECT_TRADE,)), sibling_kind_id((A.ACCEPT_TRADE,))], np.int8), n_off)
+    sib = (np.concatenate([Xs, Xo]), np.concatenate([sn, so]), np.concatenate([sh, ho]), np.concatenate([sk, ko]))
+    _, h5, _, _ = T.fit_replay(X, y, g, args, seed=0, siblings=sib)
+    args_wide = T.build_parser().parse_args(["--fit-only", "--replay", buf, "--out", str(tmp_path / "n.npz"),
+                                             "--epochs", "1", "--hidden", "8", "--batch-size", "32", "--rank-batch", "16",
+                                             "--rank-gap-other", "0.01"])
+    _, h6, _, _ = T.fit_replay(X, y, g, args_wide, seed=0, siblings=sib)
+    assert h5["n_pairs"] + h5["n_val_pairs"] == hist["n_pairs"] + hist["n_val_pairs"] + n_off
+    assert h6["n_pairs"] + h6["n_val_pairs"] == hist["n_pairs"] + hist["n_val_pairs"]
     # sibling npz given on the command line is used by --fit-only (no game generation)
     sib = str(tmp_path / "sib.npz")
     np.savez(sib, Xs=Xs, sn=sn, sh=sh, sk=sk, Xm=Xm)
@@ -405,4 +498,8 @@ def test_fit_replay_with_siblings(tmp_path):
                    "--batch-size", "32", "--rank-batch", "16"]) == 0
     assert ValueNet.load(out).hidden == (8,)
     log = (tmp_path / "ranked_train.log").read_text()
-    assert "ranking pairs:" in log and "val_pair_acc" in log and "horizon-consistency pairs" in log
+    assert "ranking pairs (delta):" in log and "val_pair_acc" in log and "horizon-consistency pairs" in log
+    # the hinge mode (the pre-delta behaviour) is still selectable
+    assert T.main(["--fit-only", "--replay", buf, "--siblings", sib, "--out", out, "--epochs", "1", "--hidden", "8",
+                   "--batch-size", "32", "--rank-batch", "16", "--rank-loss", "hinge"]) == 0
+    assert "ranking pairs (hinge):" in (tmp_path / "ranked_train.log").read_text()

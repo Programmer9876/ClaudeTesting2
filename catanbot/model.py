@@ -34,7 +34,10 @@ probability in ``[0, 1]``.  It is a plain multilayer perceptron:
   behaviour policy never makes (holding an affordable build), so the net is
   told directly which sibling is better (the heuristic's ordering of concrete
   afterstates, see ``selfplay.play_game(sibling_rate=...)``) while the BCE keeps
-  its absolute values calibrated.
+  its absolute values calibrated.  The pairs cover every decision the search
+  bot makes with the net - main-phase actions, setup placements, incoming
+  offers, robber moves and discards - because the outcome labels resolve
+  none of them: an offer's accept / reject afterstates differ by a card.
 
 :meth:`ValueNet.evaluate` returns the exact value (1 / 0) for finished games,
 like the heuristic evaluator, because game-over states are never recorded.
@@ -52,7 +55,8 @@ import numpy as np
 from .features import FEATURE_NAMES, NUM_FEATURES, extract_batch
 from .state import PHASE_GAME_OVER
 
-__all__ = ["ValueNet", "binary_auc", "feature_mask", "pair_rank_loss", "HAND_BLIND_FEATURES", "MODEL_VERSION"]
+__all__ = ["ValueNet", "binary_auc", "feature_mask", "pair_rank_loss", "HAND_BLIND_FEATURES", "MODEL_VERSION",
+           "PAIR_MODES"]
 
 # Files written by this module: version 1 has no input mask (readable by older code), version 2
 # carries one (older loaders refuse it instead of silently using the net without its mask).
@@ -109,13 +113,31 @@ def _softplus(x: np.ndarray) -> np.ndarray:
     return np.maximum(x, 0.0) + np.log1p(np.exp(-np.abs(x)))
 
 
-def pair_rank_loss(z_pos: np.ndarray, z_neg: np.ndarray, margin) -> Tuple[float, np.ndarray]:
-    """Mean logistic ranking loss ``softplus(margin - (z_pos - z_neg))`` and ``d loss / d z_pos``
-    (``d loss / d z_neg`` is its negative).  ``margin`` is a scalar or one value per pair."""
-    d = np.asarray(margin, np.float64) - (np.asarray(z_pos, np.float64) - np.asarray(z_neg, np.float64))
-    loss = float(_softplus(d).mean())
-    g = -_sigmoid(d) / max(1, len(d))
-    return loss, g
+PAIR_MODES = ("hinge", "delta")
+
+
+def pair_rank_loss(z_pos: np.ndarray, z_neg: np.ndarray, margin, weight=None,
+                   mode: str = "hinge") -> Tuple[float, np.ndarray]:
+    """Pairwise loss on the logit difference ``z_pos - z_neg`` of two siblings and ``d loss / d z_pos``
+    (``d loss / d z_neg`` is its negative).
+
+    ``mode="hinge"``: ``mean(weight * softplus(margin - (z_pos - z_neg)))``, ordering only - the
+    difference is pushed past ``margin`` and, the softplus never being zero, ever further.
+    ``mode="delta"``: ``mean(weight * ((z_pos - z_neg) - margin) ** 2)``, i.e. the difference is
+    regressed onto ``margin`` as its target: ordering *and* magnitude.  ``margin`` is a scalar or one
+    value per pair, ``weight`` (one value per pair, default 1) scales each pair's term.
+    """
+    if mode not in PAIR_MODES:
+        raise ValueError(f"unknown pair loss mode {mode!r}")
+    diff = np.asarray(z_pos, np.float64) - np.asarray(z_neg, np.float64)
+    m = np.asarray(margin, np.float64)
+    w = np.ones_like(diff) if weight is None else np.asarray(weight, np.float64)
+    n = max(1, len(diff))
+    if mode == "delta":
+        d = diff - m
+        return float((w * d * d).mean()), 2.0 * w * d / n
+    d = m - diff
+    return float((w * _softplus(d)).mean()), -w * _sigmoid(d) / n
 
 
 def binary_auc(y_true: np.ndarray, scores: np.ndarray) -> float:
@@ -273,7 +295,8 @@ class ValueNet:
     def loss_and_grads(self, X: np.ndarray, y: np.ndarray, weight_decay: float = 0.0,
                        pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None, pair_weight: float = 1.0,
                        pair_margin: float = 0.5, consistency: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-                       consistency_weight: float = 1.0) -> Tuple[float, List[np.ndarray], List[np.ndarray]]:
+                       consistency_weight: float = 1.0, pair_mode: str = "hinge"
+                       ) -> Tuple[float, List[np.ndarray], List[np.ndarray]]:
         """Mean BCE (+ L2 penalty, + the pairwise ranking / horizon-consistency terms of :meth:`fit` with
         ``pairs`` / ``consistency``) and its gradients w.r.t. ``W`` and ``b``.
 
@@ -294,7 +317,8 @@ class ValueNet:
         if pairs is not None and len(pairs[0]) > 0 and pair_weight > 0:
             zp, acts_p = self._forward(self._prep(np.asarray(pairs[0])), keep=True)
             zn, acts_n = self._forward(self._prep(np.asarray(pairs[1])), keep=True)
-            pl, gp = pair_rank_loss(zp, zn, pairs[2] if len(pairs) > 2 and pairs[2] is not None else pair_margin)
+            pl, gp = pair_rank_loss(zp, zn, pairs[2] if len(pairs) > 2 and pairs[2] is not None else pair_margin,
+                                    pairs[3] if len(pairs) > 3 else None, pair_mode)
             loss += pair_weight * pl
             gp = (gp * pair_weight).astype(self.dtype)[:, None]
             self._backprop(acts_p, gp, gW, gb)
@@ -393,7 +417,8 @@ class ValueNet:
             pair_weight: float = 1.0, pair_margin: float = 0.5, pair_batch: int = 256,
             val_pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None,
             consistency: Optional[Tuple[np.ndarray, np.ndarray]] = None, consistency_weight: float = 1.0,
-            val_consistency: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> Dict[str, object]:
+            val_consistency: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+            pair_mode: str = "hinge") -> Dict[str, object]:
         """Train with mini-batch Adam.
 
         ``X`` ``(N, n_in)`` raw features (any float dtype), ``y`` ``(N,)``
@@ -409,7 +434,11 @@ class ValueNet:
         z_neg))``: every mini-batch step also takes the next ``pair_batch``
         pairs (cycling through a shuffled order).  A third element
         ``(X_pos, X_neg, margins)`` gives every pair its own margin instead
-        of ``pair_margin``.  ``consistency = (X_a, X_b)`` adds
+        of ``pair_margin``, a fourth ``(..., margins, weights)`` its own
+        weight (the pair's term is multiplied by it; ``None`` = 1 for all).
+        ``pair_mode`` selects :func:`pair_rank_loss`'s form: ``"hinge"``
+        (ordering only) or ``"delta"`` (the margins are the *target*
+        differences: ordering and magnitude).  ``consistency = (X_a, X_b)`` adds
         ``consistency_weight * mean (z_a - z_b)^2`` on ``pair_batch`` rows
         per step the same way (``cons_loss`` / ``val_cons_loss`` in the
         history).  ``val_pairs`` are scored
@@ -441,6 +470,8 @@ class ValueNet:
             self._init_adam()
         batch_size = max(1, min(int(batch_size), n))
         has_pairs = pairs is not None and len(pairs[0]) > 0 and pair_weight > 0
+        if pair_mode not in PAIR_MODES:
+            raise ValueError(f"unknown pair loss mode {pair_mode!r}")
         if has_pairs:
             Pp = self._prep(np.asarray(pairs[0]))
             Pn = self._prep(np.asarray(pairs[1]))
@@ -451,6 +482,10 @@ class ValueNet:
                   else np.full(n_pairs, float(pair_margin)))
             if len(Pm) != n_pairs:
                 raise ValueError("one margin per pair expected")
+            Pw = (np.asarray(pairs[3], np.float64).ravel() if len(pairs) > 3 and pairs[3] is not None
+                  else np.ones(n_pairs))
+            if len(Pw) != n_pairs:
+                raise ValueError("one weight per pair expected")
             pair_batch = max(1, min(int(pair_batch), n_pairs))
             pidx = np.arange(n_pairs)
             p_pos = 0
@@ -460,6 +495,8 @@ class ValueNet:
             Vn = self._prep(np.asarray(val_pairs[1]))
             Vm = (np.asarray(val_pairs[2], np.float64).ravel() if len(val_pairs) > 2 and val_pairs[2] is not None
                   else float(pair_margin))
+            Vw = (np.asarray(val_pairs[3], np.float64).ravel() if len(val_pairs) > 3 and val_pairs[3] is not None
+                  else None)
         has_cons = consistency is not None and len(consistency[0]) > 0 and consistency_weight > 0
         if has_cons:
             Ca = self._prep(np.asarray(consistency[0]))
@@ -531,7 +568,7 @@ class ValueNet:
                     p_pos += pair_batch
                     zp, acts_p = self._forward(noisy(Pp[pb]), keep=True)
                     zn, acts_n = self._forward(noisy(Pn[pb]), keep=True)
-                    pl, gp = pair_rank_loss(zp, zn, Pm[pb])
+                    pl, gp = pair_rank_loss(zp, zn, Pm[pb], Pw[pb], pair_mode)
                     total_pair += pl
                     n_pair_steps += 1
                     gp = (gp * pair_weight).astype(self.dtype)[:, None]
@@ -581,8 +618,10 @@ class ValueNet:
             vpl = 0.0
             if has_val_pairs:
                 dv = self._forward(Vp) - self._forward(Vn)
-                vpl = float(_softplus(Vm - dv).mean())
-                vpa = float((dv > 0).mean())
+                vpl, _ = pair_rank_loss(self._forward(Vp), self._forward(Vn), Vm, Vw, pair_mode)
+                # share ordered correctly (in delta mode over the pairs whose target says pos > neg)
+                strict = np.asarray(Vm, np.float64) > 0 if pair_mode == "delta" else np.ones(len(dv), bool)
+                vpa = float((dv[strict] > 0).mean()) if strict.any() else 1.0
                 history["val_pair_loss"].append(vpl)  # type: ignore[union-attr]
                 history["val_pair_acc"].append(vpa)  # type: ignore[union-attr]
                 msg += f" val_pair_loss={vpl:.4f} val_pair_acc={vpa:.3f}"

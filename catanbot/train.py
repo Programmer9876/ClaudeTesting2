@@ -22,6 +22,18 @@ Each iteration:
    ``softplus(margin - (z_better - z_worse))`` so the net orders siblings
    like the heuristic (whose directions are right and only its magnitudes
    exaggerated) while the BCE keeps its absolute values calibrated.
+   The same is recorded for the decisions *outside* the main phase that the
+   search bot also makes with its evaluator: every setup placement
+   (``--rank-setup-rate``: the best spots, each with its setup road) and a
+   share ``--rank-other-rate`` of the incoming offers (accept / reject),
+   robber moves and discards, whose pairs use the smaller ``--rank-gap-other``
+   (an accept / reject pair differs by a card or two).  These phases, not
+   the main phase, were where the 0.11-vs-0.39 candidate lost: with the net
+   deciding only the main phase the bot was at parity with heuristic search,
+   answering offers with it too dropped it to 0.12 vs 0.38 (12 games each),
+   and at setup it picked the heuristic's best spot in a quarter of the
+   nodes (6 % less production).  A net that orders the main phase well but
+   answers offers and places settlements by noise still loses.
    ``--mask-features`` can additionally hide features from the net (e.g. the
    own-hand block, ``catanbot.model.HAND_BLIND_FEATURES``); off by default.
 3. **Evaluate** the candidate against the current best in a tournament and
@@ -118,8 +130,9 @@ def _val_split(ids: np.ndarray, seed: int) -> np.ndarray:
 
 def pair_margins(h_pos: np.ndarray, h_neg: np.ndarray, scale: float, max_margin: float,
                  min_margin: float = 0.05) -> np.ndarray:
-    """Per-pair logit margins: ``scale`` times the heuristic's logit gap, clipped to
-    ``[min_margin, max_margin]`` (``scale <= 0``: ``max_margin`` for every pair)."""
+    """Per-pair logit margins (hinge mode) or target differences (delta mode): ``scale`` times the
+    heuristic's logit gap, clipped to ``[min_margin, max_margin]`` (``scale <= 0``: ``max_margin`` for
+    every pair)."""
     if scale <= 0:
         return np.full(len(h_pos), float(max_margin))
     eps = 1e-4
@@ -127,6 +140,31 @@ def pair_margins(h_pos: np.ndarray, h_neg: np.ndarray, scale: float, max_margin:
     hn = np.clip(np.asarray(h_neg, np.float64), eps, 1 - eps)
     gap = np.log(hp / (1 - hp)) - np.log(hn / (1 - hn))
     return np.clip(scale * gap, min_margin, max_margin)
+
+
+def offer_pairs(kind_pos: np.ndarray, kind_neg: np.ndarray) -> np.ndarray:
+    """Mask of the incoming-offer pairs (accept vs reject of the same offer)."""
+    from .selfplay import SIBLING_OFFER_KINDS
+    return np.isin(np.asarray(kind_pos), SIBLING_OFFER_KINDS) & np.isin(np.asarray(kind_neg), SIBLING_OFFER_KINDS)
+
+
+def pair_weights(kind_pos: np.ndarray, kind_neg: np.ndarray, offer_weight: float = 1.0,
+                 setup_weight: float = 1.0) -> np.ndarray:
+    """Per-pair weights by decision type, normalised to mean 1: incoming-offer pairs (accept / reject)
+    get ``offer_weight``, setup-placement pairs ``setup_weight``, all others 1.  Offers are the most
+    frequent decision of a game (about 70 per seat) but one pair per node, setup placements the rarest
+    (2 per seat) but a dozen candidates each, so unweighted pairs are dominated by setup."""
+    from .selfplay import SIBLING_KIND_SETUP, SIBLING_OFFER_KINDS
+    kp = np.asarray(kind_pos)
+    kn = np.asarray(kind_neg)
+    w = np.ones(len(kp), np.float64)
+    offer = np.isin(kp, SIBLING_OFFER_KINDS) & np.isin(kn, SIBLING_OFFER_KINDS)
+    setup = (kp == SIBLING_KIND_SETUP) & (kn == SIBLING_KIND_SETUP)
+    w[offer] = float(offer_weight)
+    w[setup] = float(setup_weight)
+    if len(w) and w.mean() > 0:
+        w /= w.mean()
+    return w
 
 
 def build_pairs(node: np.ndarray, h: np.ndarray, kind: np.ndarray, gap: float = 0.02, per_node: int = 6,
@@ -222,24 +260,49 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
     n_pairs = n_val_pairs = n_cons = 0
     rank_weight = float(getattr(args, "rank_weight", 0.0) or 0.0)
     cons_weight = float(getattr(args, "rank_consistency", 0.0) or 0.0)
+    pair_mode = getattr(args, "rank_loss", "hinge") or "hinge"
+    delta = pair_mode == "delta"
+    # delta mode regresses the difference onto the heuristic's (scaled) logit gap: every pair is informative
+    # (a zero gap says "these two are equal"), so the pair gaps default to 0 and the target is not floored
+    gap = args.rank_gap if args.rank_gap is not None else (0.0 if delta else 0.01)
+    gap_other = getattr(args, "rank_gap_other", None)
+    if gap_other is None:
+        gap_other = 0.0 if delta else 0.001
+    m_scale = getattr(args, "rank_margin_scale", 0.0)
+    m_max = args.rank_margin
+    m_min = 0.0 if delta else 0.05
+    if delta:
+        m_scale = getattr(args, "rank_delta_scale", 1.0)
+        m_max = getattr(args, "rank_delta_cap", 2.0)
     if siblings is not None and len(siblings[0]) > 0 and (rank_weight > 0 or cons_weight > 0):
         Xs, sn, sh, sk = siblings[:4]
         Xm = siblings[4] if len(siblings) > 4 and siblings[4] is not None and len(siblings[4]) == len(sn) else None
         sval = _val_split(np.asarray(sn), args.seed)
         if rank_weight > 0:
-            pos, neg = build_pairs(sn, sh, sk, gap=args.rank_gap, per_node=args.rank_pairs, seed=seed,
-                                   gap_other=getattr(args, "rank_gap_other", None), other_kinds=SIBLING_OTHER_KINDS)
+            pos, neg = build_pairs(sn, sh, sk, gap=gap, per_node=args.rank_pairs, seed=seed,
+                                   gap_other=gap_other, other_kinds=SIBLING_OTHER_KINDS)
             if len(pos):
                 v = sval[pos]
-                m = pair_margins(sh[pos], sh[neg], getattr(args, "rank_margin_scale", 0.0), args.rank_margin)
-                pairs = (Xs[pos[~v]], Xs[neg[~v]], m[~v])
-                val_pairs = (Xs[pos[v]], Xs[neg[v]], m[v])
+                m = pair_margins(sh[pos], sh[neg], m_scale, m_max, m_min)
+                offer_scale = float(getattr(args, "rank_offer_scale", 1.0) or 1.0)
+                if delta and offer_scale != 1.0:
+                    # an accept / reject pair differs by a card or two (about 0.02 heuristic logits, below what
+                    # the net resolves): the target is amplified so the *sign* is learned, capped like the rest
+                    off = offer_pairs(sk[pos], sk[neg])
+                    m[off] = np.minimum(m[off] * offer_scale, m_max)
+                w = pair_weights(sk[pos], sk[neg], getattr(args, "rank_offer_weight", 1.0),
+                                 getattr(args, "rank_setup_weight", 1.0))
+                pairs = (Xs[pos[~v]], Xs[neg[~v]], m[~v], w[~v])
+                val_pairs = (Xs[pos[v]], Xs[neg[v]], m[v], w[v])
                 n_pairs, n_val_pairs = int((~v).sum()), int(v.sum())
             if log:
-                log(f"  ranking pairs: {n_pairs} train / {n_val_pairs} val from {len(np.unique(sn))} nodes "
-                    f"({len(sn)} afterstates); weight {rank_weight}, margin {args.rank_margin} x scale "
-                    f"{getattr(args, 'rank_margin_scale', 0.0)} (mean {float(m.mean()) if len(pos) else 0:.3f}), "
-                    f"gap {args.rank_gap} / {getattr(args, 'rank_gap_other', None)} (offers, robber, discards)")
+                log(f"  ranking pairs ({pair_mode}): {n_pairs} train / {n_val_pairs} val from {len(np.unique(sn))} nodes "
+                    f"({len(sn)} afterstates); weight {rank_weight}, {'target' if delta else 'margin'} = heuristic "
+                    f"logit gap x {m_scale} clipped to [{m_min}, {m_max}] (mean {float(m.mean()) if len(pos) else 0:.3f}), "
+                    f"gap {gap} / {gap_other} (offers, robber, discards); "
+                    f"pair weights: offers {getattr(args, 'rank_offer_weight', 1.0)}, setup "
+                    f"{getattr(args, 'rank_setup_weight', 1.0)}; offer target scale "
+                    f"{getattr(args, 'rank_offer_scale', 1.0) if delta else 1.0}")
                 if len(pos):
                     from .selfplay import SIBLING_KINDS
                     counts = np.bincount(np.asarray(sk[pos], dtype=np.int64), minlength=len(SIBLING_KINDS) + 1)
@@ -258,7 +321,7 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
                    input_noise=args.noise, refit_norm=not warm_from, log=log,
                    pairs=pairs, val_pairs=val_pairs, pair_weight=rank_weight,
                    pair_margin=getattr(args, "rank_margin", 0.5), pair_batch=getattr(args, "rank_batch", 256),
-                   consistency=cons, val_consistency=val_cons, consistency_weight=cons_weight)
+                   consistency=cons, val_consistency=val_cons, consistency_weight=cons_weight, pair_mode=pair_mode)
     hist["n_pairs"] = n_pairs
     hist["n_val_pairs"] = n_val_pairs
     hist["n_cons"] = n_cons
@@ -473,7 +536,7 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
     p.add_argument("--hidden", type=int, nargs="+", default=[64, 32])
     p.add_argument("--mask-features", default=DEFAULT_MASK, metavar="PATTERNS",
                    help="comma-separated glob patterns of feature names the net never sees (stored with the net); "
-                        "default: the own-hand block (resources, hand size, 7-risk, can-afford flags)")
+                        "default: none (catanbot.model.HAND_BLIND_FEATURES names the own-hand block)")
     p.add_argument("--no-mask", dest="mask_features", action="store_const", const="",
                    help="train on all features (the pre-mask behaviour)")
     p.add_argument("--rank-weight", type=float, default=1.0,
@@ -486,17 +549,33 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
     p.add_argument("--rank-other-rate", type=float, default=None,
                    help="share of incoming-offer / robber / discard decisions recorded as siblings "
                         "(default 5 x --rank-rate; 0 = none)")
-    p.add_argument("--rank-gap-other", type=float, default=0.001,
+    p.add_argument("--rank-offer-weight", type=float, default=3.0,
+                   help="weight of incoming-offer (accept / reject) pairs in the ranking term, relative to 1 for "
+                        "main-phase / robber / discard pairs (weights are normalised to mean 1)")
+    p.add_argument("--rank-setup-weight", type=float, default=0.5,
+                   help="weight of setup-placement pairs in the ranking term (a dozen candidates per node)")
+    p.add_argument("--rank-gap-other", type=float, default=None,
                    help="minimum heuristic gap for pairs of offer / robber / discard siblings (their values differ "
-                        "by a card or two, far less than --rank-gap)")
+                        "by a card or two, far less than --rank-gap; default 0.001 in hinge mode, 0 in delta mode)")
     p.add_argument("--rank-consistency", type=float, default=1.0,
                    help="weight of the mid-turn / END_TURN horizon-consistency term on the siblings (0 = off)")
-    p.add_argument("--rank-margin", type=float, default=0.5, help="max logit margin of the ranking term")
+    p.add_argument("--rank-loss", choices=["hinge", "delta"], default="delta",
+                   help="pair loss: 'delta' regresses the net's sibling logit difference onto the heuristic's "
+                        "(x --rank-delta-scale): ordering and magnitude; 'hinge' (softplus past a margin) orders "
+                        "only and inflates every build-vs-END_TURN gap until the search spends every card on roads")
+    p.add_argument("--rank-delta-scale", type=float, default=1.0,
+                   help="delta mode: target difference = scale x heuristic logit gap")
+    p.add_argument("--rank-delta-cap", type=float, default=2.0, help="delta mode: max target difference (logits)")
+    p.add_argument("--rank-offer-scale", type=float, default=5.0,
+                   help="delta mode: incoming-offer pairs get scale x their target (their heuristic gap is a card "
+                        "or two, ~0.02 logits; the search only needs its sign)")
+    p.add_argument("--rank-margin", type=float, default=0.5, help="hinge mode: max logit margin of the ranking term")
     p.add_argument("--rank-margin-scale", type=float, default=0.5,
                    help="per-pair margin = scale x heuristic logit gap, clipped to [0.05, --rank-margin] "
                         "(0 = fixed --rank-margin for every pair)")
-    p.add_argument("--rank-gap", type=float, default=0.01,
-                   help="minimum heuristic win-probability gap between two siblings to form a pair")
+    p.add_argument("--rank-gap", type=float, default=None,
+                   help="minimum heuristic win-probability gap between two siblings to form a pair "
+                        "(default 0.01 in hinge mode, 0 in delta mode)")
     p.add_argument("--rank-pairs", type=int, default=8, help="pairs per decision node")
     p.add_argument("--rank-batch", type=int, default=256, help="pairs per mini-batch step")
     p.add_argument("--rank-buffer", type=int, default=400000, help="max sibling rows kept in the replay buffer")

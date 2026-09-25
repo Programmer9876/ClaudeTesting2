@@ -81,7 +81,7 @@ from .agents.search_bot import SearchBot
 from .heuristic import HeuristicEvaluator
 from .search import SearchConfig
 from .state import (GameState, PHASE_DISCARD, PHASE_GAME_OVER, PHASE_MAIN, PHASE_ROBBER, PHASE_ROLL,
-                    PHASE_SETUP_ROAD, PHASE_SETUP_SETTLEMENT, PHASE_TRADE_RESPONSE, new_game)
+                    PHASE_SETUP_ROAD, PHASE_SETUP_SETTLEMENT, PHASE_TRADE_RESPONSE, PHASE_TRADE_SELECT, new_game)
 
 _SETUP_PHASES = (PHASE_SETUP_SETTLEMENT, PHASE_SETUP_ROAD)
 
@@ -214,6 +214,7 @@ SIBLING_KIND_SETUP = _SIBLING_KIND_ID[A.SETUP_SETTLEMENT]
 # with the same evaluator, and a net that orders them badly loses the game elsewhere than in the main phase.
 SIBLING_OTHER_PHASES = (PHASE_TRADE_RESPONSE, PHASE_ROBBER, PHASE_DISCARD)
 SIBLING_OTHER_KINDS = tuple(_SIBLING_KIND_ID[k] for k in (A.ACCEPT_TRADE, A.REJECT_TRADE, A.MOVE_ROBBER, A.DISCARD))
+SIBLING_OFFER_KINDS = tuple(_SIBLING_KIND_ID[k] for k in (A.ACCEPT_TRADE, A.REJECT_TRADE))
 
 
 def sibling_kind_id(action) -> int:
@@ -292,12 +293,51 @@ class _SiblingRecorder:
                 return s2
         return outs[-1][1]
 
+    def _offer_rows(self, state: GameState, me: int):
+        """The two afterstates of an incoming offer: ACCEPT with the trade executed *with me* and REJECT with
+        the offer resolved without me (the other responders answer as ``should_accept`` says, the proposer
+        trades with one of them or cancels).  The search values ACCEPT as an expectation over the accepters
+        the proposer might pick; the decision is about the trade with me, so the training pair is that
+        counterfactual and not a sampled resolution in which the trade went elsewhere."""
+        from .trading import should_accept
+        rows = []
+        for a in ((A.ACCEPT_TRADE,), (A.REJECT_TRADE,)):
+            try:
+                s = E.apply(state, a, self.searcher._rng)
+                guard = 0
+                while s.phase == PHASE_TRADE_RESPONSE and s.pending_trade is not None and guard < 8:
+                    j = E.acting_player(s)
+                    ok, _ = should_accept(s, j, s.pending_trade)
+                    s = E.apply(s, (A.ACCEPT_TRADE,) if ok and (A.ACCEPT_TRADE,) in E.legal_actions(s) else (A.REJECT_TRADE,),
+                                self.searcher._rng)
+                    guard += 1
+                if s.phase == PHASE_TRADE_SELECT and s.pending_trade is not None:
+                    legal = E.legal_actions(s)
+                    if a[0] == A.ACCEPT_TRADE:
+                        pick = (A.EXECUTE_TRADE, me)
+                    else:
+                        others = [x for x in legal if x[0] == A.EXECUTE_TRADE and x[1] != me]
+                        pick = others[self.rng.randrange(len(others))] if others else (A.CANCEL_TRADE,)
+                    if pick not in legal:
+                        return []
+                    s = E.apply(s, pick, self.searcher._rng)
+            except E.IllegalActionError:
+                return []
+            rows.append((s, sibling_kind_id(a)))
+        return rows
+
     def maybe_record_other(self, state: GameState, legal, me: int) -> None:
         """Incoming offer / robber / discard decisions: the candidates the search would expand (the best
         ``other_candidates`` - 4 by prior plus 4 random others), each at one common horizon per node."""
         if state.phase not in SIBLING_OTHER_PHASES or len(legal) < 2 or E.acting_player(state) != me:
             return
         if self.other_rate <= 0 or self.rng.random() >= self.other_rate:
+            return
+        if state.phase == PHASE_TRADE_RESPONSE:
+            if state.pending_trade is not None:
+                rows = self._offer_rows(state, me)
+                if len(rows) == 2:
+                    self._add_node([(s, s, k) for s, k in rows], me)
             return
         from .heuristic import action_priors
         acts = list(legal)
