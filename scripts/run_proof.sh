@@ -55,7 +55,7 @@ export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 # id  engine  opponent  our-seats  games  chunk  seed  smoke-seed  info   (docs/PROOF_PROTOCOL.md and its
 # amendments; chunk sizes fit 20 min at 3 workers with a wide margin: counted mode costs about 4x our
-# decision time, i.e. ~3 s more per game; alpha-beta / same-turn games take 20-45 s, a mixed table ~20 s).
+# decision time, i.e. 2-3 s more per game; alpha-beta / same-turn games take 20-45 s, a mixed table 20-25 s).
 # "mixed:A,B,C" plays --mixed-opponents A,B,C instead of --opponent.
 TABLE="T1 33 value 1 1000 250 900001 424201 full
 T2 33 alphabeta 1 400 40 900001 424201 full
@@ -71,6 +71,17 @@ T9 33 sameturn 1 400 40 900201 424401 counted
 T10 33 mixed:value,alphabeta,sameturn 1 400 50 900301 424501 full
 T11 33 mixed:value,alphabeta,sameturn 1 400 40 900401 424601 counted"
 ALL_IDS=$(echo "$TABLE" | awk '{ printf "%s ", $1 }')
+
+ANALYZE_ONLY=0
+TESTS=()
+for arg in "$@"; do
+    case "$arg" in
+        --analyze) ANALYZE_ONLY=1 ;;
+        -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+        *) TESTS+=("$arg") ;;
+    esac
+done
+[ ${#TESTS[@]} -eq 0 ] && TESTS=(T1 T2 T3 T4 T5 T6 R1 R2)
 
 mkdir -p "$OUT/json" "$OUT/logs" "$OUT/out"
 MASTER="$OUT/run_proof.log"
@@ -155,17 +166,6 @@ run_test() {
         a=$b
     done
 }
-
-ANALYZE_ONLY=0
-TESTS=()
-for arg in "$@"; do
-    case "$arg" in
-        --analyze) ANALYZE_ONLY=1 ;;
-        -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
-        *) TESTS+=("$arg") ;;
-    esac
-done
-[ ${#TESTS[@]} -eq 0 ] && TESTS=(T1 T2 T3 T4 T5 T6 R1 R2)
 
 say "run_proof.sh: out $OUT, workers $WORKERS, timeout $TIMEOUT s per chunk, smoke=$SMOKE, tests ${TESTS[*]}"
 if [ "$ANALYZE_ONLY" = 0 ]; then

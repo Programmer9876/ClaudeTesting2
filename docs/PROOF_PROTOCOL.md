@@ -272,3 +272,106 @@ every seat's win rate exceeds 0.25 (one-sided exact, p < 0.05 per seat);
 zero adapter errors, fallbacks and crashes.
 
 **Readiness for human testing** now requires claims 2, 3 and 4.
+
+## Amendment 2026-09-25 (4): Tooling (2)
+
+Written before any T7-T11 game.  It changes none of the hypotheses,
+opponents, formats, sample sizes, seeds, statistics or thresholds of the
+original text or of amendments 2 and 3, and nothing in how T1-T6, R1-R2 and
+claims 1 and 2 are played or read; it records how the tooling plays and
+reads T7-T11.
+
+**Running.**  `scripts/run_proof.sh` plays T7-T11 with
+`scripts/bench_catanatron.py` and `/home/user/venv_cat33/bin/python`
+(catanatron 3.3.0):
+
+| test | bench arguments | chunk (games) |
+|---|---|---|
+| T7 | `--opponent value --our-seats 1 --seed 900201 --info counted`, games 0..999 | 200 |
+| T8 | `--opponent alphabeta --our-seats 1 --seed 900201 --info counted`, games 0..399 | 40 |
+| T9 | `--opponent sameturn --our-seats 1 --seed 900201 --info counted`, games 0..399 | 40 |
+| T10 | `--mixed-opponents value,alphabeta,sameturn --our-seats 1 --seed 900301`, games 0..399 | 50 |
+| T11 | `--mixed-opponents value,alphabeta,sameturn --our-seats 1 --seed 900401 --info counted`, games 0..399 | 40 |
+
+plus, for every chunk, the arguments of the first tooling amendment
+(`--spec "search:depth=1,beam=4,expand=8,evaluator=heuristic" --trades off
+--hash-seed 0 --workers 3 --rerun-crashes --log-actions DIR --verbose
+--game-range A:B --json FILE`, under `timeout 1200`) with the same chunk,
+resumption, split-on-timeout and crash re-run rules.  `--info counted`
+keeps the bench defaults: `--info-samples` 4 (the "default samples" of
+amendment 2) and hidden discards (no `--discards-public`); T10 plays the
+default `--info full`.  Opponent parameters are catanatron's defaults (no
+`--opponent-params`).  The chunk sizes allow for the counted mode's cost
+(about 4x our decision time, 2-3 s more per game) and for 20-45 s per
+alpha-beta / same-turn game and 20-25 s per mixed-table game: a chunk is
+expected to take 4-7 minutes at 3 workers.  `scripts/run_proof.sh` plays
+with the `scripts/bench_catanatron.py` next to it, so started from a frozen
+snapshot it plays that snapshot's code (the snapshot is recorded in
+docs/PROOF.md, as amendments 2 and 3 require).
+
+**Mixed lineup.**  `--mixed-opponents value,alphabeta,sameturn` implements
+amendment 3's rule as follows: game `g` seats catanbot in seat `g % 4`; the
+six orders of (value, alphabeta, sameturn) are numbered lexicographically,
+0 (V, A, S), 1 (V, S, A), 2 (A, V, S), 3 (A, S, V), 4 (S, V, A),
+5 (S, A, V); the `k`-th opponent (k = 1, 2, 3) of order `(g // 4) % 6` sits
+`k` seats after catanbot in turn order, in seat `(g + k) % 4`.  Game 5, for
+example: catanbot in seat 1, order 1, so value in seat 2, sameturn in seat
+3 and alphabeta in seat 0.  `g mod 24` fixes seat and order, so any 24
+consecutive games (aligned or not) put every opponent in every relative
+position 8 times and every player in every seat 6 times, and each seat is
+catanbot's in 100 of the 400 games.  The tooling tests check this over
+every window, and check that `scripts/prove_strength.py`'s own copy of the
+rule, written from this text, equals the bench's.
+
+**Commands.**
+
+    scripts/run_proof.sh T7 T8 T9 T10 T11   # the new tests (any subset, resumes where they stopped), then replay --check of every log and the analysis
+    scripts/run_proof.sh --analyze          # replay checks and analysis of what exists (T1-T11, R1-R2)
+    python3 scripts/prove_strength.py --test T1=OUT/json/T1 ... --test T11=OUT/json/T11 --markdown docs/PROOF.md
+    /home/user/venv_cat33/bin/python scripts/replay_catanatron.py OUT/logs/T11 --check
+
+`scripts/run_proof.sh` without test ids still plays T1-T6 and R1-R2 only,
+with exactly the commands of the first tooling amendment.  The action logs
+are named as before (`value_1v3_seed900201_g<A>-<B>.jsonl.gz` for T7,
+`value_alphabeta_sameturn_1v3-mixed_seed900301_g<A>-<B>.jsonl.gz` for T10);
+a mixed-table record also holds the game's lineup and a counted-mode record
+the catanbot player's information mode.  Smoke runs (`PROOF_SMOKE=1`, sized
+by `PROOF_SMOKE_GAMES` / `PROOF_SMOKE_CHUNK`) use the seeds 424401 (T7-T9),
+424501 (T10) and 424601 (T11), never the proof seeds.
+
+**Reading of claims 3 and 4** (`scripts/prove_strength.py`, fixed here
+before any T7-T11 game):
+
+* per test, as for T1-T3: one-sided p-value = P(X >= wins) under a win rate
+  of 0.25 (exact, rational arithmetic); a game's win is recomputed from the
+  winner seat; turn-cap games and games that crashed twice are losses;
+  Clopper-Pearson intervals are the central two-sided ones;
+* Holm-Bonferroni over the three tests T7-T9 (claim 3) and, separately,
+  over the two tests T10-T11 (claim 4), each at family-wise alpha 5.7e-7;
+  a test without results enters with p = 1;
+* effect size: the lower end of the 99 % interval is >= 0.35 in each test;
+  seats: every seat of each test has one-sided exact p < 0.05 against 0.25;
+* errors, over the claim's own tests: adapter errors (`errors` +
+  `observe_errors`), illegal-action fallbacks (`fallback`), every crashed
+  attempt, and the counted mode's tracker errors (`info_errors`: the
+  public-information tracker could not follow the live game and was
+  resynchronised) and belief resets (`info_resets`: the card counter found
+  no hypothesis consistent with an event and restarted); `unmapped_top` is
+  reported but is not a failure;
+* registered data, as in the first tooling amendment (exactly games 0..N-1
+  of the registered seed with their per-game seeds, catanbot seat `g % 4`,
+  the registered spec, trades off, `PYTHONHASHSEED=0`, 10 VP, discard limit
+  7, default opponent parameters, catanatron 3.3.0, the opponent as preset
+  and as class; a missing field, or results without run metadata, count as
+  not registered), plus: the format (`1v3` for T7-T9, `1v3-mixed` for
+  T10-T11); the information mode `info` = `{"mode": "counted", "samples":
+  4, "discards_public": false}` for T7-T9 and T11 and `{"mode": "full"}`
+  for T10; every game of a counted test carries the tracker counters
+  (`info_stats`) and no game of T10 does (a counted run labelled full, or
+  the reverse, is not the registered data); at the mixed table the preset
+  `value,alphabeta,sameturn`, the class
+  `ValueFunctionPlayer+AlphaBetaPlayer+SameTurnAlphaBetaPlayer`, the
+  opponent list `opponents` = value, alphabeta, sameturn in this order, and
+  every game's `lineup` as in the rule above;
+* the analysis prints claims 1 to 4 and the readiness verdict, which is
+  PASS only when claims 2, 3 and 4 all pass.
