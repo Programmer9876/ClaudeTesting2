@@ -403,7 +403,10 @@ def _build_registry() -> Dict[str, Tunable]:
             ("respond_lookahead", "resp_la", [1], _parse_int,
              "value accept / reject / counter after the rest of the proposer's turn (0 = at the trade)"),
             ("counter_aggr", "counter_aggr", [0.5, 2.0], _parse_float,
-             "counter ranking P(accept)^(1/aggr) x gain (> 1 greedier); needs counter=1 and the rules flag")):
+             "counter ranking P(accept)^(1/aggr) x gain (> 1 greedier); needs counter=1 and the rules flag"),
+            ("counter_margin", "counter_margin", [0.0, 0.006], _parse_float,
+             "win probability a counter must gain over accept / reject (0 = counter whenever not worse); "
+             "needs counter=1 and the rules flag")):
         add(name=f"search.{attr}", module="catanbot.search", attr=attr, default=getattr(cfg, attr), kind="search",
             candidates=cands, requires_search=True, requires_depth=1, spec_key=key, parse=parse, description=desc)
     return {t.name: t for t in reg}
@@ -570,11 +573,11 @@ def play_paired_game(base_spec: str, overrides: Dict[str, Any], pattern: str, se
     for side in pattern:
         inner = make_bot(base_spec)
         bots.append(ParamBot(inner, overrides if side == "C" else {}, label="cand" if side == "C" else "default"))
+    from . import actions as A
     made = [0] * len(pattern)
     taken = [0] * len(pattern)
 
     def count_counters(state, action, player):     # counter-offers made / taken per seat (counters rule only)
-        from . import actions as A
         if action[0] == A.COUNTER_TRADE:
             made[player] += 1
         elif action[0] == A.ACCEPT_TRADE and state.pending_trade is not None and state.pending_trade.origin is not None:

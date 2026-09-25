@@ -410,3 +410,94 @@ seat-rotated control); the constants only matter with `paths=1` in the base spec
 1.25-1.26x the default's decision time (p95 1.3-1.5x), 1.56-1.64x with `paths_spots=1`; ~26 us per
 leaf on top of the batched C++ evaluation.  Experiments and decision rules:
 docs/ABLATIONS_WINPATHS.md.
+
+## Counter-offers and out-of-turn trade analysis (`counteroffers.py`; off by default)
+
+**Rules (Colonist.io).**  A rules variant, `GameState.allow_counters` (off: the base game is unchanged).
+When the current player P proposes a trade, every other player may accept, reject or *counter*
+with a modified deal aimed back at P (trades only ever happen with the current player); P may
+accept a counter.  Engine protocol (docstring of `catanbot/engine.py`): responders answer in seat
+order with `ACCEPT_TRADE`, `REJECT_TRADE` or `(COUNTER_TRADE, give, get)` (from the counterer's
+side); a counter declines the offer as proposed.  Once everyone has answered, P sees the counters
+one at a time in seat order, each as an ordinary pending offer from the counterer (`PHASE_TRADE_RESPONSE`,
+responder P, the original offer suspended in `counter.origin`): accept = the counter executes and
+the round closes (Colonist closes the offer on a completed counter); reject = the next counter,
+then the original offer's partner selection among the plain accepters.  One answer (so at most
+one counter) per responder per offer, no counter to a counter, counters count toward no limit.
+Mapping to Colonist: Colonist's answers are simultaneous and P may take a counter at any moment;
+here P decides after seeing every answer (the order that gives P the most information, and one an
+old bot can play: a counter is just an offer to answer).
+
+**Responder.**  `SearchConfig.counters = 1` (spec `counter=1`).  Candidates are small edits of the
+offer (`engine.counter_candidates`: ask for one more card, give one card fewer, swap one card we
+give for another resource).  `rank_counters` drops counters we cannot pay, counters that would hand
+the leader a build (`offer_is_feeding_leader`), and every counter where `should_accept` would refuse
+to trade with P at all (P about to win; late game with P at >= 7 VP and not behind us).  The rest
+are ranked by `P(P accepts)^(1/counter_aggr) x gain` (the gain is the search evaluator's value of
+the executed counter minus the value now), and the best `counter_candidates` (2) enter the search
+as chance nodes: the other responders answer the original offer, then P takes the counter with the
+model's probability (1.2 logits less when someone accepted the original as proposed) or rejects it
+and the original offer continues.  Under the model a counter weakly dominates rejecting (a rejected
+counter is a rejection), so a bot without friction counters almost every offer it would refuse:
+without a margin the smoke games had 100-140 counters per game from two bots, ~10 % taken.
+`counter_margin` (0.002 win probability, like `should_accept`'s base margin) makes a counter
+beat the plain answers by that much; it stands for what the model does not price (P's patience,
+what the counter reveals about our needs).  With it: see the smoke numbers below.
+
+**P(P takes the counter)** (`OpponentModel.predict_counter_accept`): P proposed the original deal,
+so the logit starts at +1.0 for P's own deal and moves by 2.5 x the change of the deal's worth for
+P - P's implied valuation x needs like `predict_accept`, what P asked for weighted 1.8x (a swap for
+another card is a real loss), what P offered 0.7x.  Calibrated on self-play against search-bot
+proposers: a first version (prior 1.4, slope 1.8, no need weights) predicted swaps at 43 % and
+"one more card" at 20 % while 17 % / 14 % were taken; the current one predicts 9-17 % against 9-16 %
+taken.  P's record on counters (`counter_accept`), the stage, favour slack and the leader penalty
+shift it.
+
+**Out-of-turn analysis** (`SearchConfig.respond_lookahead = 1`, spec `resp_la=1`; works under
+the default rules too).  Answering an offer (accept / reject / each counter), every outcome gets the
+rest of P's current turn played out with the lookahead's greedy opponent policy (`_greedy_turn`,
+stopping after P's END_TURN; P has rolled, so only dev draws and steals are random) before it is
+evaluated, and the outcomes are end-of-decision nodes.  Without it a depth-1 search values the trade
+at the moment the cards change hands - it cannot see the settlement the card lets P build on our
+spot.  Example (tests): blue offers 2 ore for our brick, the brick completes blue's settlement on the
+8-9-11 spot we are one road from; statically accept 0.277 vs reject 0.268, after blue's turn accept
+0.181 vs reject 0.268.
+
+**Proposer.**  When our offer is countered we are the current player: the counter is an ordinary
+`ACCEPT` / `REJECT` decision and the search simply continues our turn after either (a rejected
+counter leads to the next counter or to our own partner choice, which the search then decides).
+
+**Opponent model and card counting.**  A counter is strong evidence: the counterer's implied
+valuation moves 1.5x an accept's step towards what they ask for, their per-resource accept
+tendencies count an acceptance for every card on both sides, their overall acceptance counts half
+(they declined the deal as proposed but want a deal), `counters` counts it.  What they asked for is a
+shortage hint (`short`, 0.6 per counter, x0.6 per END_TURN) that lowers `predict_accept`'s
+"can they pay it" for hidden hands.  P's answers to counters feed `counter_accept`; an accepted
+counter counts as a trade (`traded_with`, politics goodwill both ways - there is no EXECUTE_TRADE).
+Card counting (`HandBelief` / `CardCounter.observe_offer`, alias `observe_counter`): every public
+offer - a counter or a plain proposal - proves the offerer holds what they offer (a `CardCounter`
+drops the hypotheses without it, a `HandBelief` raises those expectations) and hints they lack what
+they ask for (soft, `strength` 0.5).  `SearchBot.observe` feeds both kinds when it has a belief.
+
+**Advisor.**  `recommend --offer ...` adds a section "Offer response (accept / reject / counter,
+after the proposer's turn)": the best answer after P's turn (and what the at-the-trade view would
+have said when it differs), then accept / reject / up to three counters, each with its value after
+P's turn and at the trade, P(they take it) for counters, and the reason: what the trade lets P build
+this turn ("accepting lets blue build a settlement on vertex 28 (the 8-9-11 spot you are heading
+for)"; builds P makes anyway after our reject are not blamed on the trade) and who would take the
+deal if we refuse ("rejecting: orange will likely accept instead (~N%)", the model's P(accept)).
+Existing lines are unchanged; `--json` has `offer_response`.
+
+**Knobs.**  Rules: `play_game(..., allow_counters=True)`, `scripts/ablate.py --counters`.  Bot:
+`counter=1`, `counter_n=2`, `counter_aggr=1.0`, `counter_margin=0.002`, `resp_la=1`; tunables
+`search.counters`, `search.respond_lookahead`, `search.counter_aggr`, `search.counter_margin`.  The
+league referee plays the standard rules, so only `resp_la=1` can be gated there today.
+
+**Smoke** (20 games per setting under the counters rule, 2 x `counter=1` vs 2 default search bots at
+depth 1 with the heuristic evaluator, same seeds and seat patterns, one process on a loaded
+machine - far too few games to say anything about strength): with `resp_la=0` the two counter bots
+made 2.1 counters per game, 0.4 were taken; mean decision 10.8 ms vs 9.8 ms for the default seats,
+an answer to an offer 0.98 ms (p95 2.1) vs 0.43 ms.  With `resp_la=1`: 4.8 counters per game, 0.8
+taken; mean decision 11.5 ms vs 9.8 ms, an answer to an offer 2.9 ms (p95 10.1) vs 0.43 ms.
+Answering a counter (a normal search of our turn) took 17-20 ms.  Wins 16-4 and 12-8 for the
+counter side: noise at 20 games; the paired ablation (>= 1000 games) decides.

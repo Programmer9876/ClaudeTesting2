@@ -4,6 +4,42 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 23:00 UTC - counteroffers and out-of-turn offer analysis built (off by default)
+
+* **Counteroffers** (Colonist rule, `allow_counters`, off by default): when
+  someone offers a trade, each other player may accept, reject or counter
+  once; the offerer then sees the counters one by one and may take one (the
+  trade happens and the round closes) or reject it.  Counters do not use up
+  the 4 offers per turn and a counter cannot be countered.  The bot's counters
+  are small edits of the offer (ask one more card, give one fewer, swap a
+  card), never ones that feed the leader, ranked by the chance the offerer
+  takes it x our gain.  A 0.002 win-probability margin keeps it from
+  countering everything (without it: 100-140 counters a game, ~10 % taken;
+  with it: 2-5).  The predicted chance a counter is taken matches self-play
+  (predicted 9-17 %, observed 9-16 %).
+* **Out-of-turn offer analysis** (`resp_la=1`): accept, reject and each counter
+  are valued after the offerer's turn is played out.  Example test position:
+  the plain view says accept (0.277 vs 0.268); after the offerer's turn it
+  says reject, because the brick lets them settle on the spot we are heading
+  for.
+* **Card counting from offers**: every offer and counter is public, and you
+  can only offer cards you hold, so an offer rules out hands without those
+  cards and hints that the offerer lacks what they ask for.
+* **Advisor**: `recommend --offer` adds an "Offer response" section (best
+  answer, value of accept / reject / up to 3 counters before and after the
+  offerer's turn, and why).
+* **Safety**: off by default; six fixed-seed default games replay
+  byte-identically against the code before the change (two pinned as a test);
+  the C++ engine refuses counter-rule states (they run in Python).  Tests
+  pass on both Python environments.
+* **Smoke only** (20 games, noise): counter bots made 2-5 counters a game,
+  ~10 % more time per decision; answering an offer with `resp_la=1` takes
+  ~3 ms (p95 10 ms).
+* **Next, after the proof**: paired self-play ablations (1,200 games each for
+  counters and for `resp_la`), then the league gate for `resp_la` (the league
+  plays standard rules, so counters themselves are judged by the ablation).
+  Catanatron's bots cannot trade, so neither can be measured against them.
+
 ## 2026-09-25 22:40 UTC - win-path portfolio built (off by default, not yet benchmarked)
 
 The strategy the user asked for: weigh every route to 10 VP (Longest Road,

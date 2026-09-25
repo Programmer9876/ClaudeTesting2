@@ -97,11 +97,13 @@ class SearchConfig:
     # Counter-offers and out-of-turn trade analysis (docs/STRATEGY.md "Counter-offers").  Off by default: with
     # counters = 0 COUNTER_TRADE is never a candidate (it only exists under the rules flag
     # GameState.allow_counters anyway) and with respond_lookahead = 0 an answer to an offer is valued exactly as
-    # before.  None of the four fields reaches C++ (native_level_dict is unchanged); a state with the rules flag
+    # before.  None of these fields reaches C++ (native_level_dict is unchanged); a state with the rules flag
     # on always takes the Python lookahead (accel.python_only).
     counters: int = 0               # 1 = consider counter-offers when answering an offer (needs the rules flag)
     counter_candidates: int = 2     # counters expanded per offer, ranked by P(proposer accepts) x our gain
     counter_aggr: float = 1.0       # ranking score P^(1 / aggr) x gain: > 1 greedier counters, < 1 safer ones
+    counter_margin: float = 0.002   # a counter must beat the plain answers by this (win probability): it stands for
+    #                                 what the model does not price (the proposer's patience, what the counter reveals)
     respond_lookahead: int = 0      # 1 = value accept / reject / counter after the rest of the proposer's turn
 
 
@@ -168,7 +170,8 @@ def reduced_config(cfg: SearchConfig, depth: int, budget: int) -> SearchConfig:
                         native_future=cfg.native_future, paths=cfg.paths, paths_w=cfg.paths_w,
                         paths_crowd=cfg.paths_crowd, paths_priors=cfg.paths_priors, paths_spots=cfg.paths_spots,
                         counters=cfg.counters, counter_candidates=cfg.counter_candidates,
-                        counter_aggr=cfg.counter_aggr, respond_lookahead=cfg.respond_lookahead)
+                        counter_aggr=cfg.counter_aggr, counter_margin=cfg.counter_margin,
+                        respond_lookahead=cfg.respond_lookahead)
 
 
 def lookahead_weight(cfg: SearchConfig) -> float:
@@ -339,6 +342,8 @@ class Searcher:
         results: List[ScoredAction] = []
         for a, kids in root.children:
             v = sum(p * (k.value if k.value is not None else k.static) for p, k in kids)
+            if a[0] == A.COUNTER_TRADE:
+                v -= cfg.counter_margin     # counters (config.counters = 1 only) must beat accept / reject by a margin
             best_kid = max(kids, key=lambda pk: pk[1].value if pk[1].value is not None else pk[1].static)[1]
             line = self._principal_line(best_kid)
             results.append(ScoredAction(a, v, "", [a] + line, sum(p * k.static for p, k in kids)))

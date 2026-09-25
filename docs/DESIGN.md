@@ -639,3 +639,49 @@ Model and knobs: docs/STRATEGY.md "Win-path races"; experiments: docs/ABLATIONS_
   evaluation, ~0.12 ms per context; 1.26x the default's mean decision time on 30
   mid-game positions (1.56x with spots), 1.18x mean / 1.25x p95 on the 281 main-phase
   roots of one shadow game.
+
+## 14. Counter-offers rules variant and out-of-turn trade analysis (off by default)
+
+Strategy and protocol: docs/STRATEGY.md "Counter-offers and out-of-turn trade analysis"; code
+`catanbot/engine.py` (protocol in the module docstring), `catanbot/counteroffers.py`, tests
+`tests/test_counteroffers.py`.
+
+* **State.**  `GameState.allow_counters: bool = False` and `TradeOffer.counters` (responder ->
+  (give, get), counters not yet shown) / `TradeOffer.origin` (on a counter shown to the current
+  player: the suspended original offer) are plain class-level defaults, so objects built without
+  `__init__` (`copy()`, the C++ engine's write-back) read False / None.  `to_dict` writes
+  `allow_counters`, `pending_trade.counters` and `pending_trade.origin` only when set: a default
+  game's dict is key-for-key the old format (league champions' round-trip check passes unchanged).
+  A counter shown to the current player *is* an ordinary pending offer (proposer = counterer,
+  responder = current player, other seats pre-filled as rejections): a commit that ignores the new
+  keys lists ACCEPT / REJECT for it, and its own engine's ACCEPT -> EXECUTE_TRADE moves the same
+  cards as ours.  Serving counter games to old champions would still need a shim with
+  `IGNORE_FIELDS = {"allow_counters", "pending_trade.origin", "pending_trade.counters"}`.
+* **Actions.**  `(COUNTER_TRADE, give, get)`, kept out of `actions.ALL_KINDS` (in
+  `VARIANT_KINDS`): the default game never plays it.  `legal_actions` lists a bounded set
+  (`engine.counter_candidates`); `apply` accepts any well-formed counter the counterer can pay.
+  With the flag off `COUNTER_TRADE` is refused and `legal_actions` / `apply` are unchanged; under
+  the flag a responder that cannot pay the offer is still asked unless its hand is empty.
+* **C++.**  Not ported.  `accel.python_only(state)` (the flag) makes `engine_legal_actions` /
+  `engine_apply` / `engine_apply_inplace` return `None` (the Python engine runs), `future_values`
+  return `None` (the Python lookahead runs; `Searcher._native_future_values` also refuses such
+  states before building the robber bundle), and `engine_apply_forced` / `random_playout_fast`
+  raise.  The C++ parity tests are untouched and pass.
+* **Search hooks** (`SearchConfig.counters`, `counter_candidates`, `counter_aggr`,
+  `counter_margin`, `respond_lookahead`; none reaches `native_level_dict`):
+  1. `_candidates` -> `_counter_filter` (only for flag-on states in PHASE_TRADE_RESPONSE): drops
+     every counter with `counters = 0`, else keeps the best `counter_candidates` of
+     `counteroffers.rank_counters`, whose priors (75 - rank) keep them in the expansion.
+  2. `_outcomes`: `COUNTER_TRADE` -> `_counter_outcomes` (other responders, then a chance node on
+     P's answer, then the continuation of the original offer); ACCEPT / REJECT -> `_resolve_offer`
+     (the old `_response_outcomes` body, which now also stops at a decision of ours - a counter shown
+     to us, our own partner choice - and when our counter is shown to P; neither can happen in a
+     default game).
+  3. `respond_lookahead` and we are answering someone else's offer: every outcome goes through
+     `_finish_proposer_turn` (`_greedy_turn` of P up to and including END_TURN) and the root's
+     children are end-of-decision nodes (`out_of_turn`), even when we are the next to roll.
+  4. Root results: a counter's value minus `counter_margin`.
+* **Invariant (tested).**  Default games are byte-identical to the pre-counteroffers commit
+  (20818e2; checked offline on six full games - depth 1 and 2, trade-heavy, heuristic, 3-player - and
+  pinned in the tests on two short ones), with the new knobs spelled out too, and a default game
+  never enters the counter code (every new function monkeypatched to raise).

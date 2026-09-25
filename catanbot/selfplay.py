@@ -12,7 +12,8 @@ processes::
 Counter-offer keys (search bot; docs/STRATEGY.md "Counter-offers"; all off by default):
 ``counter=1`` (make counter-offers when answering an offer - only has an effect in games with the rules
 flag ``GameState.allow_counters``, ``play_game(..., allow_counters=True)``), ``counter_n=2`` (counters
-expanded per offer), ``counter_aggr=1.0`` (ranking exponent, > 1 greedier) and ``resp_la=1`` (value every
+expanded per offer), ``counter_aggr=1.0`` (ranking exponent, > 1 greedier), ``counter_margin=0.002`` (win
+probability a counter must gain over accepting / rejecting) and ``resp_la=1`` (value every
 answer to an offer after the rest of the proposer's turn; works under the default rules too).
 
 Trading-style keys (heuristic and search bots, DESIGN section 11):
@@ -189,6 +190,7 @@ def make_bot(spec: str) -> Bot:
             counters=int(float(kw.get("counter", 0))),
             counter_candidates=int(float(kw.get("counter_n", 2))),
             counter_aggr=float(kw.get("counter_aggr", 1.0)),
+            counter_margin=float(kw.get("counter_margin", 0.002)),
             respond_lookahead=int(float(kw.get("resp_la", 0))),
         )
         ev = load_evaluator(kw.get("model") or kw.get("evaluator"),
