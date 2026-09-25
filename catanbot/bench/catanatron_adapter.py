@@ -63,7 +63,11 @@ from catanatron.models.enums import (
 )
 from catanatron.models.map import CatanMap, NodeRef
 from catanatron.models.player import Color, Player
-from catanatron.state import State, apply_action
+from catanatron.state import State
+try:  # catanatron <= 3.2 (PyPI)
+    from catanatron.state import apply_action
+except ImportError:  # catanatron >= 3.3 (GitHub)
+    from catanatron.apply_action import apply_action
 
 from .. import actions as A
 from .. import board as B
@@ -871,7 +875,8 @@ def play_game(players: Sequence[Player], seed: int, vps_to_win: int = 10,
               discard_limit: int = 7) -> Dict[str, object]:
     """Play one seated game to the end; returns a summary dict (winner may be ``None`` at the turn cap)."""
     for p in players:
-        p.reset_state()
+        if hasattr(p, 'reset_state'):
+            p.reset_state()
     game = make_game(players, seed, vps_to_win, discard_limit)
     t0 = time.perf_counter()
     winner = game.play()

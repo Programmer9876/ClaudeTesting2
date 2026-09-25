@@ -456,7 +456,10 @@ def test_discard_queue_mirrors_catanatron_hard_coded_limit():
     ones with a hard-coded ``> 7``; the converted ``discard_queue`` lists exactly the seats
     catanatron goes on to prompt, for any limit."""
     from catanatron.models.enums import Action as CAction
-    from catanatron.state import apply_action
+    try:
+        from catanatron.state import apply_action
+    except ImportError:
+        from catanatron.apply_action import apply_action
 
     for limit, hands in ((7, [9, 8, 7, 10]), (9, [10, 8, 6, 9]), (5, [6, 6, 8, 3]), (9, [4, 10, 8, 3])):
         g = AD.make_game([WeightedRandomPlayer(c) for c in AD.COLORS], seed=11, discard_limit=limit)
