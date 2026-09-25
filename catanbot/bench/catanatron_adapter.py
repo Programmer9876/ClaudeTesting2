@@ -28,21 +28,36 @@ Three things live here:
    replayed through ``Bot.observe`` so the opponent model / political
    tracking work exactly as in self-play.
 
-Known semantic differences (see ``docs/BENCHMARKS.md``): no player-to-player
-trading in catanatron (trade proposals are suppressed), discards are chosen
-randomly by the catanatron engine (its only ``DISCARD`` action has value
-``None``), dev cards bought this turn are playable immediately in catanatron
-(so they are placed in ``Player.dev_cards`` rather than ``dev_cards_new``),
-``PLAY_ROAD_BUILDING`` is only offered by catanatron while the player also
-holds wood + brick, and ``PLAY_KNIGHT`` is two catanatron decisions
-(``PLAY_KNIGHT_CARD`` then ``MOVE_ROBBER``) - the robber target chosen by the
-search is remembered and executed at the second prompt.  Two engine rules
-differ without any adapter involvement: catanatron never counts a road that
-ends at an opponent's building towards Longest Road (catanbot and the
-official rules do; the awarded owner / length are copied from catanatron, so
-victory points always agree with catanatron), and catanatron prompts the
-*later* discarders of a 7 with a hard-coded ``> 7`` regardless of its
-``discard_limit`` (mirrored by :func:`state_to_catanbot`).
+Known semantic differences (see ``docs/BENCHMARKS.md``): player-to-player
+trading is suppressed (catanatron 3.2.1 has none; 3.3's domestic-trade
+prompts, which no stock player ever opens, are answered with ``REJECT_TRADE``
+/ ``CANCEL_TRADE``), discards are chosen randomly by the catanatron 3.2.1
+engine (its only ``DISCARD`` action has value ``None``) while on 3.3 the bot
+picks its discard as one catanbot ``DISCARD`` and hands it over one
+``DISCARD_RESOURCE`` prompt at a time, dev cards bought this turn are
+playable immediately in catanatron (so they are placed in
+``Player.dev_cards`` rather than ``dev_cards_new``), ``PLAY_ROAD_BUILDING``
+is only offered by catanatron while the player also holds wood + brick, and
+``PLAY_KNIGHT`` is two catanatron decisions (``PLAY_KNIGHT_CARD`` then
+``MOVE_ROBBER``) - the robber target chosen by the search is remembered and
+executed at the second prompt.  Two engine rules differ without any adapter
+involvement: catanatron never counts a road that ends at an opponent's
+building towards Longest Road (catanbot and the official rules do; the
+awarded owner / length are copied from catanatron, so victory points always
+agree with catanatron), and catanatron 3.2.1 prompts the *later* discarders
+of a 7 with a hard-coded ``> 7`` regardless of its ``discard_limit``
+(mirrored by :func:`state_to_catanbot`; 3.3 applies the limit to everyone).
+
+Both catanatron generations are supported by feature detection (:data:`API_33`):
+the PyPI 3.2.1 wheel (``State.actions``, ``State.playable_actions``,
+``catanatron.state.apply_action``, one random ``DISCARD``, 3-tuple robber
+values) and the 3.3 engine of the GitHub checkout (``State.action_records``
+of ``ActionRecord(action, result)``, ``Game.playable_actions``,
+``catanatron.apply_action.apply_action(state, action, record)``, per-card
+``DISCARD_RESOURCE`` with ``State.discard_counts``, 2-tuple robber values,
+``DECIDE_TRADE`` / ``DECIDE_ACCEPTEES`` prompts).  The helpers
+:func:`action_log`, :func:`log_action`, :func:`playable_actions_of`,
+:func:`apply_action` and :func:`replay_entry` hide the differences.
 """
 from __future__ import annotations
 
@@ -64,10 +79,14 @@ from catanatron.models.enums import (
 from catanatron.models.map import CatanMap, NodeRef
 from catanatron.models.player import Color, Player
 from catanatron.state import State
-try:  # catanatron <= 3.2 (PyPI)
-    from catanatron.state import apply_action
-except ImportError:  # catanatron >= 3.3 (GitHub)
-    from catanatron.apply_action import apply_action
+try:  # catanatron <= 3.2 (PyPI wheel)
+    from catanatron.state import apply_action as _apply_action
+except ImportError:  # catanatron >= 3.3 (GitHub checkout)
+    from catanatron.apply_action import apply_action as _apply_action
+try:  # catanatron >= 3.3: the log holds ActionRecord(action, result) pairs
+    from catanatron.models.enums import ActionRecord
+except ImportError:  # catanatron 3.2.1: the log holds fully specified Actions
+    ActionRecord = None
 
 from .. import actions as A
 from .. import board as B
@@ -92,6 +111,18 @@ __all__ = [
     "DEFAULT_SPEC",
     "COLORS",
     "COLOR_NAMES",
+    "API_33",
+    "CATANATRON_VERSION",
+    "DISCARD_LEGACY",
+    "DISCARD_RESOURCE",
+    "DISCARD_TYPES",
+    "TRADE_PROMPTS",
+    "action_log",
+    "log_action",
+    "log_result",
+    "playable_actions_of",
+    "apply_action",
+    "replay_entry",
     "BoardMapping",
     "board_symmetries",
     "derive_mapping",
