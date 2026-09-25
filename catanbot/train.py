@@ -42,11 +42,11 @@ import random
 import shutil
 import sys
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .selfplay import generate_dataset, sibling_arrays, tournament
+from .selfplay import SIBLING_OTHER_KINDS, generate_dataset, sibling_arrays, tournament
 
 BASE_SEARCH = "search:depth={depth},beam={beam},expand={expand}"
 DEFAULT_MASK = ""   # --mask-features default: none (catanbot.model.HAND_BLIND_FEATURES hides the own hand)
@@ -130,7 +130,8 @@ def pair_margins(h_pos: np.ndarray, h_neg: np.ndarray, scale: float, max_margin:
 
 
 def build_pairs(node: np.ndarray, h: np.ndarray, kind: np.ndarray, gap: float = 0.02, per_node: int = 6,
-                seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+                seed: int = 0, gap_other: Optional[float] = None,
+                other_kinds: Sequence[int] = ()) -> Tuple[np.ndarray, np.ndarray]:
     """Training pairs ``(better_idx, worse_idx)`` from sibling afterstates.
 
     Rows sharing a ``node`` id are the afterstates of one decision (each
@@ -140,29 +141,37 @@ def build_pairs(node: np.ndarray, h: np.ndarray, kind: np.ndarray, gap: float = 
     the heuristic values differ by at least ``gap``.  Per node: the top
     afterstate vs END_TURN first (the build-vs-hold counterfactual), then up
     to ``per_node`` pairs involving the top afterstate or END_TURN, then
-    other pairs.
+    other pairs.  Nodes whose rows are all of a kind in ``other_kinds``
+    (incoming offers, robber moves, discards: ``selfplay.SIBLING_OTHER_KINDS``)
+    use ``gap_other`` instead: an accept / reject pair differs by a card or
+    two, about 0.001-0.003 of heuristic win probability, and the search
+    decides them by that sign.
     """
     rng = random.Random(seed)
     node = np.asarray(node)
     order = np.argsort(node, kind="stable")
     bounds = np.flatnonzero(np.diff(node[order])) + 1
+    other = set(int(k) for k in other_kinds)
     pos: List[int] = []
     neg: List[int] = []
     for grp in np.split(order, bounds):
         if len(grp) < 2:
             continue
         hv = h[grp]
+        g = gap
+        if gap_other is not None and other and all(int(k) in other for k in kind[grp]):
+            g = gap_other
         t = int(np.argmax(hv))
         ends = np.flatnonzero(kind[grp] == 0)
         e = int(ends[0]) if len(ends) else -1
         chosen: List[Tuple[int, int]] = []
-        if e >= 0 and t != e and hv[t] - hv[e] >= gap:
+        if e >= 0 and t != e and hv[t] - hv[e] >= g:
             chosen.append((t, e))
         first: List[Tuple[int, int]] = []
         rest: List[Tuple[int, int]] = []
         for i in range(len(grp)):
             for j in range(len(grp)):
-                if i == j or hv[i] - hv[j] < gap or (i, j) in chosen:
+                if i == j or hv[i] - hv[j] < g or (i, j) in chosen:
                     continue
                 (first if (i == t or j == t or i == e or j == e) else rest).append((i, j))
         rng.shuffle(first)
@@ -218,7 +227,8 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
         Xm = siblings[4] if len(siblings) > 4 and siblings[4] is not None and len(siblings[4]) == len(sn) else None
         sval = _val_split(np.asarray(sn), args.seed)
         if rank_weight > 0:
-            pos, neg = build_pairs(sn, sh, sk, gap=args.rank_gap, per_node=args.rank_pairs, seed=seed)
+            pos, neg = build_pairs(sn, sh, sk, gap=args.rank_gap, per_node=args.rank_pairs, seed=seed,
+                                   gap_other=getattr(args, "rank_gap_other", None), other_kinds=SIBLING_OTHER_KINDS)
             if len(pos):
                 v = sval[pos]
                 m = pair_margins(sh[pos], sh[neg], getattr(args, "rank_margin_scale", 0.0), args.rank_margin)
@@ -228,7 +238,14 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
             if log:
                 log(f"  ranking pairs: {n_pairs} train / {n_val_pairs} val from {len(np.unique(sn))} nodes "
                     f"({len(sn)} afterstates); weight {rank_weight}, margin {args.rank_margin} x scale "
-                    f"{getattr(args, 'rank_margin_scale', 0.0)} (mean {float(m.mean()) if len(pos) else 0:.3f}), gap {args.rank_gap}")
+                    f"{getattr(args, 'rank_margin_scale', 0.0)} (mean {float(m.mean()) if len(pos) else 0:.3f}), "
+                    f"gap {args.rank_gap} / {getattr(args, 'rank_gap_other', None)} (offers, robber, discards)")
+                if len(pos):
+                    from .selfplay import SIBLING_KINDS
+                    counts = np.bincount(np.asarray(sk[pos], dtype=np.int64), minlength=len(SIBLING_KINDS) + 1)
+                    mix = ", ".join(f"{SIBLING_KINDS[k] if k < len(SIBLING_KINDS) else 'other'} {c}"
+                                    for k, c in enumerate(counts) if c)
+                    log(f"  pairs by kind of the better afterstate: {mix}")
         if cons_weight > 0 and Xm is not None:
             cons = (Xm[~sval], Xs[~sval])
             val_cons = (Xm[sval], Xs[sval])
@@ -318,7 +335,8 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
                                            seed=args.seed * 1000 + 900,
                                            num_players_choices=(3, 4) if args.mixed_players else (4,),
                                            max_turns=args.max_turns, sample_every=args.sample_every,
-                                           sibling_rate=args.rank_rate)
+                                           sibling_rate=args.rank_rate, sibling_setup_rate=args.rank_setup_rate,
+                                           sibling_other_rate=args.rank_other_rate)
             Xs_buf, sn_buf, sh_buf, sk_buf, Xm_buf = sibling_arrays(rs)
             sib_path = os.path.splitext(args.out)[0] + "_siblings.npz"
             np.savez_compressed(sib_path, Xs=Xs_buf, sn=sn_buf, sh=sh_buf, sk=sk_buf, Xm=Xm_buf)
@@ -348,7 +366,9 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
         X, y, vpf, results = generate_dataset(pool, args.games, workers=args.workers, seed=args.seed * 1000 + it,
                                               num_players_choices=(3, 4) if args.mixed_players else (4,),
                                               max_turns=args.max_turns, sample_every=args.sample_every,
-                                              progress=progress, sibling_rate=args.rank_rate)
+                                              progress=progress, sibling_rate=args.rank_rate,
+                                              sibling_setup_rate=args.rank_setup_rate,
+                                              sibling_other_rate=args.rank_other_rate)
         if args.heur_games > 0:
             # Cheap, diverse extra games from heuristic bots: memorisation of game identity is the
             # main failure mode of the value net, and more distinct games is the best cure.
@@ -357,7 +377,8 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
                                               seed=args.seed * 1000 + it + 500,
                                               num_players_choices=(3, 4) if args.mixed_players else (4,),
                                               max_turns=args.max_turns, sample_every=args.sample_every,
-                                              sibling_rate=args.rank_rate)
+                                              sibling_rate=args.rank_rate, sibling_setup_rate=args.rank_setup_rate,
+                                           sibling_other_rate=args.rank_other_rate)
             _log(f"  +{len(yh)} samples from {len(rh)} heuristic games in {time.time() - t_h:.0f}s", fh)
             X = np.concatenate([X, Xh]) if len(y) else Xh
             y = np.concatenate([y, yh]) if len(y) else yh
@@ -379,7 +400,7 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
         y_buf = np.concatenate([y_buf, y])[-args.buffer:]
         g_buf = np.concatenate([g_buf, gids])[-args.buffer:]
         b_buf = np.concatenate([b_buf, bias])[-args.buffer:]
-        if args.rank_rate > 0:
+        if args.rank_rate > 0 or args.rank_setup_rate > 0 or (args.rank_other_rate or 0) > 0:
             Xs, sn, sh, sk, Xm = sibling_arrays(results, base_id=it * 10_000_000)
             Xs_buf, sn_buf, sh_buf, sk_buf, Xm_buf = _cap_siblings(
                 np.concatenate([Xs_buf, Xs]), np.concatenate([sn_buf, sn]), np.concatenate([sh_buf, sh]),
@@ -459,6 +480,15 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
                    help="weight of the pairwise sibling-ranking term (0 = plain BCE, the pre-ranking behaviour)")
     p.add_argument("--rank-rate", type=float, default=0.03,
                    help="share of main-phase decisions of the generated games whose sibling afterstates are recorded")
+    p.add_argument("--rank-setup-rate", type=float, default=1.0,
+                   help="share of setup-settlement decisions whose placement afterstates are recorded as siblings "
+                        "(the best 12 spots, each with its setup road; 0 = none)")
+    p.add_argument("--rank-other-rate", type=float, default=None,
+                   help="share of incoming-offer / robber / discard decisions recorded as siblings "
+                        "(default 5 x --rank-rate; 0 = none)")
+    p.add_argument("--rank-gap-other", type=float, default=0.001,
+                   help="minimum heuristic gap for pairs of offer / robber / discard siblings (their values differ "
+                        "by a card or two, far less than --rank-gap)")
     p.add_argument("--rank-consistency", type=float, default=1.0,
                    help="weight of the mid-turn / END_TURN horizon-consistency term on the siblings (0 = off)")
     p.add_argument("--rank-margin", type=float, default=0.5, help="max logit margin of the ranking term")

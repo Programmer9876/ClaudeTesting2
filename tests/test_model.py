@@ -282,6 +282,37 @@ def test_build_pairs():
     assert set((int(perm[i]), int(perm[j])) for i, j in zip(pos3, neg3)) == pairs
 
 
+def test_build_pairs_other_phase_gap():
+    """Offer / robber / discard nodes (all rows of ``SIBLING_OTHER_KINDS``) use the smaller ``gap_other``:
+    accept vs reject differ by a card or two, far below the main-phase gap."""
+    from catanbot.selfplay import SIBLING_OTHER_KINDS, sibling_kind_id
+    from catanbot.train import build_pairs
+    from catanbot import actions as A
+    acc, rej = sibling_kind_id((A.ACCEPT_TRADE,)), sibling_kind_id((A.REJECT_TRADE,))
+    rob, setup = sibling_kind_id((A.MOVE_ROBBER, 0, -1)), sibling_kind_id((A.SETUP_SETTLEMENT, 0))
+    assert acc in SIBLING_OTHER_KINDS and rej in SIBLING_OTHER_KINDS and rob in SIBLING_OTHER_KINDS
+    assert setup not in SIBLING_OTHER_KINDS
+    # node 0: an offer, reject 0.300 vs accept 0.302; node 1: two robber moves 0.30 / 0.32;
+    # node 2: a setup node with the same tiny gap (main gap applies: no pair); node 3: a main-phase node
+    # whose END_TURN row and a road differ by 0.005 (no pair) and a settlement by 0.05 (pair)
+    node = np.array([0, 0, 1, 1, 2, 2, 3, 3, 3])
+    h = np.array([0.300, 0.302, 0.30, 0.32, 0.300, 0.302, 0.30, 0.305, 0.35], np.float32)
+    kind = np.array([rej, acc, rob, rob, setup, setup, 0, 1, 2], np.int8)
+    pos, neg = build_pairs(node, h, kind, gap=0.01, per_node=10, seed=0, gap_other=0.001,
+                           other_kinds=SIBLING_OTHER_KINDS)
+    pairs = set(zip(pos.tolist(), neg.tolist()))
+    assert pairs == {(1, 0), (3, 2), (8, 6), (8, 7)}
+    # without gap_other the offer node forms no pair (0.002 < 0.01)
+    pos0, neg0 = build_pairs(node, h, kind, gap=0.01, per_node=10, seed=0)
+    assert set(zip(pos0.tolist(), neg0.tolist())) == {(3, 2), (8, 6), (8, 7)}
+    # a node mixing other and main kinds keeps the main gap
+    kind2 = kind.copy()
+    kind2[0] = 1
+    pos2, neg2 = build_pairs(node, h, kind2, gap=0.01, per_node=10, seed=0, gap_other=0.001,
+                             other_kinds=SIBLING_OTHER_KINDS)
+    assert (1, 0) not in set(zip(pos2.tolist(), neg2.tolist()))
+
+
 def test_pair_rank_gradient_and_fit():
     from catanbot.model import pair_rank_loss
     rng = np.random.default_rng(9)

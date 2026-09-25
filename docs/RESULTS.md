@@ -17,6 +17,12 @@ at 07:20 and they are resumed from their cached prefixes.  What had landed:
   depth 4 0.17 s (Python: 0.6 s, 2.5 s, minutes); in games 0.02-0.04 s per
   decision.  Enabled by default when the extension is built
   (`SearchConfig.native_future`, `CATANBOT_NO_NATIVE_SEARCH=1` disables).
+  Independent verification (07:40 UTC): own fuzz on 5138 states bit-identical in parity
+  mode, 120/120 depth-2 searches identical, default-config agreement at the seed-to-seed
+  noise floor, MLP within 5e-7, no undefined behaviour found; advisor default stays
+  depth 2, depth 3 is an analysis option with a time budget.  Note: when the global node
+  budget runs out at depth >= 3 the later leaves degrade to static values (uneven
+  horizon), one candidate cause for the next item.
   **Open issue**: depth 3 is not stronger than depth 2 at the same table
   (20 % vs 30 % seat wins over 32 games, Python and native alike) - a
   search-design problem (reduced sub-search noise / horizon shift), to be

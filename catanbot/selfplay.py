@@ -34,6 +34,32 @@ afterstate, or the decision state itself for END_TURN): the search values
 lines pruned by its beam by such mid-turn statics next to fully expanded
 lines valued at the END_TURN horizon, so the net is trained to give both
 the same value (``ValueNet.fit(consistency=...)``).
+
+**Setup placements** are recorded the same way (``sibling_setup_rate``, every
+setup-settlement decision by default when siblings are recorded at all): for
+the best ``setup_candidates`` spots of ``placement.setup_pick`` the state after
+the settlement (the setup-road phase, the mid-turn twin the search's beam
+ranks) and after the placement module's road (the finished afterstate the
+search compares).  Setup states are 2 % of the outcome samples and their
+labels carry almost no signal about *which* spot was better, so a net fitted
+on outcomes alone picks the heuristic's best spot in a quarter of the setup
+nodes and starts every game with a weaker economy - the heuristic evaluator's
+production term orders spots well, and the ranking term hands that ordering
+to the net.  Setup decision states themselves are always recorded as ordinary
+samples (``sample_every`` is not applied to them): setup settlements and roads
+strictly alternate, so an even ``sample_every`` would never record a
+setup-road state although the search ranks exactly those.
+
+**Incoming offers, robber placement and discards** (``sibling_other_rate``,
+``SIBLING_OTHER_PHASES``) are recorded the same way: the candidates the
+search would expand (the best spots by ``heuristic.action_priors`` plus a
+few random others), each as one sampled chance outcome, robber moves
+followed by END_TURN like the main-phase siblings.  The search bot decides
+every one of these with its evaluator, and a net whose ordering is right
+only in the main phase still loses: with the rejected candidate the bot at
+parity when the net decides the main phase alone (0.29 vs 0.21 wins in 12
+games) fell to 0.12 vs 0.38 when it also answered offers, placed the robber
+and discarded.
 """
 from __future__ import annotations
 
@@ -54,7 +80,10 @@ from .agents.random_bot import RandomBot
 from .agents.search_bot import SearchBot
 from .heuristic import HeuristicEvaluator
 from .search import SearchConfig
-from .state import GameState, PHASE_GAME_OVER, PHASE_MAIN, PHASE_ROLL, new_game
+from .state import (GameState, PHASE_DISCARD, PHASE_GAME_OVER, PHASE_MAIN, PHASE_ROBBER, PHASE_ROLL,
+                    PHASE_SETUP_ROAD, PHASE_SETUP_SETTLEMENT, PHASE_TRADE_RESPONSE, new_game)
+
+_SETUP_PHASES = (PHASE_SETUP_SETTLEMENT, PHASE_SETUP_ROAD)
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +203,17 @@ def _valid_extra_action(state: GameState, a, legal) -> bool:
 # ---------------------------------------------------------------------------
 SIBLING_KINDS: List[str] = [A.END_TURN, A.BUILD_ROAD, A.BUILD_SETTLEMENT, A.BUILD_CITY, A.BUY_DEV, A.BANK_TRADE,
                             A.PROPOSE_TRADE, A.PLAY_KNIGHT, A.PLAY_ROAD_BUILDING, A.PLAY_YEAR_OF_PLENTY,
-                            A.PLAY_MONOPOLY]
+                            A.PLAY_MONOPOLY,
+                            # appended later (codes are stored in replay buffers, so the order above is fixed)
+                            A.SETUP_SETTLEMENT, A.ACCEPT_TRADE, A.REJECT_TRADE, A.MOVE_ROBBER, A.DISCARD]
 _SIBLING_KIND_ID = {k: i for i, k in enumerate(SIBLING_KINDS)}
 SIBLING_KIND_OTHER = len(SIBLING_KINDS)
+SIBLING_KIND_SETUP = _SIBLING_KIND_ID[A.SETUP_SETTLEMENT]
+# Decision phases outside the main phase whose candidate afterstates are recorded (``sibling_other_rate``):
+# incoming offers (accept / reject), robber placement and discards.  The search bot decides all of them
+# with the same evaluator, and a net that orders them badly loses the game elsewhere than in the main phase.
+SIBLING_OTHER_PHASES = (PHASE_TRADE_RESPONSE, PHASE_ROBBER, PHASE_DISCARD)
+SIBLING_OTHER_KINDS = tuple(_SIBLING_KIND_ID[k] for k in (A.ACCEPT_TRADE, A.REJECT_TRADE, A.MOVE_ROBBER, A.DISCARD))
 
 
 def sibling_kind_id(action) -> int:
@@ -187,9 +224,14 @@ def sibling_kind_id(action) -> int:
 class _SiblingRecorder:
     """Collects one concrete end-of-turn afterstate per legal action at sampled main-phase decisions."""
 
-    def __init__(self, rate: float, seed: int, max_proposals: int = 6):
+    def __init__(self, rate: float, seed: int, max_proposals: int = 6, setup_rate: float = 1.0,
+                 setup_candidates: int = 12, other_rate: float = 0.0, other_candidates: int = 12):
         from .search import Searcher
         self.rate = float(rate)
+        self.setup_rate = float(setup_rate)
+        self.setup_candidates = int(setup_candidates)
+        self.other_rate = float(other_rate)
+        self.other_candidates = int(other_candidates)
         self.rng = random.Random(seed * 7 + 12345)
         self.max_proposals = int(max_proposals)
         self.heuristic = HeuristicEvaluator()
@@ -202,7 +244,96 @@ class _SiblingRecorder:
         self.kind: List[int] = []
         self.n_nodes = 0
 
+    def _add_node(self, rows, me: int) -> None:
+        for s2, mid, k in rows:
+            self.states.append(s2)
+            self.mid_states.append(mid)
+            self.players.append(me)
+            self.node.append(self.n_nodes)
+            self.kind.append(k)
+        self.n_nodes += 1
+
+    def maybe_record_setup(self, state: GameState, legal, me: int) -> None:
+        """Setup placement: the best ``setup_candidates`` spots, each followed by the placement module's road."""
+        if state.phase != PHASE_SETUP_SETTLEMENT or state.current != me or len(legal) < 2:
+            return
+        if self.setup_rate <= 0 or self.rng.random() >= self.setup_rate:
+            return
+        from .placement import setup_pick, setup_road_pick
+        legal_set = set(legal)
+        rows = []
+        for v, _score in setup_pick(state, me, k=self.setup_candidates):
+            a = (A.SETUP_SETTLEMENT, v)
+            if a not in legal_set:
+                continue
+            try:
+                mid = E.apply(state, a, self.searcher._rng)          # setup-road phase: what the beam ranks
+                road = setup_road_pick(mid, me, v)[0]
+                end = E.apply(mid, (A.SETUP_ROAD, road), self.searcher._rng) if road >= 0 else mid
+            except E.IllegalActionError:
+                continue
+            rows.append((end, mid, SIBLING_KIND_SETUP))
+        if len(rows) >= 2:
+            self._add_node(rows, me)
+
+    def _sample_outcome(self, state: GameState, a, me: int):
+        """One concrete afterstate of ``a`` (a sampled chance outcome, as the search sees it) or ``None``."""
+        try:
+            outs = self.searcher._outcomes(state, a, me)
+        except E.IllegalActionError:
+            return None
+        if not outs:
+            return None
+        r = self.rng.random()
+        acc = 0.0
+        for p, s2 in outs:
+            acc += p
+            if r < acc:
+                return s2
+        return outs[-1][1]
+
+    def maybe_record_other(self, state: GameState, legal, me: int) -> None:
+        """Incoming offer / robber / discard decisions: the candidates the search would expand (the best
+        ``other_candidates`` - 4 by prior plus 4 random others), each at one common horizon per node."""
+        if state.phase not in SIBLING_OTHER_PHASES or len(legal) < 2 or E.acting_player(state) != me:
+            return
+        if self.other_rate <= 0 or self.rng.random() >= self.other_rate:
+            return
+        from .heuristic import action_priors
+        acts = list(legal)
+        if len(acts) > self.other_candidates:
+            priors = action_priors(state, acts, me)
+            order = sorted(range(len(acts)), key=lambda i: -priors[i])
+            n_top = max(1, self.other_candidates - 4)
+            top = order[:n_top]
+            rest = order[n_top:]
+            self.rng.shuffle(rest)
+            acts = [acts[i] for i in top + rest[:self.other_candidates - n_top]]
+        mids = []
+        for a in acts:
+            s2 = self._sample_outcome(state, a, me)
+            if s2 is not None:
+                mids.append((s2, sibling_kind_id(a)))
+        if len(mids) < 2:
+            return
+        # Robber moves land in our main phase: like the main-phase siblings they are compared after
+        # END_TURN, but only when every sibling can end the turn (one common horizon per node).
+        ends = [m for m, _ in mids]
+        if state.phase == PHASE_ROBBER and all(
+                m.phase == PHASE_MAIN and m.current == me and (A.END_TURN,) in E.legal_actions(m) for m in ends):
+            try:
+                ends = [E.apply(m, (A.END_TURN,), self.searcher._rng) for m in ends]
+            except E.IllegalActionError:
+                ends = [m for m, _ in mids]
+        self._add_node([(end, mid, k) for end, (mid, k) in zip(ends, mids)], me)
+
     def maybe_record(self, state: GameState, legal, me: int) -> None:
+        if state.phase == PHASE_SETUP_SETTLEMENT:
+            self.maybe_record_setup(state, legal, me)
+            return
+        if state.phase in SIBLING_OTHER_PHASES:
+            self.maybe_record_other(state, legal, me)
+            return
         if state.phase != PHASE_MAIN or state.current != me or len(legal) < 3 or (A.END_TURN,) not in legal:
             return
         # nodes with a settlement / city affordable (the decisive build-vs-hold counterfactual) are rarer
@@ -220,22 +351,11 @@ class _SiblingRecorder:
                 n_prop += 1
                 if n_prop > self.max_proposals:
                     continue
-            try:
-                outs = self.searcher._outcomes(state, a, me)
-            except E.IllegalActionError:
-                continue
-            if not outs:
-                continue
             # one sampled chance outcome (dev card drawn, card stolen, offer answered): a concrete
             # afterstate, ordered by the heuristic's value of exactly that state
-            r = self.rng.random()
-            acc = 0.0
-            chosen = outs[-1][1]
-            for p, s2 in outs:
-                acc += p
-                if r < acc:
-                    chosen = s2
-                    break
+            chosen = self._sample_outcome(state, a, me)
+            if chosen is None:
+                continue
             mid = chosen
             if a[0] == A.END_TURN:
                 mid = root
@@ -251,13 +371,7 @@ class _SiblingRecorder:
             rows.append((chosen, mid, sibling_kind_id(a)))
         if len(rows) < 2:
             return
-        for s2, mid, k in rows:
-            self.states.append(s2)
-            self.mid_states.append(mid)
-            self.players.append(me)
-            self.node.append(self.n_nodes)
-            self.kind.append(k)
-        self.n_nodes += 1
+        self._add_node(rows, me)
 
     def arrays(self):
         """``(Xs float16, node int32, h float32, kind int8, Xm float16)`` or ``None`` when nothing was recorded."""
@@ -300,12 +414,18 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
               record: bool = False, max_turns: int = 400, num_players: Optional[int] = None,
               sample_every: int = 1, seed: int = 0, specs: Optional[List[str]] = None,
               on_action: Optional[Callable[[GameState, A.Action, int], None]] = None,
-              sibling_rate: float = 0.0) -> GameResult:
+              sibling_rate: float = 0.0, sibling_setup_rate: Optional[float] = None,
+              sibling_other_rate: Optional[float] = None) -> GameResult:
     """Play one full game.  ``bots[i]`` controls seat ``i``.
 
     ``sibling_rate`` (with ``record``) is the share of the current player's
     main-phase decisions at which the afterstates of every legal action are
-    recorded (``GameResult.Xs`` / ``s_node`` / ``s_h`` / ``s_kind``).
+    recorded (``GameResult.Xs`` / ``s_node`` / ``s_h`` / ``s_kind``);
+    ``sibling_setup_rate`` the share of setup-settlement decisions and
+    ``sibling_other_rate`` the share of incoming-offer / robber / discard
+    decisions recorded the same way (defaults: all setup decisions and
+    ``5 * sibling_rate`` of the others whenever ``sibling_rate > 0``, none
+    otherwise; see the module docstring).
     """
     rng = rng or random.Random(seed)
     n = num_players or len(bots)
@@ -325,8 +445,13 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
     if record:
         from .features import extract_batch
         extract = extract_batch
-        if sibling_rate > 0:
-            siblings = _SiblingRecorder(sibling_rate, seed)
+        if sibling_setup_rate is None:
+            sibling_setup_rate = 1.0 if sibling_rate > 0 else 0.0
+        if sibling_other_rate is None:
+            sibling_other_rate = min(1.0, 5.0 * sibling_rate)
+        if sibling_rate > 0 or sibling_setup_rate > 0 or sibling_other_rate > 0:
+            siblings = _SiblingRecorder(sibling_rate, seed, setup_rate=sibling_setup_rate,
+                                        other_rate=sibling_other_rate)
     while state.phase != PHASE_GAME_OVER:
         i = E.acting_player(state)
         legal = E.legal_actions(state)
@@ -334,7 +459,10 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
             break
         # Record decision states and every roll-phase state: the depth-1 search evaluates
         # exactly the start-of-turn (roll phase) states, so the net must see them in training.
-        if record and n_actions % sample_every == 0 and (len(legal) > 1 or state.phase == PHASE_ROLL):
+        # Setup states are always recorded (settlements and roads alternate, so an even
+        # ``sample_every`` would never record a setup-road state, which the search ranks).
+        if record and (n_actions % sample_every == 0 or state.phase in _SETUP_PHASES) \
+                and (len(legal) > 1 or state.phase == PHASE_ROLL):
             X = extract([state] * n, list(range(n)))
             feats.append(X.astype(np.float16))
             who.extend(range(n))
@@ -380,17 +508,22 @@ def play_game(bots: Sequence[Bot], state: Optional[GameState] = None, rng: Optio
 def _worker(args) -> GameResult:
     specs, seed, record, max_turns, sample_every = args[:5]
     sibling_rate = args[5] if len(args) > 5 else 0.0
+    sibling_setup_rate = args[6] if len(args) > 6 else None
+    sibling_other_rate = args[7] if len(args) > 7 else None
     bots = [make_bot(s) for s in specs]
     rng = random.Random(seed)
     return play_game(bots, rng=rng, record=record, max_turns=max_turns, sample_every=sample_every,
-                     seed=seed, specs=list(specs), sibling_rate=sibling_rate)
+                     seed=seed, specs=list(specs), sibling_rate=sibling_rate, sibling_setup_rate=sibling_setup_rate,
+                     sibling_other_rate=sibling_other_rate)
 
 
 def run_games(jobs: Sequence[Tuple[List[str], int]], workers: int = 1, record: bool = False, max_turns: int = 400,
               sample_every: int = 1, progress: Optional[Callable[[int, int, GameResult], None]] = None,
-              sibling_rate: float = 0.0) -> List[GameResult]:
+              sibling_rate: float = 0.0, sibling_setup_rate: Optional[float] = None,
+              sibling_other_rate: Optional[float] = None) -> List[GameResult]:
     """Run ``jobs`` = [(specs_per_seat, seed), ...] possibly in parallel."""
-    args = [(list(specs), seed, record, max_turns, sample_every, sibling_rate) for specs, seed in jobs]
+    args = [(list(specs), seed, record, max_turns, sample_every, sibling_rate, sibling_setup_rate, sibling_other_rate)
+            for specs, seed in jobs]
     results: List[GameResult] = []
     if workers <= 1 or len(args) <= 1:
         for k, a in enumerate(args):
@@ -444,12 +577,14 @@ def tournament(specs: Sequence[str], games: int = 20, workers: int = 1, seed: in
 def generate_dataset(spec_pool: Sequence[str], games: int, workers: int = 1, seed: int = 0,
                      num_players_choices: Sequence[int] = (3, 4), max_turns: int = 400, sample_every: int = 2,
                      progress: Optional[Callable[[int, int, GameResult], None]] = None,
-                     sibling_rate: float = 0.0
+                     sibling_rate: float = 0.0, sibling_setup_rate: Optional[float] = None,
+                     sibling_other_rate: Optional[float] = None
                      ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[GameResult]]:
     """Self-play games with seats drawn from ``spec_pool``; returns (X, y, vp_frac, results).
 
-    With ``sibling_rate > 0`` every result also carries sibling afterstates
-    (see :func:`play_game`); :func:`sibling_arrays` stacks them.
+    With ``sibling_rate > 0`` (or ``sibling_setup_rate > 0``) every result also
+    carries sibling afterstates (see :func:`play_game`); :func:`sibling_arrays`
+    stacks them.
     """
     rng = random.Random(seed)
     jobs = []
@@ -458,7 +593,8 @@ def generate_dataset(spec_pool: Sequence[str], games: int, workers: int = 1, see
         seats = [rng.choice(list(spec_pool)) for _ in range(n)]
         jobs.append((seats, seed * 7919 + g))
     results = run_games(jobs, workers=workers, record=True, max_turns=max_turns, sample_every=sample_every,
-                        progress=progress, sibling_rate=sibling_rate)
+                        progress=progress, sibling_rate=sibling_rate, sibling_setup_rate=sibling_setup_rate,
+                        sibling_other_rate=sibling_other_rate)
     Xs = [r.X for r in results if r.X is not None]
     ys = [r.y for r in results if r.y is not None]
     vs = [r.vp_frac for r in results if r.vp_frac is not None]
