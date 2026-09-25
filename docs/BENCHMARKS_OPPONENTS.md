@@ -23,6 +23,10 @@ The module works with both engines found on this machine:
 `scripts/catanatron_ladder.py` plays a round-robin ladder of the player types
 in 4-player games with seat rotation and prints win rates and average
 victory points per player type.  All numbers below come from that script.
+The same players serve as the `vf` / `ab` opponents of the catanbot search
+bot in `scripts/bench_catanatron.py`; those results (stand-in ladder on
+3.2.1, strong ladder against catanatron's own players on 3.3.0, 2026-09-25)
+are in [`docs/BENCHMARKS.md`](BENCHMARKS.md).
 
 ## Players
 

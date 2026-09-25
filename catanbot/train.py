@@ -17,11 +17,16 @@ Each iteration:
    search into passive lines (the 0.11-vs-0.39 rejection).  At a share
    ``--rank-rate`` of the main-phase decisions of the generated games the
    afterstate of every legal action is recorded with the heuristic
-   evaluator's value; pairs whose heuristic values differ by at least
-   ``--rank-gap`` (build vs END_TURN first) are fitted with
-   ``softplus(margin - (z_better - z_worse))`` so the net orders siblings
-   like the heuristic (whose directions are right and only its magnitudes
-   exaggerated) while the BCE keeps its absolute values calibrated.
+   evaluator's value; pairs (build vs END_TURN first) are fitted on their
+   logit difference: ``--rank-loss delta`` (default) regresses
+   ``z_better - z_worse`` onto the heuristic's own logit gap, so the net
+   reproduces the heuristic's ordering *and* magnitudes (a road is worth a
+   little, a settlement a lot, an offer a card or two) while the BCE keeps
+   its absolute values calibrated; ``--rank-loss hinge`` (the first attempt)
+   only orders, ``softplus(margin - (z_better - z_worse))``, and because the
+   softplus never stops pushing it inflated every build-vs-hold gap until the
+   search spent every card on roads (0.08 vs 0.42 with the net deciding the
+   main phase alone).
    The same is recorded for the decisions *outside* the main phase that the
    search bot also makes with its evaluator: every setup placement
    (``--rank-setup-rate``: the best spots, each with its setup road) and a
@@ -149,11 +154,15 @@ def offer_pairs(kind_pos: np.ndarray, kind_neg: np.ndarray) -> np.ndarray:
 
 
 def pair_weights(kind_pos: np.ndarray, kind_neg: np.ndarray, offer_weight: float = 1.0,
-                 setup_weight: float = 1.0) -> np.ndarray:
+                 setup_weight: float = 1.0, hold_weight: float = 1.0) -> np.ndarray:
     """Per-pair weights by decision type, normalised to mean 1: incoming-offer pairs (accept / reject)
-    get ``offer_weight``, setup-placement pairs ``setup_weight``, all others 1.  Offers are the most
-    frequent decision of a game (about 70 per seat) but one pair per node, setup placements the rarest
-    (2 per seat) but a dozen candidates each, so unweighted pairs are dominated by setup."""
+    get ``offer_weight``, setup-placement pairs ``setup_weight``, pairs whose *better* side is END_TURN
+    (hold the cards rather than build the road / make the bank trade) ``hold_weight``, all others 1.
+    Offers are the most frequent decision of a game (about 70 per seat) but one pair per node, setup
+    placements the rarest (2 per seat) but a dozen candidates each, so unweighted pairs are dominated by
+    setup; the hold pairs are outnumbered five to one by build-better pairs, and a net fitted without the
+    weight learns a road as a per-kind constant (+0.05) and never holds (4-13 % of the hold pairs right,
+    then it builds roads with the settlement's cards in the search)."""
     from .selfplay import SIBLING_KIND_SETUP, SIBLING_OFFER_KINDS
     kp = np.asarray(kind_pos)
     kn = np.asarray(kind_neg)
@@ -162,6 +171,7 @@ def pair_weights(kind_pos: np.ndarray, kind_neg: np.ndarray, offer_weight: float
     setup = (kp == SIBLING_KIND_SETUP) & (kn == SIBLING_KIND_SETUP)
     w[offer] = float(offer_weight)
     w[setup] = float(setup_weight)
+    w[kp == 0] = float(hold_weight)
     if len(w) and w.mean() > 0:
         w /= w.mean()
     return w
@@ -291,7 +301,7 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
                     off = offer_pairs(sk[pos], sk[neg])
                     m[off] = np.minimum(m[off] * offer_scale, m_max)
                 w = pair_weights(sk[pos], sk[neg], getattr(args, "rank_offer_weight", 1.0),
-                                 getattr(args, "rank_setup_weight", 1.0))
+                                 getattr(args, "rank_setup_weight", 1.0), getattr(args, "rank_hold_weight", 1.0))
                 pairs = (Xs[pos[~v]], Xs[neg[~v]], m[~v], w[~v])
                 val_pairs = (Xs[pos[v]], Xs[neg[v]], m[v], w[v])
                 n_pairs, n_val_pairs = int((~v).sum()), int(v.sum())
@@ -301,7 +311,8 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
                     f"logit gap x {m_scale} clipped to [{m_min}, {m_max}] (mean {float(m.mean()) if len(pos) else 0:.3f}), "
                     f"gap {gap} / {gap_other} (offers, robber, discards); "
                     f"pair weights: offers {getattr(args, 'rank_offer_weight', 1.0)}, setup "
-                    f"{getattr(args, 'rank_setup_weight', 1.0)}; offer target scale "
+                    f"{getattr(args, 'rank_setup_weight', 1.0)}, hold {getattr(args, 'rank_hold_weight', 1.0)}; "
+                    f"offer target scale "
                     f"{getattr(args, 'rank_offer_scale', 1.0) if delta else 1.0}")
                 if len(pos):
                     from .selfplay import SIBLING_KINDS
@@ -554,6 +565,9 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
                         "main-phase / robber / discard pairs (weights are normalised to mean 1)")
     p.add_argument("--rank-setup-weight", type=float, default=0.5,
                    help="weight of setup-placement pairs in the ranking term (a dozen candidates per node)")
+    p.add_argument("--rank-hold-weight", type=float, default=4.0,
+                   help="weight of the pairs whose better side is END_TURN (hold the cards instead of a road / "
+                        "bank trade / dev card): outnumbered by the build-better pairs, they carry the counterfactual")
     p.add_argument("--rank-gap-other", type=float, default=None,
                    help="minimum heuristic gap for pairs of offer / robber / discard siblings (their values differ "
                         "by a card or two, far less than --rank-gap; default 0.001 in hinge mode, 0 in delta mode)")

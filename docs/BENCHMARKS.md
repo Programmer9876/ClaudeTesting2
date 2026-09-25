@@ -13,7 +13,8 @@ net.
 Two catanatron generations are supported and tested, selected by whichever
 interpreter runs the script: the **3.2.1 PyPI wheel** (system `python3`
 here: only the weak stock bots) and the **3.3.0 engine of the GitHub
-checkout** (`/home/user/venv_cat33/bin/python`, `pip install -e
+checkout**, installed editable into a virtualenv (here
+`/home/user/venv_cat33/bin/python`, `pip install -e
 /home/user/bcollazo/catanatron`: ships the strong `ValueFunctionPlayer`,
 `AlphaBetaPlayer`, `SameTurnAlphaBetaPlayer`, `GreedyPlayoutsPlayer` and
 `MCTSPlayer`).  The adapter detects the API by feature
@@ -52,7 +53,7 @@ python3 -m pytest tests/test_catanatron_adapter.py tests/test_bench_script.py -q
   seat), so seats and first-move advantage rotate exactly.  Boards, ports,
   dev-deck order and dice are catanatron's, seeded per game.
 
-## Results (2026-09-25, catanatron 3.2.1, 2 worker processes on 4 shared cores)
+## Results (2026-09-25, catanatron 3.2.1 stock bots, 2 worker processes on 4 shared cores)
 
 | catanbot spec | opponent (x3) | games | wins | win rate | avg VP catanbot | avg VP opponents | avg turns | s / game |
 |---|---|---|---|---|---|---|---|---|
@@ -93,6 +94,191 @@ Reading the numbers:
   searched decisions per game; the other ~35 decisions are trivial: only one
   playable action, or every legal catanbot action maps to the same catanatron
   action).  Depth 2 is ~5x slower.  Opponents cost almost nothing.
+
+## Results (2026-09-25, full ladders: stand-ins on catanatron 3.2.1, strong players on 3.3.0)
+
+Two ladders were run on the same day with the same bot,
+`search:depth=1,evaluator=heuristic` (the bench default), the C++
+acceleration on (`catanbot.accel.AVAILABLE` is `True` under both
+interpreters), one catanbot player against three copies of the opponent,
+seat `g % 4` (verified in the per-game records: 50/50/50/50 games per seat
+in every 200-game batch, 40 per seat in the 160-game batch), `--seed 0`
+and `--workers 2` on the 4 shared cores / 15 GB machine.  catanatron 3.2.1
+is the PyPI wheel under the system `python3`; catanatron 3.3.0 is the
+GitHub checkout installed editable into a virtualenv (here
+`/home/user/venv_cat33/bin/python`).  The stand-ins `vf` / `ab` are our own
+players built inside the engine, described and measured against each other
+in [`docs/BENCHMARKS_OPPONENTS.md`](BENCHMARKS_OPPONENTS.md).  Every batch
+was a single command under a 25-minute `timeout`, and the batches ran one
+after another (never two benchmarks at once).  `s / game` is catanatron's
+per-game wall time inside a worker; it was measured while another workflow
+kept two to three more CPU-bound processes running (load average 5-13 on
+the 4 cores), so it is 2-3x the idle cost (0.4-0.5 s for the stock bots,
+6.5 s for `ab` in an uncontended 8-game probe, 0.73 s for `vp` on 3.3 in a
+4-game timing run); win rates and VP are unaffected by load.  Win-rate
+intervals are 95 % Wilson intervals.
+
+### Stand-in ladder, catanatron 3.2.1 (system `python3`)
+
+```bash
+cd /home/user/ClaudeTesting2
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 python3 scripts/bench_catanatron.py \
+    --opponent random,weighted,vp,vf --games 200 --workers 2 --seed 0 \
+    --spec "search:depth=1,evaluator=heuristic" --verbose --json results_321_fast.json   # 7.6 min wall
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 python3 scripts/bench_catanatron.py \
+    --opponent ab --games 160 --workers 2 --seed 0 \
+    --spec "search:depth=1,evaluator=heuristic" --verbose --json results_321_ab.json     # 19.0 min wall under load (~9 min idle)
+```
+
+| opponent (x3) | games | wins | win rate (95 % CI) | avg VP catanbot / opponents | avg turns | s / game | wins by seat 0 / 1 / 2 / 3 | adapter: errors / fallbacks / unmapped top |
+|---|---|---|---|---|---|---|---|---|
+| `random` = RandomPlayer (stock control) | 200 | 200 | 100 % (98-100) | 10.08 / 2.38 | 75.6 | 1.16 | 50 / 50 / 50 / 50 of 50 | 0 / 0 / 37 |
+| `weighted` = WeightedRandomPlayer (stock control) | 200 | 200 | 100 % (98-100) | 10.10 / 2.74 | 77.3 | 0.90 | 50 / 50 / 50 / 50 of 50 | 0 / 0 / 51 |
+| `vp` = VictoryPointPlayer (stock control) | 200 | 199 | 99.5 % (97-100) | 10.06 / 2.74 | 76.7 | 0.97 | 50 / 49 / 50 / 50 of 50 | 0 / 0 / 32 |
+| `vf` = our ValueFunctionPlayer (1-ply value function) | 200 | 49 | 24.5 % (19-31) | 7.33 / 7.39 | 90.0 | 1.52 | 13 / 18 / 9 / 9 of 50 | 0 / 0 / 50 |
+| `ab` = our AlphaBetaPlayer (depth-2 expectimax) | 160 | 39 | 24.4 % (18-32) | 7.16 / 7.27 | 91.3 | 14.1 (3-136; 6.5 idle) | 14 / 11 / 5 / 9 of 40 | 0 / 0 / 51 |
+
+Over the 960 games: 0 adapter errors, 0 fallbacks, 0 observe errors, no game
+near the 1000-turn cap (longest 204 turns); the 221 "unmapped top" decisions
+are all `PLAY_ROAD_BUILDING` ranked first while catanatron 3.2.1 did not
+offer it (limitation 3: it needs wood + brick there), and the next-ranked
+action was played each time.  The search itself costs ~0.8-1.1 s per game
+(37-38 searched decisions).
+
+### Strong ladder, catanatron 3.3.0 (virtualenv with the GitHub checkout)
+
+```bash
+cd /home/user/ClaudeTesting2
+PY=/home/user/venv_cat33/bin/python      # a virtualenv with the GitHub checkout installed editable
+PYTHONPATH=/home/user/ClaudeTesting2 $PY scripts/bench_catanatron.py --list-opponents                 # all ten presets "available"
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent vp        --games 100 --workers 2 --seed 0 --verbose --json run_vp.json         # 0.9 min wall
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent value     --games 200 --workers 2 --seed 0 --verbose --json run_value.json      # 3.1 min
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent alphabeta --games 30  --workers 2 --seed 0 --verbose --json run_alphabeta.json  # 8.7 min
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent sameturn  --games 60  --workers 2 --seed 0 --verbose --json run_sameturn.json   # 11.8 min
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent mcts      --games 40  --workers 2 --seed 0 --verbose --json run_mcts.json       # 12.0 min
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent playouts  --games 2   --workers 2 --seed 0 --verbose --json run_playouts.json   # 18.1 min
+```
+
+(`--spec` left at its default, which is the same `search:depth=1,evaluator=heuristic`.)
+
+| opponent (x3) | games | wins | win rate (95 % CI) | avg VP catanbot / opponents | avg turns | s / game | wins by seat 0 / 1 / 2 / 3 | adapter: errors / fallbacks / unmapped top |
+|---|---|---|---|---|---|---|---|---|
+| `vp` = VictoryPointPlayer (stock control) | 100 | 100 | 100 % (96-100) | 10.11 / 2.72 | 77.3 | 1.03 | 25 / 25 / 25 / 25 of 25 | 0 / 0 / 0 |
+| `value` = ValueFunctionPlayer (catanatron's, default weights) | 200 | 127 | 63.5 % (57-70) | 8.90 / 5.86 | 83.4 | 1.87 | 34 / 32 / 32 / 29 of 50 | 0 / 0 / 0 |
+| `alphabeta` = AlphaBetaPlayer (default depth 2) | 30 | 19 | 63.3 % (46-78) | 8.77 / 6.26 | 83.4 | 34.5 (longest game 70 s) | 4/8, 4/8, 5/7, 6/7 | 0 / 0 / 0 |
+| `sameturn` = SameTurnAlphaBetaPlayer | 60 | 45 | 75.0 % (63-84) | 9.08 / 5.86 | 80.9 | 23.3 | 11 / 12 / 11 / 11 of 15 | 0 / 0 / 0 |
+| `mcts` = MCTSPlayer (default 10 simulations) | 40 | 40 | 100 % (91-100) | 10.03 / 2.87 | 82.1 | 35.4 (14-119) | 10 / 10 / 10 / 10 of 10 | 0 / 0 / 0 |
+| `playouts` = GreedyPlayoutsPlayer (default 25 playouts per action) | 2 | 2 | 100 % (34-100) | 10.50 / 3.83 | 108.5 | 950 (813 and 1088) | 1/1, 1/1, -, - | 0 / 0 / 0 |
+
+Over the 432 games: 0 adapter errors, 0 fallbacks, 0 unmapped top actions
+(3.3 generates the two free Road Building roads without checking the road
+cost, so limitation 3 does not arise there), 0 observe errors, 0
+domestic-trade prompts (no stock 3.3 player offers trades), no game near the
+turn cap (longest 189 turns, in the `mcts` batch); 2479 discard cards were
+planned once and handed over card by card.  The search costs 0.8-1.0 s per
+game; everything else in `s / game` is the opponents' thinking time.
+
+### Controls, assessment and what the losses look like
+
+* **Stock controls (both versions).**  The sanity rule for the adapter
+  holds: >= 99 % against `random`, `weighted` and `vp` on 3.2.1 (200 games
+  each; the earlier section had 100 / 100 / 99 on 100 games) and 100/100
+  against `vp` on 3.3.0, with the opponents stuck at 2.4-2.9 VP.  These rows
+  are saturated and only show that the adapter and the bot work; they
+  cannot rank bots.
+* **Our stand-ins `vf` / `ab` (3.2.1).**  The default depth-1 heuristic bot
+  sits exactly on the 25 % seat par against both (24.5 % and 24.4 %, avg
+  VP 7.3 vs 7.4 and 7.2 vs 7.3): it is as strong as one `vf` / `ab`
+  player, not stronger, and `ab` is not measurably harder for it than `vf`
+  (the two stand-ins also tie each other at par, see
+  `docs/BENCHMARKS_OPPONENTS.md`).  There is a pronounced seat effect: 31 of
+  100 wins from seats 0-1 but 18 of 100 from seats 2-3 against `vf`, 25 of
+  80 vs 14 of 80 against `ab`, because the stand-ins' opening book takes
+  the best production spots first (the stand-ins themselves win far more
+  often from seats 0-1: winner seats 59 / 59 / 36 / 46 in the `vf` games).
+  62 of the 151 losses to `vf` and 53 of the 121 losses to `ab` were
+  second places; 71 and 52 of them were lost by 1-3 VP.
+* **catanatron's own strong players (3.3.0).**  Clearly above par but no
+  longer dominant: 63.5 % against `value` (the only tightly measured row,
+  CI 57-70 %, confirmed by 66 % in 116 further games), 63 % against
+  `alphabeta` and 75 % against `sameturn` (30 and 60 games; the three
+  intervals overlap, so these opponents cannot be ordered against each
+  other from this run, and the `sameturn` figure came out at 50 % in 22
+  verification games, see below: read it as "about 60-66 %, like the other
+  two").  The games are competitive
+  rather than blowouts (8.8-9.1 VP for catanbot against 5.9-6.3 for the
+  opponents; 29 of the 73 losses to `value` ended with catanbot at 8-9 VP,
+  41 of them in second place).  Note the asymmetry with the stand-ins: our
+  `vf` beats catanatron's `value` player 50 % vs 3 of them
+  (`docs/BENCHMARKS_OPPONENTS.md`), and the search bot lands on par against
+  `vf` but at 63.5 % against `value`, i.e. the pictures are consistent.
+* **`mcts` and `playouts` at their defaults (3.3.0).**  Not informative:
+  `MCTSPlayer` with catanatron's default of 10 simulations loses like the
+  stock bots (40/40, opponents at 2.9 VP) and `GreedyPlayoutsPlayer` (25
+  random playouts per playable action, ~1 s per opponent decision) costs
+  813 and 1088 s per game here, so only 2 games fit the 25-minute limit and
+  2/2 (CI 34-100 %) is not a sample.  Stronger settings would need a way to
+  pass opponent parameters (no `--opponent-params` flag yet).  `playouts`
+  also prints one `Greedy took ... secs` line per opponent decision, which
+  the script does not silence.
+* **Why it loses** (per-decision traces of 8 losses to `vf`, 5 to `ab`, 3
+  to `value`, 1 each to `alphabeta` / `sameturn`, replayed with
+  `PYTHONHASHSEED=0` on fresh seeds because the ladder games themselves are
+  not replayable, limitation 8): nothing mechanical.  0 errors, 0
+  fallbacks, 0 timeouts (`SearchConfig.time_limit` is `None`; the slowest
+  decision took 0.16 s, at most 4.3 s of search per game), no stalls
+  (`END_TURN` was never chosen while a settlement or city was affordable),
+  normal 78-130-turn games.  The losses are economic and start in the
+  opening / mid game: the winner had 3-4 cities in every inspected 3.3
+  loss while catanbot ended with 0-2, having put its resources into roads
+  (11-15 in several losses, once all 15 with Longest Road and one city),
+  settlements and development cards (12 dev cards / 8 knights in one `vf`
+  loss); it ends turns holding 4-5 of one resource with a 4:1 trade legal
+  and then loses them to 7s and the robber (the 3.3 players rob the
+  leader); against the stand-ins it picks 3rd / 4th and starts from the
+  weakest production at the table.  A one-ply search with the heuristic
+  evaluator does not see the multi-turn payoff of a city or of a 4:1 trade,
+  which is exactly what the value-function / alpha-beta opponents optimise.
+
+### Verification of these numbers
+
+* Every table entry above was recomputed from the per-game records in the
+  JSON files (`wins`, win rate, wins by seat, average VP / turns / duration,
+  the summed adapter statistics, `won` == `winner_seat == seat`, every
+  winner at >= 10 VP): all agree, seats rotate `g % 4`, and in every batch
+  `sum(duration) / 2` equals the wall time (both workers busy throughout),
+  so the `s / game` figures are consistent with the wall times.
+* Independent re-runs on the current tree with different games (`--seed
+  11`, `12` and `13`, `--workers 2`, same spec, 0 adapter errors /
+  fallbacks / observe errors in all of them; p = two-sided binomial
+  probability of the re-run given the table's rate).  3.2.1: `vp` 8/8;
+  `vf` 5/16 and 10/48, pooled 15/64 = 23 % (p = 1.0 against 24.5 %); `ab`
+  4/8 and 4/32, pooled 8/40 = 20 % (p = 0.59 against 24.4 %): the
+  stand-in table reproduces, on the newer `search.py` as well.  3.3.0:
+  `value` 8/16 and 68/100, pooled 76/116 = 66 % (p = 0.41 for the 100-game
+  run against 63.5 %); `alphabeta` 2/6 (p = 0.20 against 63 %);
+  `sameturn` 2/6 and 9/16, pooled 11/22 = 50 % (p = 0.012 against 75 %).
+  The `sameturn` row is therefore **not** reproduced at the 95 % level: its
+  60-game result looks like a high draw.  An earlier 64-game batch in the
+  scratch directory (seeds 0-3, 16 games each, partly on the older
+  `search.py`) gave `sameturn` 40/64 = 62.5 %, `alphabeta` 39/64 = 61 %
+  and `value` 263/400 = 66 %; pooling everything, the best estimates are
+  `value` 466/716 = 65 % (62-68), `sameturn` 96/146 = 66 % (58-73) and
+  `alphabeta` 60/100 = 60 % (50-69): the three strong players are
+  statistically indistinguishable for this bot, at roughly 60-66 %.
+* Caveats.  (1) `scripts/bench_catanatron.py` fixes the per-game seeds but
+  does not pin `PYTHONHASHSEED`, so the same seeds give different games in
+  different processes (limitation 8; `scripts/catanatron_ladder.py` pins
+  it): the tables are statistically, not trajectory-wise, reproducible.
+  (2) `catanbot/search.py` and `catanbot/heuristic.py` were being edited by
+  another workflow during the day: the 3.2.1 ladder ran on the 04:35
+  `search.py` / 05:26 `heuristic.py`, the 3.3.0 ladder and the re-runs
+  above on the 06:46 `search.py`; each table is internally consistent but
+  may not reproduce exactly on a later tree.  (3) All timings are inflated
+  by the concurrent load; use them as upper bounds when budgeting a run.
+  (4) The JSON is written only when a batch completes, so a batch that hits
+  its `timeout` loses everything but the `--verbose` log; keep the per-run
+  game counts of the commands above.
 
 ## How the mapping works
 
@@ -289,7 +475,10 @@ catanbot equivalent and never appear in a stock game.
 6. **Perfect information.**  Opponents' hands are exact (they are in
    catanatron), so robber-victim and monopoly decisions are easier than in
    real play where catanbot works from hand sizes and card counting.
-7. **Weak opponents** (see above): win rates saturate near 100 %.
+7. **Weak stock opponents** (see above): win rates saturate near 100 % against
+   `random` / `weighted` / `vp` (and against 3.3's `mcts` / `playouts` at their
+   default parameters).  The stand-ins `vf` / `ab` and catanatron 3.3's
+   `value` / `alphabeta` / `sameturn` are real opponents (ladder results above).
 8. **Reproducibility.**  Seeds fix boards, decks, dice and our bot's RNG, but
    catanatron builds some action lists from `set`s of `Color` enums whose
    order depends on Python's per-process hash seed, so game trajectories are
@@ -367,77 +556,94 @@ catanbot equivalent and never appear in a stock game.
     `--workers` stays the only parallelism and the preset also works inside
     the worker processes (which may not spawn children).
 
-## Running the full ladder (strong Catanatron players)
+## Running the full ladder (stand-ins on 3.2.1, strong Catanatron players on 3.3.0)
 
 The PyPI release of Catanatron (3.2.1) ships only the weak stock bots.  The
-strong players live in the GitHub checkout (3.3.0 engine); install it into
-its own interpreter (a venv, so the wheel stays available as well):
+strong players live in the GitHub checkout (3.3.0 engine); install it
+editable into a virtualenv of its own, so the wheel stays available as well
+(the paths below are the ones used on this machine; any virtualenv with the
+GitHub checkout works, the script only needs to be run by that
+interpreter):
 
 ```bash
 git clone https://github.com/bcollazo/catanatron.git        # here: /home/user/bcollazo/catanatron
 python3 -m venv /home/user/venv_cat33 && /home/user/venv_cat33/bin/python -m pip install -e catanatron numpy pillow pytest
-/home/user/venv_cat33/bin/python scripts/bench_catanatron.py --list-opponents   # value/alphabeta/... "available"
+cd /home/user/ClaudeTesting2
+PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/bench_catanatron.py --list-opponents   # all ten presets "available"
+PYTHONPATH=/home/user/ClaudeTesting2 python3 scripts/bench_catanatron.py --list-opponents                          # 3.2.1: value/alphabeta/... "not available"
 ```
 
 The same script and adapter run on both versions (`--list-opponents` says
 which presets resolve on the interpreter in use; a preset that is not
 available is a one-line error with exit code 2 when asked for alone, and
-skipped inside a list or ladder).  Always run from the repository root with
-`PYTHONPATH` set; keep to `--workers 2` on this 4-core machine.
+skipped inside a list or ladder).  Rules that keep a run safe on this
+machine (4 shared cores, 15 GB): always run from the repository root with
+`PYTHONPATH` set, keep to `--workers 2`, run one benchmark at a time, wrap
+every command in `timeout 1500` (25 minutes) and pass `--verbose` (the JSON
+is written only when a batch completes, so the per-game log is the fallback
+if a batch is killed).  `--spec` defaults to
+`search:depth=1,evaluator=heuristic`.  The 2026-09-25 results section above
+was produced with exactly the commands below.
 
 Stand-in ladder on catanatron 3.2.1 (system `python3`; our `vf` / `ab`
-players plus the stock controls):
+players from `docs/BENCHMARKS_OPPONENTS.md` plus the stock controls):
 
 ```bash
 cd /home/user/ClaudeTesting2
-PYTHONPATH=/home/user/ClaudeTesting2 python3 scripts/bench_catanatron.py --list-opponents
-PYTHONPATH=/home/user/ClaudeTesting2 python3 scripts/bench_catanatron.py --ladder controls --games 100 --workers 2 --seed 0 \
-    --spec "search:depth=1,evaluator=heuristic" --json ladder_321_controls.json      # ~0.4-0.5 s/game: ~1.5 min
-PYTHONPATH=/home/user/ClaudeTesting2 python3 scripts/bench_catanatron.py --ladder standins --games 100 --workers 2 --seed 0 \
-    --spec "search:depth=1,evaluator=heuristic" --json ladder_321_standins.json      # vf ~1.3 s/game, ab ~7 s/game: ~7 min
-# or both at once: --opponent random,weighted,vp,vf,ab
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 python3 scripts/bench_catanatron.py \
+    --opponent random,weighted,vp,vf --games 200 --workers 2 --seed 0 --verbose --json ladder_321_fast.json   # 7.6 min under load
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 python3 scripts/bench_catanatron.py \
+    --opponent ab --games 160 --workers 2 --seed 0 --verbose --json ladder_321_ab.json                        # 19 min under load, ~9 min idle
+# shorter presets: --ladder controls (random, weighted, vp) and --ladder standins (vf, ab) with one --games for all,
+# e.g. --ladder standins --games 100 (~1.5 min for vf, ~6-12 min for ab)
 ```
 
-Strong ladder on catanatron 3.3.0 (the venv; catanatron's own players):
+Strong ladder on catanatron 3.3.0 (the virtualenv; catanatron's own
+players), one command per opponent because their costs differ by three
+orders of magnitude:
 
 ```bash
 cd /home/user/ClaudeTesting2
-PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/bench_catanatron.py --list-opponents
-PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/bench_catanatron.py \
-    --opponent value,alphabeta,sameturn --games 40 --workers 2 --seed 0 \
-    --spec "search:depth=1,evaluator=heuristic" --json ladder_330_strong.json
-PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/bench_catanatron.py \
-    --opponent mcts --games 40 --workers 2 --seed 0 --json ladder_330_mcts.json      # ~48 s/game: ~16 min
-PYTHONPATH=/home/user/ClaudeTesting2 /home/user/venv_cat33/bin/python scripts/bench_catanatron.py \
-    --opponent playouts --games 2 --workers 2 --seed 0 --json ladder_330_playouts.json  # ~12 min/game: too slow for more
-# --ladder strong runs all five in this order: value, alphabeta, sameturn, playouts, mcts (mind the slow two)
+PY=/home/user/venv_cat33/bin/python      # a virtualenv with the GitHub checkout installed editable
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent vp        --games 100 --workers 2 --seed 0 --verbose --json ladder_330_vp.json         # ~1 min
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent value     --games 200 --workers 2 --seed 0 --verbose --json ladder_330_value.json      # ~3 min
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent alphabeta --games 30  --workers 2 --seed 0 --verbose --json ladder_330_alphabeta.json  # ~9 min (40 on an idle machine)
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent sameturn  --games 60  --workers 2 --seed 0 --verbose --json ladder_330_sameturn.json   # ~12 min
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent mcts      --games 40  --workers 2 --seed 0 --verbose --json ladder_330_mcts.json       # ~12 min
+PYTHONPATH=/home/user/ClaudeTesting2 timeout 1500 $PY scripts/bench_catanatron.py --opponent playouts  --games 2   --workers 2 --seed 0 --verbose --json ladder_330_playouts.json   # ~18 min for 2 games
+# --ladder strong runs value, alphabeta, sameturn, playouts, mcts with one --games for all, so with playouts in it
+# only --games 2 fits the time limit; prefer the per-opponent commands (or a comma list without playouts).
 ```
 
-Per-game cost of the 3.3 opponents with the depth-1 heuristic bot on this
-machine (one game, one worker, `--seed 1`): `value` 1.1 s, `alphabeta` 19 s,
-`sameturn` 22 s, so with two workers 20 minutes cover roughly 1000 / 120 /
-110 games of those; `mcts` 48 s (about 50 games in 20 minutes, use
-`--games 40`); `playouts` 696 s = 11.6 minutes per game (25 random playouts
-per playable action, about 1 s per action per opponent decision), so
-`--games 2` (one game per worker, ~12 minutes) is all that 20 minutes
-tolerate: it is the one preset that is too slow for a real ladder with its
-default `num_playouts`.  The stand-ins on 3.2.1 cost 1.3 s
-(`vf`) and 6.8 s (`ab`) per game, the stock controls 0.4-0.5 s.
+Per-game cost of the opponents with the depth-1 heuristic bot on this
+machine, `--workers 2` while another workflow loaded the other cores (the
+idle one-worker cost in brackets): 3.2.1 stock controls 0.9-1.2 s (0.4-0.5
+s), `vf` 1.5 s (1.3 s), `ab` 14 s (6.5-7 s); 3.3.0 `vp` 1.0 s (0.7 s),
+`value` 1.9 s (1.1 s), `alphabeta` 35 s, longest game 70 s (19 s),
+`sameturn` 23 s, 7-39 s per game (17-22 s), `mcts` 35 s, 14-119 s per game
+(20-48 s), `playouts` 813-1088 s
+= 14-18 minutes per game (696 s idle; 25 random playouts per playable
+action, about 1 s per opponent decision).  The game counts in the commands
+above are the ones that fit 25 minutes with margin on the loaded machine.
+`playouts` is the one preset that is too slow for a real ladder with its
+default `num_playouts`, and `mcts` with catanatron's default of 10
+simulations is too weak to be informative; there is no CLI option yet to
+pass opponent parameters (`opp_cls(color)` uses the defaults), which would
+be the natural follow-up.
 
 Presets: `random`, `weighted`, `vp` (stock controls), `vf`, `ab` (our
 stand-in value-function / alpha-beta players built inside the Catanatron
-engine), `value`, `alphabeta`, `sameturn`, `playouts`, `mcts` (Catanatron's
-own strong players).  Any other opponent can be given as an import path,
-e.g. `--opponent mypkg.bots:MyPlayer`, and several as a comma list.  In
-4-player games the seat baseline is 25%; use at least 100 games per
-opponent for a win rate of 40%+ to be statistically clear.
+engine, `docs/BENCHMARKS_OPPONENTS.md`), `value`, `alphabeta`, `sameturn`,
+`playouts`, `mcts` (Catanatron's own strong players).  Any other opponent
+can be given as an import path, e.g. `--opponent mypkg.bots:MyPlayer`, and
+several as a comma list.  In 4-player games the seat baseline is 25 %; use
+at least 100 games per opponent for a win rate of 40 %+ to be statistically
+clear (a 95 % interval spans about +-7 points at 200 games, +-12 at 60 and
++-17 at 30, see the results section).
 
 Smoke results of the dual-version work (2026-09-25, `--games 2 --workers 1
---seed 1`, depth-1 heuristic bot; far too few games to be a benchmark, they
-only show both paths run cleanly): 3.2.1 vs `random` 2/2 wins, 0.40 s/game,
-0 adapter errors / fallbacks / observe errors; 3.3.0 vs `value` 0/2 wins
-(4.5 vs 6.8 VP), 1.1 s/game, 0 errors, 3 planned discard cards handed over
-card by card.  One game each vs `alphabeta` (9 VP, lost 9-10) and
-`sameturn` (3 VP) on 3.3.0 also ran with 0 errors.  catanatron 3.3's
-players are a real opponent, unlike the 3.2.1 stock bots: a proper
-strong-ladder run (40+ games per opponent) is the next step.
+--seed 1`, depth-1 heuristic bot; only a check that both paths run cleanly):
+3.2.1 vs `random` 2/2 wins, 0.40 s/game, 0 adapter errors / fallbacks /
+observe errors; 3.3.0 vs `value` 0/2 wins (4.5 vs 6.8 VP), 1.1 s/game, 0
+errors, 3 planned discard cards handed over card by card.  The full ladders
+on both versions, run the same day, are in the results section above.

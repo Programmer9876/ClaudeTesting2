@@ -4,6 +4,31 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 08:35 UTC - strong Catanatron ladder (catanatron 3.3.0) done and verified
+
+Default bot (`search:depth=1,evaluator=heuristic`, C++ accel), 1 seat vs 3
+copies of the opponent, seats rotated, 25 % = seat baseline.  Verified by an
+independent re-run with new seeds (all rows compatible except sameturn,
+whose pooled estimate over 146 games is 66 %).
+
+| opponent x3 | games | win rate | avg VP us / them |
+|---|---|---|---|
+| VictoryPoint (control) | 100 | 100 % | 10.1 / 2.7 |
+| ValueFunctionPlayer | 200 | 64 % (57-70) | 8.9 / 5.9 |
+| AlphaBetaPlayer (depth 2) | 30 | 63 % (46-78) | 8.8 / 6.3 |
+| SameTurnAlphaBeta | 60 (+86) | 66 % pooled | 9.1 / 5.9 |
+| MCTS (10 simulations) | 40 | 100 % | 10.0 / 2.9 |
+| GreedyPlayouts (25/action) | 2 | 2/2 (not informative, 15 min/game) | 10.5 / 3.8 |
+
+Reading: against catanatron's three real search players the depth-1 bot
+wins about two thirds of its seats (baseline 25 %), i.e. it is clearly the
+strongest player at the table but not dominant; against our own stronger
+in-engine stand-ins it is only at par.  Losses are economic (behind by
+turn 40-60, openings), never mechanical (0 errors / fallbacks / stalls in
+432 games).  Next: the same ladders at depth 2 with the native lookahead
+(0.02 s per decision) and time-matched (task #9), then the value net.
+Full tables and commands: docs/BENCHMARKS.md.
+
 ## 2026-09-25 07:20 UTC - usage-limit interruption, three workflows resumed
 
 The session limit hit at ~06:40 UTC and cut three workflows short; it reset

@@ -351,6 +351,11 @@ def test_pair_weights():
     raw = np.array([3.0, 3.0, 0.5, 1.0, 1.0])
     np.testing.assert_allclose(w, raw / raw.mean())
     assert w.mean() == pytest.approx(1.0)
+    # hold pairs: END_TURN (kind 0) is the better side
+    kp2 = np.array([0, 1, 0, 2], np.int8)
+    kn2 = np.array([1, 0, 5, 0], np.int8)
+    raw2 = np.array([4.0, 1.0, 4.0, 1.0])
+    np.testing.assert_allclose(pair_weights(kp2, kn2, hold_weight=4.0), raw2 / raw2.mean())
     np.testing.assert_array_equal(pair_weights(kp, kn), np.ones(5))      # defaults: no reweighting
     assert pair_weights(np.zeros(0, np.int8), np.zeros(0, np.int8)).shape == (0,)
 

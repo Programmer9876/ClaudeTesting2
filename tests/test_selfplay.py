@@ -125,6 +125,7 @@ def test_other_phase_siblings():
     robber_nodes = [nd for nd, ks in kinds_of.items() if ROBBER in ks]
     discard_nodes = [nd for nd, ks in kinds_of.items() if DISCARD in ks]
     assert len(trade_nodes) >= 10 and len(robber_nodes) >= 2 and len(discard_nodes) >= 1
+    res_cols = [F.feature_index(f"me_res_{c}") for c in ("wood", "brick", "sheep", "wheat", "ore")]
     for nd in trade_nodes:
         rows = np.flatnonzero(r.s_node == nd)
         assert sorted(r.s_kind[rows].tolist()) == [ACCEPT, REJECT]      # exactly the two answers
@@ -132,6 +133,11 @@ def test_other_phase_siblings():
         assert np.all(X[rows, F.feature_index("g_my_turn")] == 0.0)
         assert np.all(X[rows, F.feature_index("g_trade_pending")] == 0.0)
         np.testing.assert_array_equal(X[rows], Xm[rows])                # already finished: one horizon
+        # the counterfactual is deterministic: ACCEPT is the trade executed with me (my hand changed by the
+        # offer), REJECT the offer resolved without me (my hand unchanged)
+        a, b = rows[r.s_kind[rows] == ACCEPT][0], rows[r.s_kind[rows] == REJECT][0]
+        assert not np.array_equal(X[a, res_cols], X[b, res_cols])
+        assert X[a, F.feature_index("g_trades_this_turn")] >= X[b, F.feature_index("g_trades_this_turn")]
     for nd in robber_nodes:
         rows = np.flatnonzero(r.s_node == nd)
         assert 2 <= len(rows) <= 12 and np.all(r.s_kind[rows] == ROBBER)
