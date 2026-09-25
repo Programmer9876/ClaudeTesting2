@@ -85,6 +85,18 @@ HEURISTIC_POOL = ["heuristic:temp=0.5,eps=0.08,accept_bias=0.3", "heuristic:temp
                   "heuristic:temp=0.8,eps=0.1,accept_bias=0.3,offer_temp=0.8,trade_eps=0.05"]
 
 
+def _fit_summary(hist: Dict[str, object]) -> Dict[str, object]:
+    """Last-epoch metrics of a fit history plus the metrics of the restored best epoch."""
+    last = {k: (v[-1] if isinstance(v, list) and v else v) for k, v in hist.items()}
+    be = hist.get("best_epoch", -1)
+    if isinstance(be, int) and be >= 0:
+        for k in ("val_loss", "val_auc", "val_acc"):
+            v = hist.get(k)
+            if isinstance(v, list) and len(v) > be:
+                last[f"best_{k}"] = v[be]
+    return last
+
+
 def _bias_of(results) -> np.ndarray:
     """Per-sample acceptance bias of the recording bots (0 when a bot has none)."""
     parts = [r.bias if r.bias is not None else np.zeros(len(r.y), np.float32) for r in results if r.y is not None]
@@ -172,7 +184,7 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
         net, hist, n_tr, n_va = fit_replay(X_buf, y_buf, g_buf, args,
                                            warm_from=best_path if args.warm_start else None,
                                            seed=args.seed, log=lambda m: _log(m, fh))
-        last = {k: (v[-1] if isinstance(v, list) and v else v) for k, v in hist.items()}
+        last = _fit_summary(hist)
         _log(f"  fit on {n_tr} samples ({n_va} validation) in {time.time() - t_fit:.0f}s: {json.dumps(last)}", fh)
         net.save(args.out)
         _log(f"  wrote {args.out}", fh)
@@ -232,7 +244,7 @@ def train(args: argparse.Namespace) -> Dict[str, object]:
         net, hist, n_tr, _ = fit_replay(X_buf, y_buf, g_buf, args,
                                         warm_from=best_path if (best_path and args.warm_start) else None,
                                         seed=args.seed + it)
-        last = {k: (v[-1] if isinstance(v, list) and v else v) for k, v in hist.items()}
+        last = _fit_summary(hist)
         _log(f"  fit on {n_tr} samples in {time.time() - t_fit:.0f}s: {json.dumps(last)}", fh)
         cand_path = os.path.splitext(args.out)[0] + f"_candidate.npz"
         net.save(cand_path)

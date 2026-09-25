@@ -311,3 +311,42 @@ def test_setup_pick_and_city_spots_stay_valid():
     cities = P.best_city_spots(s, 0, k=3)
     assert [v for v, _ in cities] == s.players[0].settlements[:3] or len(cities) == len(s.players[0].settlements)
     assert P.road_targets(s, 0, k=3)
+
+
+def test_degenerate_boards_and_threat_boundary():
+    """No division by zero when every W(h) is 0 (all-desert board, players without buildings, desert-only
+    vertices); the strong-opponent threshold includes exactly 5 estimated VP (threat == 1.3)."""
+    d = new_game(3, hexes=[(B.DESERT, 0)] * 19, ports={})
+    d.phase = PHASE_MAIN
+    d.players[0].settlements = [B.HEX_VERTICES[9][0], B.HEX_VERTICES[9][2]]  # stacked, but on deserts
+    d.players[0].cities = [B.HEX_VERTICES[9][4]]
+    assert P.hex_block_weights(d) == [0.0] * B.NUM_HEXES
+    assert P.robber_exposure(d, 0) == 0.0 and P.robber_exposure(d, 1) == 0.0
+    occ = d.occupied_vertices()
+    for v in [v for v in range(B.NUM_VERTICES) if P.is_free_vertex(occ, v)][:10]:
+        assert P.block_penalty(d, 0, extra_settlement=v) == 0.0
+        assert P.score_settlement_spot(d, 0, v) == P.score_settlement_spot(d, 1, v)  # finite, no buildings vs some
+    assert P.block_penalty(d, 0, extra_city=d.players[0].settlements[0]) == 0.0
+    # standard board: the desert hex weighs 0 and a lone desert-corner settlement adds nothing on it
+    s = new_game(4, hexes=B.STANDARD_HEXES)
+    s.phase = PHASE_MAIN
+    assert P.hex_block_weights(s)[s.robber] == 0.0 and s.hexes[s.robber][0] == B.DESERT
+    assert P.block_penalty(s, 0, extra_settlement=B.HEX_VERTICES[s.robber][0]) == 0.0
+    # exactly 5 VP (threat 1.0 + 0.3 == PLACEMENT_STRONG_THREAT) is a strong opponent, 4 VP is not;
+    # stacked on the ore 8 (hex 11; the standard board's centre hex 9 is the desert and weighs 0)
+    ore8 = 11
+    assert s.hexes[ore8] == (B.ORE, 8)
+    v1, v_stack, v_opp = (B.HEX_VERTICES[ore8][k] for k in (0, 2, 4))
+    far = [44, 47]  # two corners of the brick 5, not adjacent to each other
+    assert far[1] not in B.VERTEX_NEIGHBORS[far[0]] and not _hexes(*far) & _hexes(v1, v_stack)
+    s.players[0].settlements = [v1]
+    s.players[1].settlements = [v_opp]
+    s.players[1].cities = far
+    assert threat(s, 1) == P.PLACEMENT_STRONG_THREAT
+    assert P.strong_opponent_hexes(s, 0)[ore8] == 1
+    pen5 = P.block_penalty(s, 0, extra_settlement=v_stack)
+    s.players[1].cities = far[:1]
+    assert threat(s, 1) < P.PLACEMENT_STRONG_THREAT
+    assert P.strong_opponent_hexes(s, 0)[ore8] == 0
+    pen3 = P.block_penalty(s, 0, extra_settlement=v_stack)
+    assert pen3 > 0.0 and abs(pen5 / pen3 - 1.5) < 1e-9
