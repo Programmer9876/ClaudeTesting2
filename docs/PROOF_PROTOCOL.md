@@ -242,3 +242,33 @@ fallbacks and crashes.
 
 **Readiness for human testing** now requires claim 2 AND claim 3 (a
 stricter bar than before; claim 2's own conditions are unchanged).
+
+## Amendment 2026-09-25 (3): mixed Catanatron table (claim 4)
+
+Written before any mixed-table game.  Adds tests and a claim; changes
+nothing above.
+
+**Format "1v3 mixed".**  One catanbot seat against one copy each of
+catanatron's ValueFunctionPlayer, AlphaBetaPlayer and
+SameTurnAlphaBetaPlayer (defaults).  catanbot's seat rotates `g % 4`; the
+three opponents take the remaining seats in permutation `(g // 4) % 6` of
+the order (value, alphabeta, sameturn), so every opponent sits in every
+relative position equally often over each 24 consecutive games.  Null:
+catanbot's win rate <= 0.25.
+
+| test | information for our bot | games | seed |
+|---|---|---|---|
+| T10 | full (as T1-T6) | 400 | 900301 |
+| T11 | counted (as T7-T9) | 400 | 900401 |
+
+Rules, trading off, PYTHONHASHSEED 0, chunking, logging and crash handling
+as for the other tests; T10 and T11 run from the snapshot that contains the
+mixed-table option (recorded in docs/PROOF.md).
+
+**Claim 4 - "beats a mixed Catanatron table".**  T10 and T11 each reject
+their null at family-wise alpha = 5.7e-7 (Holm over T10-T11); the lower
+bound of the central 99 % Clopper-Pearson interval is >= 0.35 in each;
+every seat's win rate exceeds 0.25 (one-sided exact, p < 0.05 per seat);
+zero adapter errors, fallbacks and crashes.
+
+**Readiness for human testing** now requires claims 2, 3 and 4.
