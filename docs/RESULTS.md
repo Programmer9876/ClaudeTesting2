@@ -4,6 +4,19 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 08:50 UTC - lookahead regression found: depth 2 plays worse than depth 1
+
+Stand-in ladder (catanatron 3.2.1, 40 games each, seed 5) with the depth-2
+native search bot: 15 % vs ValueFunction (avg VP 7.0 vs 7.8) and 15 % vs
+AlphaBeta (6.6 vs 7.5), against 24.5 % / 24.4 % for depth 1.  Together with
+"depth 3 not better than depth 2" this says the opponents'-turn lookahead
+systematically misvalues actions (search time is not the issue: 0.02 s per
+decision).  A diagnosis-and-fix workflow is running (hypotheses: pessimistic
+simulated opponents making visible progress look bad, horizon mixing, roll
+sample noise, unrealistic opponent policy, chance-node handling).  Until it
+lands the advisor, self-play and the ladders should use depth 1; the
+native lookahead is still the right tool once the design is fixed.
+
 ## 2026-09-25 08:35 UTC - strong Catanatron ladder (catanatron 3.3.0) done and verified
 
 Default bot (`search:depth=1,evaluator=heuristic`, C++ accel), 1 seat vs 3
