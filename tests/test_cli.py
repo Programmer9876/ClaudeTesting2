@@ -159,3 +159,14 @@ def test_log_outcome_calibrate(tmp_path, capsys):
     rc = cli.main(["calibrate", "--selfplay", "1", "--model", "heuristic", "--seed", "2"])
     out = capsys.readouterr().out
     assert rc == 0 and "self-play calibration" in out
+
+
+def test_watch_from_dir(tmp_path, capsys):
+    s = played_state(seed=6, turns=40)
+    d = tmp_path / "frames"
+    d.mkdir()
+    synth.render_to_file(s, str(d / "a.png"), size=(1000, 640), seed=6, me=0, jitter=True)
+    synth.render_to_file(s, str(d / "b.png"), size=(1000, 640), seed=6, me=0, jitter=True)   # duplicate: skipped
+    rc = cli.main(["watch", "--from-dir", str(d), "--me", "red", "--depth", "1", "--samples", "1", "--model", "heuristic"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "watch mode" in out and out.count("turn of") == 1

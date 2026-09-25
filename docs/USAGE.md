@@ -97,6 +97,20 @@ than subtle ones, and blocs are reported in the Politics section.  `python -m ca
 what has been learned.  During self-play the bot maintains the same
 profiles automatically from the actions it observes.
 
+### Live advisor while you play (`watch`)
+
+```bash
+pip install mss
+python -m catanbot watch --me red --interval 6 --profiles friends.json      # whole primary monitor
+python -m catanbot watch --me red --region 0,0,1600,1000 --depth 2         # a screen region
+```
+
+Every few seconds the screen is captured, parsed, and (when the position
+changed) the top three moves with one-line reasons are printed, plus the
+usual notes.  You still make every move yourself: this automates the
+screenshot loop, not the play.  `--from-dir DIR` replays saved screenshots
+instead of capturing (used by the tests).
+
 ### Validating the bot on your own games
 
 Human games are the real test, and you do not need an app for it: log the

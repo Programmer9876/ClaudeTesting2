@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from . import accel as _accel  # optional C++ extension (catanbot_core); see docs/CPP.md
 from . import board as B
 from .state import (GameState, PHASE_DISCARD, PHASE_GAME_OVER, PHASE_MAIN, PHASE_ROBBER, PHASE_ROLL,
                     PHASE_SETUP_ROAD, PHASE_SETUP_SETTLEMENT, PHASE_TRADE_RESPONSE, PHASE_TRADE_SELECT)
@@ -613,6 +614,8 @@ def _assemble(state: GameState, player: int, info: dict, blocks: np.ndarray, out
 # ---------------------------------------------------------------------------
 def extract(state: GameState, player: int) -> np.ndarray:
     """Feature vector (float32, shape ``(NUM_FEATURES,)``) from ``player``'s perspective."""
+    if _accel.AVAILABLE:
+        return _accel.extract(state, player)
     info = _analyse_players(state)
     blocks = _player_blocks(state, info)
     out = np.zeros(NUM_FEATURES, np.float32)
@@ -626,6 +629,8 @@ def extract_batch(states: Sequence[GameState], players: Sequence[int]) -> np.nda
     Consecutive identical state objects share one analysis, so
     ``extract_batch([s] * n, range(n))`` is about as cheap as one ``extract``.
     """
+    if _accel.AVAILABLE:
+        return _accel.extract_batch(states, players)
     n = len(states)
     if n != len(players):
         raise ValueError("states and players must have the same length")

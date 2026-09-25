@@ -685,6 +685,90 @@ def cmd_calibrate(args) -> int:
     return 0
 
 
+def cmd_watch(args) -> int:
+    """Live advisor: capture the screen (or read images from a directory) every few seconds,
+    re-analyse when the position changed, print a compact recommendation.  You still make
+    every move yourself - this only automates the screenshot + analysis loop."""
+    import hashlib
+    from .vision.colonist import parse_image
+    from .vision.schema import parsed_to_state
+    from .inference import is_fully_known
+    from .search import SearchConfig, Searcher, search_determinized
+    evaluator, ev_name = load_evaluator(args.model)
+    print(f"watch mode ({ev_name}); every {args.interval}s; Ctrl-C to stop", flush=True)
+    frames: List[Any] = []
+    if args.from_dir:
+        frames = sorted(os.path.join(args.from_dir, f) for f in os.listdir(args.from_dir)
+                        if f.lower().endswith((".png", ".jpg", ".jpeg")))
+        if not frames:
+            print("no images in --from-dir")
+            return 2
+    else:
+        try:
+            import mss  # noqa: F401
+        except ImportError:
+            print("screen capture needs the 'mss' package: pip install mss   (or use --from-dir)")
+            return 2
+    last_sig = None
+    seen = 0
+    model, politics = load_profiles(args.profiles, GameState())  # placeholders until a state exists
+    while True:
+        if args.from_dir:
+            if seen >= len(frames):
+                break
+            img = frames[seen]
+            seen += 1
+        else:
+            import mss
+            from PIL import Image
+            with mss.mss() as sct:
+                mon = sct.monitors[args.monitor] if args.monitor < len(sct.monitors) else sct.monitors[0]
+                if args.region:
+                    x, y, w, h = [int(v) for v in args.region.split(",")]
+                    mon = {"left": x, "top": y, "width": w, "height": h}
+                shot = sct.grab(mon)
+                img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+        try:
+            result = parse_image(img, me=args.me)
+        except Exception as ex:
+            print(f"[{time.strftime('%H:%M:%S')}] parse failed: {ex}")
+            if not args.from_dir:
+                time.sleep(args.interval)
+            continue
+        parsed = result.parsed
+        for fx in args.fix or []:
+            try:
+                apply_fix(parsed, fx)
+            except Exception:
+                pass
+        sig = hashlib.md5(json.dumps({k: parsed.get(k) for k in ("hexes", "robber", "players", "dice", "current_player")},
+                                     sort_keys=True, default=str).encode()).hexdigest()
+        if sig == last_sig:
+            if not args.from_dir:
+                time.sleep(args.interval)
+            continue
+        last_sig = sig
+        state = parsed_to_state(parsed)
+        if parsed.get("dice"):
+            state.phase = PHASE_MAIN
+            state.dice = int(parsed["dice"])
+        me = state.player_index(parsed.get("me") or state.players[0].color)
+        report = recommend_for_state(state, me, args, parsed)
+        top = report["actions"][:3]
+        cur = state.players[state.current].name or state.players[state.current].color
+        print(f"[{time.strftime('%H:%M:%S')}] turn of {cur}; you {state.total_vp(me)} VP; hand "
+              + ", ".join(f"{state.players[me].resources[r]} {B.RESOURCE_NAMES[r][:2]}" for r in range(5) if state.players[me].resources[r]))
+        for k, a in enumerate(top):
+            print(f"   {k + 1}. [{a['value']:.2f}] {a['text']}" + (f" - {a['explanation'][:90]}" if a['explanation'] else ""))
+        for n in report.get("notes", [])[:1]:
+            print("   note: " + n)
+        if result.warnings:
+            print("   parse: " + "; ".join(result.warnings[:2]))
+        if not args.from_dir:
+            time.sleep(args.interval)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
@@ -757,6 +841,14 @@ def build_parser() -> argparse.ArgumentParser:
     pr = sub.add_parser("profiles", help="show a saved opponent profile file")
     pr.add_argument("file")
     pr.set_defaults(func=cmd_profiles)
+
+    wt = sub.add_parser("watch", help="live advisor: capture the screen periodically and print advice")
+    wt.add_argument("--interval", type=float, default=6.0, help="seconds between captures")
+    wt.add_argument("--monitor", type=int, default=1, help="mss monitor index (0 = all)")
+    wt.add_argument("--region", help="capture region x,y,w,h in pixels")
+    wt.add_argument("--from-dir", help="read screenshots from a directory instead of the screen (testing)")
+    _add_recommend_args(wt)
+    wt.set_defaults(func=cmd_watch)
 
     oc = sub.add_parser("outcome", help="record the winner of a logged game")
     oc.add_argument("log")
