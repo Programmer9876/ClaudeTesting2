@@ -114,3 +114,169 @@ def test_smoke_against_catanatrons_value_player(capsys):
     out = capsys.readouterr().out
     assert rc == 0 and "vs 3x ValueFunctionPlayer (value)" in out and "catanatron 3.3" in out
     assert "0 errors" in out and "0 observe errors" in out
+
+
+# ---------------------------------------------------------------------------
+# --opponent-params, --trades, timing, --probe-trades, PYTHONHASHSEED pinning
+# ---------------------------------------------------------------------------
+SMALL = "search:depth=1,beam=2,expand=4,actions=3,evaluator=heuristic"
+needs_trading = pytest.mark.skipif(not AD.DOMESTIC_TRADING,
+                                   reason=f"catanatron {AD.CATANATRON_VERSION} has no player-to-player trading")
+
+
+def test_parse_opponent_params():
+    assert bench.parse_opponent_params(None) == {}
+    assert bench.parse_opponent_params(" depth=3, prunning=true ,") == {"depth": "3", "prunning": "true"}
+    with pytest.raises(bench.BadOpponentParams) as ex:
+        bench.parse_opponent_params("depth")
+    assert ex.value.code == 2
+
+
+def test_opponent_factory_keyword_players():
+    cls = bench.resolve_opponent("ab")
+    make = bench.opponent_factory(cls, {"budget": "300", "depth": "2", "opening_book": "false"}, "ab")
+    p = make(AD.COLORS[1])
+    assert p.color == AD.COLORS[1] and p.budget == 300 and p.depth == 2 and p.opening_book is False
+    assert bench.opponent_factory(cls, {}) is cls
+    for bad in ({"nonsense": "1"}, {"budget": "lots"}):
+        with pytest.raises(bench.BadOpponentParams) as ex:
+            bench.opponent_factory(cls, bad, "ab")
+        assert ex.value.code == 2 and "\n" not in ex.value.message and "ab" in ex.value.message
+    with pytest.raises(bench.BadOpponentParams) as ex:
+        bench.opponent_factory(bench.resolve_opponent("vp"), {"depth": "2"}, "vp")
+    assert "takes no parameter depth" in ex.value.message
+
+
+@needs_33
+def test_opponent_factory_33_params():
+    make = bench.opponent_factory(bench.resolve_opponent("alphabeta"), {"depth": "1", "prunning": "true"})
+    p = make(AD.COLORS[2])
+    assert p.params.depth == 1 and p.params.prunning is True and p.color == AD.COLORS[2]
+    p = bench.opponent_factory(bench.resolve_opponent("mcts"), {"num_simulations": "7"})(AD.COLORS[0])
+    assert p.params.num_simulations == 7
+    p = bench.opponent_factory(bench.resolve_opponent("value"), {"value_fn": "contender"})(AD.COLORS[0])
+    assert p.params.value_fn == "contender"
+    for bad in ({"depth": "deep"}, {"value_fn": "mystery"}, {"num_playouts": "3"}):
+        with pytest.raises(bench.BadOpponentParams):
+            bench.opponent_factory(bench.resolve_opponent("alphabeta" if "depth" in bad else "value"), bad)
+
+
+def test_bad_opponent_params_exit_2_with_one_line(capsys):
+    rc = bench.main(["--games", "1", "--opponent", "ab", "--opponent-params", "wings=2"])
+    captured = capsys.readouterr()
+    assert rc == 2 and len([x for x in captured.err.splitlines() if x.strip()]) == 1
+    assert "wings" in captured.err and "Traceback" not in captured.err
+
+
+def test_per_game_timing_and_params_in_json(tmp_path, capsys):
+    out = tmp_path / "r.json"
+    rc = bench.main(["--games", "2", "--opponent", "ab", "--opponent-params", "budget=200,depth=1",
+                     "--spec", SMALL, "--seed", "4", "--json", str(out)])
+    text = capsys.readouterr().out
+    assert rc == 0 and "compute     :" in text and "catanbot" in text and "AlphaBetaPlayer (each of 3)" in text
+    import json
+    data = json.loads(out.read_text())
+    assert data["opponent_params"] == {"budget": "200", "depth": "1"} and data["trades"] == "off"
+    assert "_times" not in json.dumps(data)
+    for r in data["results"]:
+        tm = r["timing"]
+        assert tm["ours"]["n"] == r["stats"]["decisions"] > 0 and tm["opp"]["n"] > 0
+        assert tm["ours"]["p95_ms"] >= tm["ours"]["p50_ms"] > 0 and len(tm["opp_seat_s"]) == 3
+        assert r["trades"]["offers"] == 0 and r["trades"]["opp_asked"] == 0
+    t = data["timing"]
+    assert t["ours"]["n"] == sum(r["timing"]["ours"]["n"] for r in data["results"])
+    assert t["opp"]["n"] == sum(r["timing"]["opp"]["n"] for r in data["results"])
+    assert abs(t["our_s_per_game"] - sum(r["timing"]["ours"]["total_s"] for r in data["results"]) / 2) < 1e-9
+
+
+@pytest.mark.skipif(AD.DOMESTIC_TRADING, reason="catanatron 3.3 has domestic trading")
+def test_trades_need_the_33_engine(capsys):
+    rc = bench.main(["--games", "1", "--opponent", "weighted", "--trades", "value"])
+    assert rc == 2 and "needs catanatron 3.3" in capsys.readouterr().err
+    rc = bench.main(["--probe-trades", "2", "--opponent", "weighted"])
+    assert rc == 2
+
+
+@needs_trading
+def test_trades_value_game_reports_offers(tmp_path, capsys):
+    out = tmp_path / "t.json"
+    rc = bench.main(["--games", "2", "--opponent", "value", "--spec", SMALL, "--seed", "6", "--trades", "value",
+                     "--json", str(out)])
+    text = capsys.readouterr().out
+    assert rc == 0 and "trades value" in text and "trades      : catanbot offered" in text
+    assert "0 errors" in text and "0 observe errors" in text
+    import json
+    data = json.loads(out.read_text())
+    tt = data["trade_totals"]
+    assert tt["offers"] == sum(r["trades"]["offers"] for r in data["results"]) > 0
+    assert tt["opp_accepted"] + tt["opp_rejected"] + tt["opp_cannot_pay"] == tt["opp_asked"] == 3 * tt["offers"]
+    assert tt["confirmed"] + tt["cancelled"] == tt["offers_accepted"] and tt["opp_errors"] == 0
+
+
+@needs_trading
+def test_native_trades_against_alphabeta_count_errors_not_crashes(capsys):
+    rc = bench.main(["--games", "1", "--opponent", "alphabeta", "--opponent-params", "depth=1", "--spec", SMALL,
+                     "--seed", "2", "--trades", "native"])
+    text = capsys.readouterr().out
+    assert rc == 0 and "0 errors" in text
+    line = next(x for x in text.splitlines() if x.startswith("  trades      :"))
+    assert "accepted 0/" in line
+
+
+@needs_trading
+def test_playouts_print_is_silenced(capsys):
+    from catanatron.models.enums import ActionType
+    import catanatron.players.playouts as playouts_mod
+    make = bench.opponent_factory(bench.resolve_opponent("playouts"), {"num_playouts": "1"})
+    assert playouts_mod.print is bench._quiet_print and playouts_mod.USE_MULTIPROCESSING is False
+    game = bench.probe_positions(1, seed=3)[0]
+    import random as _random
+    offer = bench.probe_offer(game, "1:1", _random.Random(1))
+    game.execute(AD.CAction(game.state.colors[game.state.current_turn_index], ActionType.OFFER_TRADE, offer))
+    player = make(game.state.current_color())
+    capsys.readouterr()
+    a = player.decide(game, game.playable_actions)
+    assert a.action_type in (ActionType.ACCEPT_TRADE, ActionType.REJECT_TRADE)
+    assert capsys.readouterr().out == ""
+
+
+@needs_trading
+def test_probe_trades_tabulates_native_and_rule_answers(capsys, tmp_path):
+    probe = bench.run_probe(["value", "alphabeta", "random"], 4, seed=2, opp_params={})
+    table = probe["table"]
+    for name in ("value", "alphabeta", "random"):
+        for cat in bench.PROBE_CATEGORIES:
+            row = table[name]["rows"][cat]
+            assert row["n"] == 4 and row["accept"] + row["reject"] + row["error"] == 4
+            assert 0 <= row["value_rule"] <= 4 and 0 <= row["fair_rule"] <= 4
+    assert all(table["value"]["rows"][c]["accept"] == 0 for c in bench.PROBE_CATEGORIES)
+    assert all(table["alphabeta"]["rows"][c]["error"] == 4 for c in bench.PROBE_CATEGORIES)
+    assert all(table["value"]["rows"]["1:2"]["fair_rule"] == 0 for _ in [0])   # fair never pays 2 for 1
+    bench.print_probe(probe)
+    out = capsys.readouterr().out
+    assert "trade-response probe" in out and "RuntimeError" in out
+    rc = bench.main(["--probe-trades", "2", "--opponent", "value", "--seed", "1", "--json", str(tmp_path / "p.json")])
+    assert rc == 0 and (tmp_path / "p.json").exists()
+
+
+def test_hash_seed_reexec_makes_runs_reproducible(tmp_path):
+    """Run as a script, the bench pins PYTHONHASHSEED (default 0): two processes play identical games."""
+    import json
+    import subprocess
+    import sys
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONHASHSEED"}
+    env["PYTHONPATH"] = ROOT
+    runs = []
+    for i in range(2):
+        out = tmp_path / f"h{i}.json"
+        proc = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "bench_catanatron.py"), "--games", "2",
+                               "--opponent", "weighted", "--spec", "heuristic", "--seed", "5", "--json", str(out)],
+                              env=env, capture_output=True, text=True, timeout=300)
+        assert proc.returncode == 0, proc.stderr
+        assert "PYTHONHASHSEED=0" in proc.stdout
+        data = json.loads(out.read_text())
+        assert data["hash_seed"] == "0"
+        runs.append([(r["winner"], r["turns"], r["vps"], r["actions"]) for r in data["results"]])
+    assert runs[0] == runs[1]
+    # in-process calls (the tests above) never re-exec
+    bench._reexec_with_hash_seed(-1)

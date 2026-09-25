@@ -29,10 +29,13 @@ from catanbot.state import (  # noqa: E402
     PHASE_ROLL,
     PHASE_SETUP_ROAD,
     PHASE_SETUP_SETTLEMENT,
+    PHASE_TRADE_RESPONSE,
+    PHASE_TRADE_SELECT,
 )
 
 # catanatron 3.3's domestic-trade actions never appear in ``playable_actions`` unless a
-# player *offers* a trade (no stock player does), so they cannot be round-tripped in a game.
+# player *offers* a trade (no stock player does), so the game-level round trips below skip
+# them; the trade tests at the end of the file cover them.
 DOMESTIC_TRADE_TYPES = {t for t in ActionType
                         if t.name in ("OFFER_TRADE", "ACCEPT_TRADE", "REJECT_TRADE", "CONFIRM_TRADE", "CANCEL_TRADE")}
 ALL_TYPES = set(ActionType) - DOMESTIC_TRADE_TYPES
@@ -356,10 +359,15 @@ def test_logged_actions_convert_with_context():
     yop = AD.CAction(colors[0], ActionType.PLAY_YEAR_OF_PLENTY, ("ORE", "WOOD"))
     assert AD.catanatron_action_to_catanbot(yop, cb, m) == (A.PLAY_YEAR_OF_PLENTY, B.WOOD, B.ORE)
     assert AD.catanatron_action_to_catanbot(AD.CAction(colors[0], ActionType.PLAY_YEAR_OF_PLENTY, ("ORE",)), cb, m) is None
-    # catanbot actions without a catanatron equivalent
-    assert AD.catanbot_action_to_key((A.PROPOSE_TRADE, (1, 0, 0, 0, 0), (0, 1, 0, 0, 0)), cb, m, colors) is None
+    # catanbot actions without a catanatron equivalent (player trades exist on 3.3 only)
     assert AD.catanbot_action_to_key((A.ROLL, 8), cb, m, colors) is None
-    assert AD.catanbot_action_to_key((A.ACCEPT_TRADE,), cb, m, colors) is None
+    propose = AD.catanbot_action_to_key((A.PROPOSE_TRADE, (1, 0, 0, 0, 0), (0, 1, 0, 0, 0)), cb, m, colors)
+    accept = AD.catanbot_action_to_key((A.ACCEPT_TRADE,), cb, m, colors)
+    if AD.DOMESTIC_TRADING:
+        assert propose == (ActionType.OFFER_TRADE, (1, 0, 0, 0, 0, 0, 1, 0, 0, 0))
+        assert accept == (ActionType.ACCEPT_TRADE, None)
+    else:
+        assert propose is None and accept is None
 
 
 def test_fallback_action_prefers_building():
@@ -752,33 +760,52 @@ def test_player_hands_over_its_planned_discard_card_by_card():
     assert me._pending_discard == []
 
 
+def _post_roll_game(players, seed: int, seat: int):
+    """A 3.3 game advanced to ``seat``'s post-roll PLAY_TURN prompt (no road building pending)."""
+    g = AD.make_game(players, seed=seed)
+    st = g.state
+    while not (st.current_prompt == ActionPrompt.PLAY_TURN and st.current_player_index == seat
+               and st.player_state[f"P{seat}_HAS_ROLLED"] and not st.is_road_building):
+        g.play_tick()
+    return g
+
+
+def _set_hands(g, hands):
+    """Overwrite every seat's resource hand (``hands[i]`` = 5 counts) and refresh the playable
+    actions; seated CatanbotPlayers re-copy their shadow state (the edit is not in the log)."""
+    from catanatron.models.actions import generate_playable_actions
+    st = g.state
+    for i, hand in enumerate(hands):
+        for r, name in enumerate(AD.CB_TO_RESOURCE):
+            st.player_state[f"P{i}_{name}_IN_HAND"] = hand[r]
+    g.playable_actions = generate_playable_actions(st)
+    for p in st.players:
+        if isinstance(p, AD.CatanbotPlayer) and p._shadow is not None:
+            p._shadow = st.copy()
+            p._observed = len(AD.action_log(st))
+
+
 @needs_33
 def test_trade_prompts_are_declined():
-    """3.3 domestic trades: a DECIDE_TRADE prompt is answered with REJECT_TRADE, a
-    DECIDE_ACCEPTEES prompt with CANCEL_TRADE, and both convert to the turn player's
-    PHASE_MAIN (catanbot has no phase for them; no stock player ever offers a trade)."""
-    from catanatron.models.enums import Action as CAction
-    from catanatron.models.actions import generate_playable_actions
-
+    """3.3 domestic trades with the default ``suppress_trades=True``: a DECIDE_TRADE prompt is
+    answered with REJECT_TRADE, a DECIDE_ACCEPTEES prompt with CANCEL_TRADE.  Both prompts
+    convert to catanbot's trade phases, and the logged trade actions are observed."""
     offerer = AD.CatanbotPlayer(AD.COLORS[0], spec=SMALL_SPEC, strict=True, seed=1)
     responder = AD.CatanbotPlayer(AD.COLORS[1], spec=SMALL_SPEC, strict=True, seed=2)
     players = [offerer, responder, WeightedRandomPlayer(AD.COLORS[2]), WeightedRandomPlayer(AD.COLORS[3])]
-    g = AD.make_game(players, seed=21)
+    g = _post_roll_game(players, seed=21, seat=0)
     st = g.state
-    while not (st.current_prompt == ActionPrompt.PLAY_TURN and st.current_player_index == 0
-               and st.player_state["P0_HAS_ROLLED"] and not st.is_road_building):
-        g.play_tick()
-    for i in range(4):
-        for r in AD.CB_TO_RESOURCE:
-            st.player_state[f"P{i}_{r}_IN_HAND"] = 0
-    st.player_state["P0_WOOD_IN_HAND"] = 1
-    st.player_state["P1_BRICK_IN_HAND"] = 1
-    g.playable_actions = generate_playable_actions(st)
+    offerer.decide(g, g.playable_actions)          # catch up with the game so far
+    _set_hands(g, [(1, 0, 0, 0, 0), (0, 1, 0, 0, 0), (0, 0, 0, 0, 0), (0, 0, 0, 0, 0)])
     offer = (1, 0, 0, 0, 0, 0, 1, 0, 0, 0)     # one wood for one brick
-    g.execute(CAction(AD.COLORS[0], ActionType.OFFER_TRADE, offer))
+    g.execute(AD.CAction(AD.COLORS[0], ActionType.OFFER_TRADE, offer))
     assert st.current_prompt == ActionPrompt.DECIDE_TRADE and st.current_color() == AD.COLORS[1]
     cb = AD.to_catanbot_state(g)
-    assert cb.phase == PHASE_MAIN and cb.current == 0 and E.legal_actions(cb)
+    assert cb.phase == PHASE_TRADE_RESPONSE and cb.current == 0 and E.acting_player(cb) == 1
+    assert cb.pending_trade.proposer == 0 and cb.pending_trade.give == [1, 0, 0, 0, 0]
+    assert cb.pending_trade.get == [0, 1, 0, 0, 0]
+    assert cb.pending_trade.responses == {2: False, 3: False}      # cannot pay: auto-rejected like catanbot
+    assert set(E.legal_actions(cb)) == {(A.ACCEPT_TRADE,), (A.REJECT_TRADE,)}
     answer = responder.decide(g, g.playable_actions)
     assert answer.action_type == ActionType.REJECT_TRADE and answer in g.playable_actions
     assert responder.stats["trade_prompts"] == 1 and responder.stats["errors"] == 0
@@ -789,14 +816,235 @@ def test_trade_prompts_are_declined():
         g.execute(next(a for a in g.playable_actions if a.action_type == ActionType.REJECT_TRADE))
     assert st.current_prompt == ActionPrompt.DECIDE_ACCEPTEES and st.current_color() == AD.COLORS[0]
     cb = AD.to_catanbot_state(g)
-    assert cb.phase == PHASE_MAIN and cb.current == 0
+    assert cb.phase == PHASE_TRADE_SELECT and cb.current == 0 and E.acting_player(cb) == 0
+    assert cb.pending_trade.responses == {1: True, 2: False, 3: False}
+    assert set(E.legal_actions(cb)) == {(A.EXECUTE_TRADE, 1), (A.CANCEL_TRADE,)}
+    before = offerer.stats["observed"]
     answer = offerer.decide(g, g.playable_actions)
     assert answer.action_type == ActionType.CANCEL_TRADE and answer in g.playable_actions
     assert offerer.stats["trade_prompts"] == 1 and offerer.stats["errors"] == 0
+    # OFFER -> PROPOSE_TRADE, BLUE's ACCEPT -> ACCEPT_TRADE; the forced rejections of the seats
+    # that cannot pay have no catanbot equivalent (catanbot's engine never asks them)
+    assert offerer.stats["observed"] == before + 2 and offerer.stats["observe_errors"] == 0
+    prof = offerer.bot.model.profile("blue")
+    assert prof.accept.weight > 0 and prof.accept.mean() > 0.5
     g.execute(answer)
     assert st.current_prompt == ActionPrompt.PLAY_TURN and st.current_color() == AD.COLORS[0]
     assert st.player_state["P0_WOOD_IN_HAND"] == 1 and st.player_state["P1_BRICK_IN_HAND"] == 1
-    # the logged trade actions have no catanbot equivalent and are skipped by observe, not counted as errors
-    before = offerer.stats["observed"]
     offerer.decide(g, g.playable_actions)
-    assert offerer.stats["observe_errors"] == 0 and offerer.stats["observed"] == before
+    assert offerer.stats["observe_errors"] == 0 and offerer.stats["observed"] == before + 3   # + CANCEL_TRADE
+
+
+@needs_33
+def test_trade_actions_convert_both_ways():
+    players = [WeightedRandomPlayer(c) for c in AD.COLORS]
+    g = _post_roll_game(players, seed=22, seat=1)
+    st = g.state
+    m = AD.mapping_for(st.board.map)
+    _set_hands(g, [(0, 0, 2, 0, 0), (1, 0, 0, 1, 0), (0, 0, 1, 0, 0), (0, 0, 0, 0, 0)])
+    cb = AD.to_catanbot_state(g, suppress_trades=False)
+    assert cb.trades_this_turn == 0
+    propose = (A.PROPOSE_TRADE, (1, 0, 0, 0, 0), (0, 0, 1, 0, 0))    # a wood for a sheep
+    assert propose in E.legal_actions(cb)
+    assert AD.catanbot_action_to_key(propose, AD.to_catanbot_state(g), m, st.colors) == \
+        (ActionType.OFFER_TRADE, (1, 0, 0, 0, 0, 0, 0, 1, 0, 0))
+    assert propose not in E.legal_actions(AD.to_catanbot_state(g))   # suppressed: no proposals
+    key = AD.catanbot_action_to_key(propose, cb, m, st.colors)
+    assert key == (ActionType.OFFER_TRADE, (1, 0, 0, 0, 0, 0, 0, 1, 0, 0))
+    offer = AD.CAction(AD.COLORS[1], ActionType.OFFER_TRADE, key[1])
+    assert AD.playable_key(offer) == key
+    assert AD.catanatron_action_to_catanbot(offer, cb, m) == propose
+    g.execute(offer)
+    # the engine asks seat 0 first, then 1 (the offerer itself - a catanatron quirk), 2, 3
+    assert st.current_prompt == ActionPrompt.DECIDE_TRADE and st.current_player_index == 0
+    cb = AD.to_catanbot_state(g, suppress_trades=False)
+    assert cb.phase == PHASE_TRADE_RESPONSE and cb.trade_responder == 0 and cb.trades_this_turn == 1
+    assert cb.pending_trade.responses == {3: False}
+    by_type = {a.action_type: a for a in g.playable_actions}
+    for cb_action, t in (((A.ACCEPT_TRADE,), ActionType.ACCEPT_TRADE), ((A.REJECT_TRADE,), ActionType.REJECT_TRADE)):
+        assert AD.catanbot_action_to_key(cb_action, cb, m, st.colors) == AD.playable_key(by_type[t])
+        assert AD.catanatron_action_to_catanbot(by_type[t], cb, m) == cb_action
+    g.execute(by_type[ActionType.ACCEPT_TRADE])
+    assert st.current_player_index == 1                     # the offerer is asked about its own offer
+    cb = AD.to_catanbot_state(g, suppress_trades=False)
+    own = next(a for a in g.playable_actions if a.action_type == ActionType.REJECT_TRADE)
+    assert AD.catanatron_action_to_catanbot(own, cb, m) is None
+    g.execute(own)
+    cb = AD.to_catanbot_state(g, suppress_trades=False)
+    assert cb.phase == PHASE_TRADE_RESPONSE and cb.trade_responder == 2
+    assert cb.pending_trade.responses == {0: True, 3: False}
+    g.execute(next(a for a in g.playable_actions if a.action_type == ActionType.ACCEPT_TRADE))
+    # seat 3 cannot pay: its forced REJECT_TRADE is not a catanbot decision
+    cb = AD.to_catanbot_state(g, suppress_trades=False)
+    forced = g.playable_actions
+    assert [a.action_type for a in forced] == [ActionType.REJECT_TRADE]
+    assert AD.catanatron_action_to_catanbot(forced[0], cb, m) is None
+    g.execute(forced[0])
+    assert st.current_prompt == ActionPrompt.DECIDE_ACCEPTEES
+    cb = AD.to_catanbot_state(g, suppress_trades=False)
+    assert cb.phase == PHASE_TRADE_SELECT and cb.pending_trade.responses == {0: True, 2: True, 3: False}
+    legal = E.legal_actions(cb)
+    assert set(legal) == {(A.EXECUTE_TRADE, 0), (A.EXECUTE_TRADE, 2), (A.CANCEL_TRADE,)}
+    index = AD.index_playable(g.playable_actions)
+    for a in legal:
+        ca = index[AD.catanbot_action_to_key(a, cb, m, st.colors)]
+        assert AD.catanatron_action_to_catanbot(ca, cb, m) == a
+    confirm = index[AD.catanbot_action_to_key((A.EXECUTE_TRADE, 2), cb, m, st.colors)]
+    assert confirm.value[10] == AD.COLORS[2]
+    g.execute(confirm)
+    assert st.player_state["P1_SHEEP_IN_HAND"] == 1 and st.player_state["P2_WOOD_IN_HAND"] == 1
+    assert AD.to_catanbot_state(g, suppress_trades=False).trades_this_turn == 1
+
+
+@needs_33
+def test_offers_are_played_confirmed_and_observed_in_real_games():
+    """catanbot (trading on) against three catanatron value players that accept by the
+    value rule: offers become OFFER_TRADE (never more than the per-turn cap), accepted
+    offers are confirmed, and the opponent model learns the answers."""
+    from catanatron.players.value import ValueFunctionPlayer
+    totals = {"offers": 0, "offers_accepted": 0, "trades_confirmed": 0}
+    for seed, seat in ((31, 2), (32, 0)):
+        me = AD.CatanbotPlayer(AD.COLORS[seat], spec=SMALL_SPEC, strict=True, seed=seed, suppress_trades=False)
+        opps = [AD.BenchOpponent(ValueFunctionPlayer(c), trade_rule="value") for i, c in enumerate(AD.COLORS)
+                if i != seat]
+        players = list(opps)
+        players.insert(seat, me)
+        game = AD.make_game(players, seed=seed)
+        game.play()
+        st = me.stats
+        assert st["errors"] == 0 and st["observe_errors"] == 0 and st["fallback"] == 0
+        log = [AD.log_action(e) for e in AD.action_log(game.state)]
+        ours = [a for a in log if a.action_type == ActionType.OFFER_TRADE]
+        assert all(a.color == AD.COLORS[seat] for a in ours) and len(ours) == st["offers"]
+        confirms = [a for a in log if a.action_type == ActionType.CONFIRM_TRADE]
+        assert len(confirms) == st["trades_confirmed"]
+        per_turn, n = [], 0
+        for a in log:
+            if a.action_type == ActionType.OFFER_TRADE:
+                n += 1
+            elif a.action_type == ActionType.END_TURN:
+                per_turn.append(n)
+                n = 0
+        assert max(per_turn + [n]) <= E.MAX_TRADE_PROPOSALS_PER_TURN
+        # our own offer comes back to us as a DECIDE_TRADE prompt when we are not seat 0
+        assert (st["self_offer_prompts"] > 0) == (seat != 0 and st["offers"] > 0)
+        asked = sum(o.trade_stats["asked"] for o in opps)
+        assert asked == len(opps) * st["offers"]
+        assert sum(o.trade_stats["accepted"] for o in opps) >= st["offers_accepted"]
+        if st["offers_accepted"]:
+            names = [AD.COLOR_NAMES[c] for i, c in enumerate(AD.COLORS) if i != seat]
+            assert any(me.bot.model.profile(nm).accept.weight > 0 for nm in names)
+        for k in totals:
+            totals[k] += st[k]
+    assert totals["offers"] > 0 and totals["offers_accepted"] > 0 and totals["trades_confirmed"] > 0
+
+
+@needs_33
+def test_incoming_offers_are_decided_by_the_bot():
+    """Two catanbot seats with trading on offer each other; the responder decides with its search."""
+    from catanatron.players.value import ValueFunctionPlayer
+    received = accepted = 0
+    for seed in (41, 42, 43):
+        a = AD.CatanbotPlayer(AD.COLORS[0], spec=SMALL_SPEC, strict=True, seed=seed, suppress_trades=False)
+        b = AD.CatanbotPlayer(AD.COLORS[1], spec=SMALL_SPEC, strict=True, seed=seed + 1, suppress_trades=False)
+        players = [a, b] + [AD.BenchOpponent(ValueFunctionPlayer(c), "value") for c in AD.COLORS[2:]]
+        AD.play_game(players, seed=seed)
+        for p in (a, b):
+            assert p.stats["errors"] == 0 and p.stats["observe_errors"] == 0 and p.stats["fallback"] == 0
+            received += p.stats["offers_received"]
+            accepted += p.stats["offers_accepted_by_us"]
+        if received and accepted:
+            break
+    assert received > 0 and 0 < accepted <= received
+
+
+@needs_33
+def test_bench_opponent_answers_offers_by_rule():
+    from catanatron.players.minimax import AlphaBetaPlayer
+    from catanatron.players.value import ValueFunctionPlayer, base_fn, DEFAULT_WEIGHTS
+    players = [WeightedRandomPlayer(c) for c in AD.COLORS]
+    g = _post_roll_game(players, seed=23, seat=2)
+    st = g.state
+    # seat 0 (asked first) has 3 ore, 1 wheat and 3 sheep: one wheat for sheep completes a city
+    _set_hands(g, [(0, 0, 3, 1, 3), (0, 0, 0, 0, 0), (1, 0, 1, 2, 0), (0, 0, 0, 0, 0)])
+    good = (0, 0, 0, 1, 0, 0, 0, 1, 0, 0)      # seat 2 gives a wheat, asks a sheep
+    bad = (0, 0, 1, 0, 0, 0, 0, 0, 1, 0)       # seat 2 gives a sheep, asks a wheat
+    lopsided = (0, 0, 0, 1, 0, 0, 0, 2, 0, 0)  # a wheat for two sheep
+    asked = AD.COLORS[0]
+
+    def offered(value):
+        gc = g.copy()
+        gc.execute(AD.CAction(AD.COLORS[2], ActionType.OFFER_TRADE, value))
+        assert gc.state.current_prompt == ActionPrompt.DECIDE_TRADE and gc.state.current_color() == asked
+        return gc
+
+    fn = base_fn(DEFAULT_WEIGHTS)
+    for value, want in ((good, True), (bad, False)):
+        gc = offered(value)
+        opp = AD.BenchOpponent(ValueFunctionPlayer(asked), trade_rule="value")
+        assert opp.rule_accepts(gc) is want
+        answer = opp.decide(gc, gc.playable_actions)
+        assert answer.action_type == (ActionType.ACCEPT_TRADE if want else ActionType.REJECT_TRADE)
+        assert opp.trade_stats["asked"] == 1 and opp.trade_stats["accepted" if want else "rejected"] == 1
+        assert len(opp.times) == 1 and len(opp.choice_times) == 1
+        # the rule compares the player's own value function before / after the executed trade
+        after = gc.copy()
+        from catanatron import state_functions as SF
+        SF.player_freqdeck_add(after.state, asked, list(value[:5]))
+        SF.player_freqdeck_subtract(after.state, asked, list(value[5:]))
+        assert (fn(after, asked) > fn(gc, asked)) is want
+    # "fair" refuses to give two cards for one even when the value rises, and deals with a near-winner
+    gc = offered(lopsided)
+    assert AD.BenchOpponent(ValueFunctionPlayer(asked), "value").rule_accepts(gc)
+    assert not AD.BenchOpponent(ValueFunctionPlayer(asked), "fair").rule_accepts(gc)
+    gc = offered(good)
+    assert AD.BenchOpponent(ValueFunctionPlayer(asked), "fair").rule_accepts(gc)
+    gc.state.player_state["P2_VICTORY_POINTS"] = 8
+    assert not AD.BenchOpponent(ValueFunctionPlayer(asked), "fair").rule_accepts(gc)
+    # native answers: catanatron's value player rejects everything (ACCEPT_TRADE moves no card, ties
+    # break to the first listed action), its alpha-beta player raises - counted, answered REJECT_TRADE
+    gc = offered(good)
+    vf = AD.BenchOpponent(ValueFunctionPlayer(asked), "native")
+    assert vf.decide(gc, gc.playable_actions).action_type == ActionType.REJECT_TRADE
+    ab = AD.BenchOpponent(AlphaBetaPlayer(asked), "native")
+    with pytest.raises(RuntimeError):
+        AlphaBetaPlayer(asked).decide(gc, gc.playable_actions)
+    assert ab.decide(gc, gc.playable_actions).action_type == ActionType.REJECT_TRADE
+    assert ab.trade_stats["errors"] == 1 and vf.trade_stats["errors"] == 0
+    # a seat that cannot pay only has REJECT_TRADE: counted, no rule consulted
+    gc2 = offered(good)
+    gc2.execute(next(a for a in gc2.playable_actions if a.action_type == ActionType.REJECT_TRADE))
+    assert gc2.state.current_color() == AD.COLORS[1]
+    poor = AD.BenchOpponent(ValueFunctionPlayer(AD.COLORS[1]), "value")
+    assert poor.decide(gc2, gc2.playable_actions).action_type == ActionType.REJECT_TRADE
+    assert poor.trade_stats["cannot_pay"] == 1 and len(poor.choice_times) == 0
+
+
+def test_bench_opponent_times_and_forwards():
+    inner = [WeightedRandomPlayer(c) for c in AD.COLORS]
+    wrapped = [AD.BenchOpponent(p) for p in inner]
+    res = AD.play_game(wrapped, seed=9)
+    assert res["turns"] > 0
+    total = sum(len(w.times) for w in wrapped)
+    assert total == res["actions"]            # every logged action was one timed decision
+    for w, p in zip(wrapped, inner):
+        assert w.color == p.color and w.inner is p and len(w.choice_times) <= len(w.times)
+        assert all(t >= 0 for t in w.times)
+        assert w.trade_stats["asked"] == 0
+    with pytest.raises(ValueError):
+        AD.BenchOpponent(inner[0], trade_rule="sometimes")
+
+
+def test_catanbot_player_times_every_decision():
+    me = AD.CatanbotPlayer(AD.COLORS[0], spec=SMALL_SPEC, strict=True, seed=3)
+    players = [me] + [WeightedRandomPlayer(c) for c in AD.COLORS[1:]]
+    AD.play_game(players, seed=12)
+    assert len(me.times) == me.stats["decisions"] and 0 < len(me.choice_times) < len(me.times)
+    assert sum(me.times) >= me.stats["search_time"] > 0
+
+
+def test_timing_summary():
+    s = AD.timing_summary([0.001 * k for k in range(1, 101)])     # 1 .. 100 ms
+    assert s["n"] == 100 and abs(s["mean_ms"] - 50.5) < 1e-9 and abs(s["total_s"] - 5.05) < 1e-9
+    assert abs(s["p50_ms"] - 50.0) < 1e-9 and abs(s["p95_ms"] - 95.0) < 1e-9 and abs(s["max_ms"] - 100.0) < 1e-9
+    assert AD.timing_summary([])["n"] == 0

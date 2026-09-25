@@ -31,10 +31,29 @@ they are bought" rule and adds domestic-trade prompts.  See
 pip install catanatron                     # 3.2.1 wheel; only needed for this benchmark (pulls networkx)
 python3 scripts/bench_catanatron.py --games 20 --opponent vp \
     --spec "search:depth=1,evaluator=heuristic" [--workers 2] [--seed 0] [--json out.json] [--verbose] \
-    [--vps-to-win 10] [--discard-limit 7]
+    [--vps-to-win 10] [--discard-limit 7] [--trades off|native|value|fair] \
+    [--opponent-params KEY=VAL,...] [--hash-seed 0]
 python3 scripts/bench_catanatron.py --list-opponents       # which presets resolve on the running catanatron
+python3 scripts/bench_catanatron.py --probe-trades 200 --opponent value,alphabeta,random   # 3.3: how opponents answer offers
 python3 -m pytest tests/test_catanatron_adapter.py tests/test_bench_script.py -q   # adapter tests (skipped without catanatron)
 ```
+
+* `--trades` (3.3 only; default `off`): whether catanbot offers domestic
+  trades and how the opponents answer them - see "Domestic trading against
+  catanatron 3.3" below.  `--opponent-params` passes constructor parameters
+  to every opponent (a 3.3 player's `Params` fields such as `depth=3` for
+  `alphabeta`, `num_simulations=50` for `mcts`, `num_playouts=10` for
+  `playouts`, `value_fn=contender` for `value`; or the keyword arguments of
+  an older-style class such as `ab`'s `budget=4000`), coerced to the
+  declared types; a class that takes none of the keys is a one-line error
+  (exit code 2).  Every run reports the compute per decision of both sides
+  ("Compute per decision" below).
+* Run as a script, the bench re-executes itself with
+  `PYTHONHASHSEED=--hash-seed` (default 0; `-1` keeps random hashing), so the
+  same `--seed` gives the same games in every process (verified: identical
+  winners, turns, VP and action counts in two processes; unpinned runs
+  differ).  Two runs that differ only in a catanbot-side option are therefore
+  *paired* game by game until the option first changes a decision.
 
 * `--opponent vp` = `VictoryPointPlayer` (greedy one-ply VP maximiser, the
   strongest player in the core `catanatron` 3.2.1 package), `weighted` =
@@ -270,6 +289,8 @@ game; everything else in `s / game` is the opponents' thinking time.
   does not pin `PYTHONHASHSEED`, so the same seeds give different games in
   different processes (limitation 8; `scripts/catanatron_ladder.py` pins
   it): the tables are statistically, not trajectory-wise, reproducible.
+  (The bench pins `PYTHONHASHSEED=0` by default since the trading work of
+  the same day, `--hash-seed`; runs from then on are trajectory-reproducible.)
   (2) `catanbot/search.py` and `catanbot/heuristic.py` were being edited by
   another workflow during the day: the 3.2.1 ladder ran on the 04:35
   `search.py` / 05:26 `heuristic.py`, the 3.3.0 ladder and the re-runs
@@ -356,7 +377,8 @@ h7=t13 (-2,2,0)   h8=t4 (-1,1,0)    h9=t0 (0,0,0)     h10=t1 (1,-1,0)   h11=t7 (
 | prompt `PLAY_TURN`, not rolled / rolled | `PHASE_ROLL` / `PHASE_MAIN` (`dice` from the turn's logged `ROLL`) |
 | prompt `DISCARD` | `PHASE_DISCARD`, `discard_queue` = current discarder + later seats holding > 7 cards (3.2.1, catanatron's hard-coded rule for the later discarders, limitation 12) / + later seats with `discard_counts > 0` (3.3, which also prompts each seat once per card: mid-way the hand is already reduced) |
 | prompt `MOVE_ROBBER` | `PHASE_ROBBER` |
-| prompt `DECIDE_TRADE` / `DECIDE_ACCEPTEES` (3.3 domestic trades) | the turn player's `PHASE_MAIN` (no catanbot phase; the player declines, limitation 13) |
+| prompt `DECIDE_TRADE` (3.3 domestic trades) | `PHASE_TRADE_RESPONSE`: `pending_trade` = `current_trade` (proposer = the turn player), `trade_responder` = the asked seat; seats asked before it (catanatron asks in seat order) answered accepted iff their `acceptees` flag is set; later seats that cannot pay are marked rejected, as catanbot's engine does |
+| prompt `DECIDE_ACCEPTEES` | `PHASE_TRADE_SELECT` for the offerer, `responses` = the `acceptees` flags |
 | `ACTUAL_VICTORY_POINTS >= vps_to_win` | `winner`, `PHASE_GAME_OVER` |
 
 `total_vp(i)` of the converted state equals catanatron's
@@ -368,9 +390,11 @@ differently (limitation 11).  **All hands are exact**: catanatron hands every
 `hand_known=True` / `dev_known=True` - our "me" and the three opponents alike
 (catanbot's own self-play engine is perfect-information too, so the search
 takes the same code path; the card-counting / determinization layer is simply
-not needed here).  `trades_this_turn` is set to the per-turn maximum so
-`engine.legal_actions` never proposes player trades (catanatron has none) and
-the search runs with `SearchConfig.trade_proposals = 0`.
+not needed here).  With trades suppressed (3.2.1, and `--trades off` on
+3.3) `trades_this_turn` is set to the per-turn maximum so
+`engine.legal_actions` never proposes player trades and the search runs with
+`SearchConfig.trade_proposals = 0`; otherwise it is the number of
+`OFFER_TRADE`s logged this turn.
 
 ### Actions (`catanbot_action_to_key` <-> `playable_key`)
 
@@ -389,7 +413,10 @@ the search runs with `SearchConfig.trade_proposals = 0`.
 | `(BANK_TRADE, give, get)` | `MARITIME_TRADE`, 5-tuple: `ratio` copies of the given resource, `None` padding to four, then the asked resource, e.g. `("WHEAT","WHEAT","WHEAT",None,"BRICK")` |
 | `(DISCARD, counts)` | 3.2.1: `DISCARD`, `None` (catanatron discards randomly; log: list of cards).  3.3: `DISCARD_RESOURCE`, the plan's first card; `CatanbotPlayer` queues the other cards for the engine's following one-card prompts, and merges a logged run of one player's `DISCARD_RESOURCE`s back into one `(DISCARD, counts)` observation |
 | `(END_TURN,)` | `END_TURN`, `None` |
-| `PROPOSE_TRADE` and the other player-trade actions, forced `(ROLL, v)` | no equivalent |
+| `(PROPOSE_TRADE, give, get)` | 3.3: `OFFER_TRADE`, 10-tuple `give + get` (same resource order); never in `playable_actions`, built by `CatanbotPlayer` |
+| `(ACCEPT_TRADE,)` / `(REJECT_TRADE,)` / `(CANCEL_TRADE,)` | 3.3: the same-named types (`ACCEPT` / `REJECT` carry `current_trade`, identified by type alone) |
+| `(EXECUTE_TRADE, j)` | 3.3: `CONFIRM_TRADE`, `give + get + (Color of seat j,)` |
+| forced `(ROLL, v)`; the player-trade actions on 3.2.1 | no equivalent |
 
 `test_action_round_trips_for_every_action_type` checks, over whole random
 games, that every catanatron playable action converts to a catanbot action
@@ -397,9 +424,12 @@ that converts back to the same key, that catanbot's `legal_actions` on the
 converted state contains it (except the discards and, on 3.3, the non-knight
 dev cards offered before the roll, limitation 14), and that every mappable
 catanbot action catanatron does *not* offer is one of the two documented
-rule differences below.  The 3.3 domestic-trade actions (`OFFER_TRADE`,
-`ACCEPT_TRADE`, `REJECT_TRADE`, `CONFIRM_TRADE`, `CANCEL_TRADE`) have no
-catanbot equivalent and never appear in a stock game.
+rule differences below.  The 3.3 domestic-trade actions never appear in a
+game between stock players (none of them offers);
+`test_trade_actions_convert_both_ways` round-trips them through a hand-built
+offer, including the two logged answers without a catanbot equivalent (the
+offerer's answer to its own offer and the forced rejection of a seat that
+cannot pay).
 
 ### `CatanbotPlayer.decide`
 
@@ -409,7 +439,17 @@ catanbot equivalent and never appear in a stock game.
    following one-card prompts (`stats["pending_discard"]`; if the queue no
    longer matches the hand the bot plans again).  A `DECIDE_TRADE` /
    `DECIDE_ACCEPTEES` prompt is answered with `REJECT_TRADE` /
-   `CANCEL_TRADE` (`stats["trade_prompts"]`).
+   `CANCEL_TRADE` when trades are suppressed (the default); otherwise the
+   bot decides it in `PHASE_TRADE_RESPONSE` / `PHASE_TRADE_SELECT` like any
+   other decision, except the engine's question about our *own* offer,
+   which is rejected without a search (`stats["trade_prompts"]`,
+   `"offers_received"`, `"self_offer_prompts"`, ...).
+0b. 3.3 with trades on, at our post-roll `PLAY_TURN`: the catanbot
+   `PROPOSE_TRADE` candidates are added as `OFFER_TRADE` actions (cards we
+   hold, fewer than 4 offers so far this turn), also when the only playable
+   catanatron action is `END_TURN`; a proposal the search ranks from outside
+   the engine's candidate list (intermediary / political deals) is played
+   too if well formed.
 1. One playable action (roll-only turns, the 3.2.1 `DISCARD None` prompt): return it.
 2. `MOVE_ROBBER` prompt right after our `PLAY_KNIGHT_CARD`: execute the
    remembered `(hex, victim)`; if catanatron no longer offers it, fall through.
@@ -446,11 +486,17 @@ catanbot equivalent and never appear in a stock game.
 
 ## Limitations and rule differences
 
-1. **No player trading.**  catanatron 3.2.1 has no domestic trades (3.3 has
-   them, but no stock player offers one and the adapter never does), so
-   `PROPOSE_TRADE` never enters the search (`trades_this_turn` = max,
-   `trade_proposals = 0`) and the trade-related parts of the opponent model
-   keep their priors.  Feature `trades_this_turn` reads 4/4 for a value net.
+1. **Player trading is off by default and one-sided when on.**  catanatron
+   3.2.1 has no domestic trades.  On 3.3 the default `--trades off` keeps
+   `PROPOSE_TRADE` out of the search (`trades_this_turn` = max,
+   `trade_proposals = 0`; the trade-related parts of the opponent model keep
+   their priors, and feature `trades_this_turn` reads 4/4 for a value net).
+   With `--trades native|value|fair` catanbot offers, but catanatron's
+   players never offer, so only catanbot's proposal side and its choice of
+   partner are exercised in the bench (its response side is covered by
+   `test_incoming_offers_are_decided_by_the_bot`, two catanbot seats), and
+   the answers come from catanatron's degenerate responders or from OUR
+   response rule - see "Domestic trading against catanatron 3.3".
 2. **Discards are random on 3.2.1.**  Its only `DISCARD` action has value
    `None`; the engine samples the cards.  Our 7-protection (dumping surplus
    before the roll) still applies, our discard *choice* does not.  On 3.3
@@ -482,7 +528,12 @@ catanbot equivalent and never appear in a stock game.
 8. **Reproducibility.**  Seeds fix boards, decks, dice and our bot's RNG, but
    catanatron builds some action lists from `set`s of `Color` enums whose
    order depends on Python's per-process hash seed, so game trajectories are
-   only reproducible within one process (or with `PYTHONHASHSEED` fixed).
+   only reproducible within one process or with `PYTHONHASHSEED` fixed -
+   which `scripts/bench_catanatron.py` now does by default (`--hash-seed 0`,
+   it re-executes itself; results before that change were not pinned).
+   catanatron's `AlphaBetaPlayer` also stops a search after 20 s of wall
+   time (`MAX_SEARCH_TIME_SECS`), so a heavily loaded machine could in
+   principle change its moves.
    The tests therefore loop over seeds rather than pin one trajectory
    (confirmed: the same 30 `WeightedRandomPlayer` seeds gave 18 701, 17 042
    and 18 646 ticks in three separate processes).
@@ -531,14 +582,15 @@ catanbot equivalent and never appear in a stock game.
     replays these.  3.3 applies the limit to everyone and fixes the counts at
     the roll (`State.discard_counts`), which the queue follows
     (`test_discard_queue_follows_discard_counts`).
-13. **3.3 domestic-trade prompts are declined.**  catanbot's trade logic
-    (`PROPOSE_TRADE` / `ACCEPT_TRADE` / ...) is not wired to catanatron
-    3.3's `OFFER_TRADE` protocol: our player never offers, answers a
-    `DECIDE_TRADE` prompt with `REJECT_TRADE` and a `DECIDE_ACCEPTEES`
-    prompt with `CANCEL_TRADE` (counted in `stats["trade_prompts"]`), and
-    the converted state of those prompts is the turn player's `PHASE_MAIN`.
-    No stock catanatron player offers trades, so this never triggers in the
-    ladder (`test_trade_prompts_are_declined` exercises it by hand).
+13. **3.3 domestic trades are wired, but off by default.**  With `--trades
+    off` (and `CatanbotPlayer(suppress_trades=True)`) our player never
+    offers, answers a `DECIDE_TRADE` prompt with `REJECT_TRADE` and a
+    `DECIDE_ACCEPTEES` prompt with `CANCEL_TRADE`
+    (`test_trade_prompts_are_declined`).  With trades on it plays catanbot's
+    trade decisions through catanatron's protocol ("Domestic trading
+    against catanatron 3.3").  catanatron itself has no per-turn offer limit
+    and does not check that the offerer holds the offered cards; the adapter
+    enforces catanbot's rules (at most 4 offers per turn, only held cards).
 14. **3.3 offers Year of Plenty, Monopoly and Road Building before the
     roll** (3.2.1 and catanbot: only the knight).  Those pre-roll options
     have no legal catanbot counterpart in `PHASE_ROLL`, so they are never
@@ -627,9 +679,11 @@ action, about 1 s per opponent decision).  The game counts in the commands
 above are the ones that fit 25 minutes with margin on the loaded machine.
 `playouts` is the one preset that is too slow for a real ladder with its
 default `num_playouts`, and `mcts` with catanatron's default of 10
-simulations is too weak to be informative; there is no CLI option yet to
-pass opponent parameters (`opp_cls(color)` uses the defaults), which would
-be the natural follow-up.
+simulations is too weak to be informative; `--opponent-params` now passes
+their parameters (e.g. `--opponent mcts --opponent-params
+num_simulations=50`, `--opponent playouts --opponent-params num_playouts=5`;
+per-decision costs in "Compute per decision").  The playouts module's
+per-decision `print` is silenced when the preset is resolved.
 
 Presets: `random`, `weighted`, `vp` (stock controls), `vf`, `ab` (our
 stand-in value-function / alpha-beta players built inside the Catanatron

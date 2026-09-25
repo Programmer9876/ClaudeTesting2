@@ -28,10 +28,25 @@ Three things live here:
    replayed through ``Bot.observe`` so the opponent model / political
    tracking work exactly as in self-play.
 
+4. Domestic trading on 3.3 (``CatanbotPlayer(suppress_trades=False)``): a
+   catanbot ``PROPOSE_TRADE`` is played as ``OFFER_TRADE`` (catanatron never
+   lists offers in ``playable_actions``; the engine accepts one from the turn
+   player after the roll, with no per-turn limit, so catanbot's own cap of
+   :data:`catanbot.engine.MAX_TRADE_PROPOSALS_PER_TURN` is enforced through
+   ``trades_this_turn``), ``DECIDE_TRADE`` converts to ``PHASE_TRADE_RESPONSE``
+   and ``DECIDE_ACCEPTEES`` to ``PHASE_TRADE_SELECT`` so the bot decides them
+   like in self-play (``EXECUTE_TRADE`` -> ``CONFIRM_TRADE`` with that partner),
+   and the logged trade actions are observed (opponent model, politics).
+   :class:`BenchOpponent` wraps a catanatron player for the bench: it times
+   every decision and optionally replaces its answer to an offer by a rule
+   (:data:`TRADE_MODES`), because catanatron's own players answer offers
+   degenerately (``docs/BENCHMARKS.md``, "Domestic trading against catanatron 3.3").
+
 Known semantic differences (see ``docs/BENCHMARKS.md``): player-to-player
-trading is suppressed (catanatron 3.2.1 has none; 3.3's domestic-trade
-prompts, which no stock player ever opens, are answered with ``REJECT_TRADE``
-/ ``CANCEL_TRADE``), discards are chosen randomly by the catanatron 3.2.1
+trading is off by default (catanatron 3.2.1 has none; on 3.3 the default
+``suppress_trades=True`` never offers and answers the domestic-trade prompts
+with ``REJECT_TRADE`` / ``CANCEL_TRADE``; catanatron's own players never
+offer), discards are chosen randomly by the catanatron 3.2.1
 engine (its only ``DISCARD`` action has value ``None``) while on 3.3 the bot
 picks its discard as one catanbot ``DISCARD`` and hands it over one
 ``DISCARD_RESOURCE`` prompt at a time, dev cards bought this turn are
@@ -55,16 +70,18 @@ values) and the 3.3 engine of the GitHub checkout (``State.action_records``
 of ``ActionRecord(action, result)``, ``Game.playable_actions``,
 ``catanatron.apply_action.apply_action(state, action, record)``, per-card
 ``DISCARD_RESOURCE`` with ``State.discard_counts``, 2-tuple robber values,
-``DECIDE_TRADE`` / ``DECIDE_ACCEPTEES`` prompts).  The helpers
+``DECIDE_TRADE`` / ``DECIDE_ACCEPTEES`` prompts and the domestic-trade actions,
+:data:`DOMESTIC_TRADING`).  The helpers
 :func:`action_log`, :func:`log_action`, :func:`playable_actions_of`,
 :func:`apply_action` and :func:`replay_entry` hide the differences.
 """
 from __future__ import annotations
 
+import math
 import random
 import time
 from dataclasses import dataclass, replace
-from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 from catanatron.game import Game, TURNS_LIMIT
 from catanatron.models.actions import generate_playable_actions
@@ -103,8 +120,11 @@ from ..state import (
     PHASE_ROLL,
     PHASE_SETUP_ROAD,
     PHASE_SETUP_SETTLEMENT,
+    PHASE_TRADE_RESPONSE,
+    PHASE_TRADE_SELECT,
     GameState,
     Player as CBPlayer,
+    TradeOffer,
 )
 
 __all__ = [
@@ -117,6 +137,9 @@ __all__ = [
     "DISCARD_RESOURCE",
     "DISCARD_TYPES",
     "TRADE_PROMPTS",
+    "DOMESTIC_TRADING",
+    "DOMESTIC_TRADE_TYPES",
+    "TRADE_MODES",
     "action_log",
     "log_action",
     "log_result",
@@ -136,6 +159,8 @@ __all__ = [
     "catanatron_action_to_catanbot",
     "fallback_action",
     "CatanbotPlayer",
+    "BenchOpponent",
+    "timing_summary",
     "make_game",
     "play_game",
 ]
@@ -183,13 +208,34 @@ DISCARD_LEGACY = getattr(ActionType, "DISCARD", None)
 DISCARD_TYPES: Tuple[ActionType, ...] = tuple(t for t in (DISCARD_LEGACY, DISCARD_RESOURCE) if t is not None)
 #: True on the 3.3 API (``Game.playable_actions``, ``State.action_records``, per-card discards, trade prompts).
 API_33: bool = DISCARD_RESOURCE is not None
-#: 3.3 domestic-trade prompts (answered with ``REJECT_TRADE`` / ``CANCEL_TRADE`` by :class:`CatanbotPlayer`).
-TRADE_PROMPTS: Tuple[ActionPrompt, ...] = tuple(
-    p for p in (getattr(ActionPrompt, "DECIDE_TRADE", None), getattr(ActionPrompt, "DECIDE_ACCEPTEES", None))
-    if p is not None)
-_TRADE_ANSWERS: Tuple[ActionType, ...] = tuple(
-    t for t in (getattr(ActionType, "REJECT_TRADE", None), getattr(ActionType, "CANCEL_TRADE", None))
-    if t is not None)
+#: 3.3 domestic-trade prompts: ``DECIDE_TRADE`` (a responder accepts / rejects ``State.current_trade``)
+#: and ``DECIDE_ACCEPTEES`` (the offerer confirms one accepter or cancels).  ``None`` on 3.2.1.
+DECIDE_TRADE = getattr(ActionPrompt, "DECIDE_TRADE", None)
+DECIDE_ACCEPTEES = getattr(ActionPrompt, "DECIDE_ACCEPTEES", None)
+TRADE_PROMPTS: Tuple[ActionPrompt, ...] = tuple(p for p in (DECIDE_TRADE, DECIDE_ACCEPTEES) if p is not None)
+#: 3.3 domestic-trade action types (``None`` on 3.2.1).  Values: ``OFFER_TRADE`` the 10-tuple
+#: (5 counts offered, 5 counts asked, in WOOD BRICK SHEEP WHEAT ORE order - catanbot's order);
+#: ``ACCEPT_TRADE`` / ``REJECT_TRADE`` the 11-tuple ``State.current_trade`` (offer + offerer seat);
+#: ``CONFIRM_TRADE`` the offer's 10 counts + the accepter's ``Color``; ``CANCEL_TRADE`` ``None``.
+AT_OFFER = getattr(ActionType, "OFFER_TRADE", None)
+AT_ACCEPT = getattr(ActionType, "ACCEPT_TRADE", None)
+AT_REJECT = getattr(ActionType, "REJECT_TRADE", None)
+AT_CONFIRM = getattr(ActionType, "CONFIRM_TRADE", None)
+AT_CANCEL = getattr(ActionType, "CANCEL_TRADE", None)
+DOMESTIC_TRADE_TYPES: Tuple[ActionType, ...] = tuple(
+    t for t in (AT_OFFER, AT_ACCEPT, AT_REJECT, AT_CONFIRM, AT_CANCEL) if t is not None)
+#: True when the engine has player-to-player trading (3.3).
+DOMESTIC_TRADING: bool = AT_OFFER is not None and DECIDE_TRADE is not None
+_TRADE_ANSWERS: Tuple[ActionType, ...] = tuple(t for t in (AT_REJECT, AT_CANCEL) if t is not None)
+#: How the benchmark handles domestic trades (``scripts/bench_catanatron.py --trades``):
+#: ``off`` - catanbot never offers (and declines any offer);
+#: ``native`` - catanbot offers, each catanatron opponent answers with its own ``decide``
+#: (a player that raises is counted in ``BenchOpponent.trade_stats["errors"]`` and rejects);
+#: ``value`` - catanbot offers, opponents accept iff their value function rises with the trade;
+#: ``fair`` - like ``value`` but they also refuse to give more cards than they get and refuse
+#: a proposer within 2 VP of winning.  ``value`` / ``fair`` are OUR model of a sensible
+#: opponent (:class:`BenchOpponent`), not catanatron's behaviour.
+TRADE_MODES: Tuple[str, ...] = ("off", "native", "value", "fair")
 
 
 def action_log(st: State) -> Sequence:
@@ -205,6 +251,20 @@ def action_log(st: State) -> Sequence:
 def log_action(entry) -> CAction:
     """The ``Action`` of a log entry (an ``ActionRecord`` on 3.3, the action itself on 3.2.1)."""
     return getattr(entry, "action", entry)
+
+
+def _offers_this_turn(log: Sequence) -> int:
+    """Number of ``OFFER_TRADE`` actions logged since the last ``END_TURN`` (0 on 3.2.1)."""
+    if AT_OFFER is None:
+        return 0
+    n = 0
+    for entry in reversed(log):
+        t = log_action(entry).action_type
+        if t == ActionType.END_TURN:
+            break
+        if t == AT_OFFER:
+            n += 1
+    return n
 
 
 def log_result(entry):
@@ -497,10 +557,13 @@ def state_to_catanbot(st: State, vps_to_win: int = 10, mapping: Optional[BoardMa
     because catanatron exposes all hands.  With ``suppress_trades`` the state
     reports the maximum number of proposals already made this turn, so
     :func:`catanbot.engine.legal_actions` emits no ``PROPOSE_TRADE`` (there is
-    no player trading in catanatron 3.2.1, and the benchmark never offers one
-    on 3.3).  The 3.3 domestic-trade prompts (``DECIDE_TRADE`` for a
-    responder, ``DECIDE_ACCEPTEES`` for the offerer) have no catanbot phase:
-    they convert to the turn player's ``PHASE_MAIN`` state.  On 3.3 a
+    no player trading in catanatron 3.2.1, and the benchmark only offers on
+    3.3 with ``--trades`` other than ``off``); otherwise ``trades_this_turn`` is
+    the number of ``OFFER_TRADE`` logged this turn (capped at catanbot's
+    per-turn maximum; catanatron itself has no limit).  The 3.3 domestic-trade
+    prompts convert to catanbot's trade phases (:func:`_convert_trade_prompt`):
+    ``DECIDE_TRADE`` to ``PHASE_TRADE_RESPONSE`` for the asked seat,
+    ``DECIDE_ACCEPTEES`` to ``PHASE_TRADE_SELECT`` for the offerer.  On 3.3 a
     ``DISCARD`` prompt reached *mid-way* through a player's per-card discards
     converts with the already reduced hand (the engine's remaining
     ``discard_counts`` are then what :class:`CatanbotPlayer` follows).
@@ -579,7 +642,8 @@ def state_to_catanbot(st: State, vps_to_win: int = 10, mapping: Optional[BoardMa
     s.max_turns = max(TURNS_LIMIT, s.turn + 2)
     cur_key = f"P{cur}"
     s.dev_played_this_turn = bool(ps[f"{cur_key}_HAS_PLAYED_DEVELOPMENT_CARD_IN_TURN"])
-    s.trades_this_turn = E.MAX_TRADE_PROPOSALS_PER_TURN if suppress_trades else 0
+    s.trades_this_turn = (E.MAX_TRADE_PROPOSALS_PER_TURN if suppress_trades
+                          else min(E.MAX_TRADE_PROPOSALS_PER_TURN, _offers_this_turn(action_log(st))))
     s.free_roads = int(st.free_roads_available) if st.is_road_building else 0
 
     prompt = st.current_prompt
@@ -617,7 +681,9 @@ def state_to_catanbot(st: State, vps_to_win: int = 10, mapping: Optional[BoardMa
     elif prompt == ActionPrompt.MOVE_ROBBER:
         s.phase = PHASE_ROBBER
         s.dice = _last_roll_this_turn(action_log(st))
-    else:  # PLAY_TURN (and the 3.3 trade prompts, which happen after the roll)
+    elif prompt in TRADE_PROMPTS:
+        _convert_trade_prompt(st, s, prompt)
+    else:  # PLAY_TURN
         if ps[f"{cur_key}_HAS_ROLLED"]:
             s.phase = PHASE_MAIN
             s.dice = _last_roll_this_turn(action_log(st))
@@ -634,6 +700,46 @@ def state_to_catanbot(st: State, vps_to_win: int = 10, mapping: Optional[BoardMa
             s.winner = i
             s.phase = PHASE_GAME_OVER
     return s
+
+
+def _convert_trade_prompt(st: State, s: GameState, prompt: ActionPrompt) -> None:
+    """Fill ``s`` (turn player = offerer, after the roll) for a 3.3 domestic-trade prompt.
+
+    ``State.current_trade`` is ``(5 offered, 5 asked, offerer seat)``.  catanatron asks
+    the other seats in seat order (0, 1, ...; the offerer's own seat included when it
+    is not seat 0 - an engine quirk) and records only the acceptances
+    (``State.acceptees``), so every seat before the asked one has answered: accepted
+    if its acceptee flag is set, rejected otherwise.  A seat still to be asked that
+    cannot pay is marked rejected, as catanbot's engine does at the proposal.
+    ``DECIDE_ACCEPTEES`` becomes ``PHASE_TRADE_SELECT`` with every answer known.
+    """
+    trade = st.current_trade
+    proposer = int(trade[10])
+    give = [int(x) for x in trade[:5]]
+    get = [int(x) for x in trade[5:10]]
+    n = len(s.players)
+    acceptees = st.acceptees
+    s.current = proposer
+    s.dice = _last_roll_this_turn(action_log(st))
+    offer = TradeOffer(proposer, give, get)
+    if prompt == DECIDE_TRADE:
+        responder = int(st.current_player_index)
+        for i in range(n):
+            if i == proposer or i == responder:
+                continue
+            if i < responder:
+                offer.responses[i] = bool(acceptees[i])
+            elif any(s.players[i].resources[r] < get[r] for r in range(5)):
+                offer.responses[i] = False
+        s.phase = PHASE_TRADE_RESPONSE
+        s.trade_responder = responder
+    else:
+        for i in range(n):
+            if i != proposer:
+                offer.responses[i] = bool(acceptees[i])
+        s.phase = PHASE_TRADE_SELECT
+        s.trade_responder = -1
+    s.pending_trade = offer
 
 
 def to_catanbot_state(game: Game, me_color: Optional[Color] = None, mapping: Optional[BoardMapping] = None,
@@ -653,9 +759,16 @@ def to_catanbot_state(game: Game, me_color: Optional[Color] = None, mapping: Opt
 # Action conversion
 # ---------------------------------------------------------------------------
 def playable_key(action: CAction) -> tuple:
-    """Hashable identity of a catanatron action (road orientation / robber card normalised)."""
+    """Hashable identity of a catanatron action (road orientation / robber card normalised;
+    a trade answer is identified by its type alone, a ``CONFIRM_TRADE`` by the partner)."""
     t = action.action_type
     v = action.value
+    if t in DOMESTIC_TRADE_TYPES:
+        if t == AT_CONFIRM:
+            return (t, v[10])
+        if t == AT_OFFER:
+            return (t, tuple(int(x) for x in v[:10]))
+        return (t, None)
     if t == ActionType.BUILD_ROAD:
         return (t, (min(v), max(v)))
     if t == ActionType.MOVE_ROBBER:
@@ -677,7 +790,12 @@ def index_playable(playable: Sequence[CAction]) -> Dict[tuple, CAction]:
 def catanbot_action_to_key(action: A.Action, state: GameState, mapping: BoardMapping,
                            colors: Sequence[Color]) -> Optional[tuple]:
     """The :func:`playable_key` a catanbot action corresponds to, or ``None`` if it has no
-    catanatron equivalent (``PROPOSE_TRADE`` & friends, forced rolls).
+    catanatron equivalent (forced rolls; the player-trade actions on 3.2.1).
+
+    On 3.3 ``PROPOSE_TRADE`` is ``OFFER_TRADE`` with the 10 counts (never in
+    ``playable_actions``: :class:`CatanbotPlayer` builds the action itself),
+    ``ACCEPT_TRADE`` / ``REJECT_TRADE`` / ``CANCEL_TRADE`` are the same-named
+    types and ``(EXECUTE_TRADE, j)`` is ``CONFIRM_TRADE`` with seat ``j``'s colour.
 
     A catanbot ``DISCARD`` (all cards at once) is catanatron 3.2.1's single
     ``DISCARD None``; on 3.3, which discards one card per prompt, it is the
@@ -722,7 +840,50 @@ def catanbot_action_to_key(action: A.Action, state: GameState, mapping: BoardMap
             if counts[r] > 0:
                 return (DISCARD_RESOURCE, CB_TO_RESOURCE[r])
         return None
+    if not DOMESTIC_TRADING:
+        return None
+    if kind == A.PROPOSE_TRADE:
+        return (AT_OFFER, tuple(int(x) for x in action[1]) + tuple(int(x) for x in action[2]))
+    if kind == A.ACCEPT_TRADE:
+        return (AT_ACCEPT, None)
+    if kind == A.REJECT_TRADE:
+        return (AT_REJECT, None)
+    if kind == A.EXECUTE_TRADE:
+        return (AT_CONFIRM, colors[action[1]])
+    if kind == A.CANCEL_TRADE:
+        return (AT_CANCEL, None)
     return None
+
+
+def _seat_of(state: GameState, color: Color) -> int:
+    """catanbot seat of a catanatron colour in a converted state (-1 if not seated)."""
+    name = COLOR_NAMES.get(color, str(getattr(color, "value", color)).lower())
+    for i, p in enumerate(state.players):
+        if p.color == name:
+            return i
+    return -1
+
+
+def _trade_to_catanbot(action: CAction, state: GameState) -> Optional[A.Action]:
+    """catanbot action for a logged / playable 3.3 domestic-trade action in ``state`` (see
+    :func:`catanatron_action_to_catanbot`)."""
+    t = action.action_type
+    v = action.value
+    if t == AT_OFFER:
+        return (A.PROPOSE_TRADE, tuple(int(x) for x in v[:5]), tuple(int(x) for x in v[5:10]))
+    if t == AT_CANCEL:
+        return (A.CANCEL_TRADE,)
+    if t == AT_CONFIRM:
+        partner = _seat_of(state, v[10])
+        return (A.EXECUTE_TRADE, partner) if partner >= 0 else None
+    # ACCEPT_TRADE / REJECT_TRADE
+    offer = state.pending_trade
+    seat = _seat_of(state, action.color)
+    if state.phase != PHASE_TRADE_RESPONSE or offer is None or seat < 0 or seat == offer.proposer:
+        return None   # catanatron also asks the offerer about its own offer: no catanbot equivalent
+    if t == AT_REJECT and any(state.players[seat].resources[r] < offer.get[r] for r in range(5)):
+        return None   # a seat that cannot pay is auto-rejected by catanbot's engine, never asked
+    return (A.ACCEPT_TRADE,) if t == AT_ACCEPT else (A.REJECT_TRADE,)
 
 
 def catanatron_action_to_catanbot(action: CAction, state: GameState, mapping: BoardMapping,
@@ -736,7 +897,11 @@ def catanatron_action_to_catanbot(action: CAction, state: GameState, mapping: Bo
     ``(DISCARD, counts)`` of the cards it names: all of them for a logged
     3.2.1 ``DISCARD``, one card for a 3.3 ``DISCARD_RESOURCE`` (the player
     merges a run of those into one observation), none for 3.2.1's playable
-    ``DISCARD None``.  The 3.3 domestic-trade actions map to ``None``.
+    ``DISCARD None``.  The 3.3 domestic-trade actions map to ``PROPOSE_TRADE``,
+    ``ACCEPT_TRADE`` / ``REJECT_TRADE`` (``state`` must be the converted
+    ``DECIDE_TRADE`` state; ``None`` for the offerer's answer to its own offer
+    and for the forced rejection of a seat that cannot pay, which catanbot's
+    engine never asks), ``EXECUTE_TRADE`` and ``CANCEL_TRADE``.
     """
     t = action.action_type
     v = action.value
@@ -789,6 +954,8 @@ def catanatron_action_to_catanbot(action: CAction, state: GameState, mapping: Bo
         for r in cards:
             counts[RESOURCE_TO_CB[r]] += 1
         return (A.DISCARD, tuple(counts))
+    if t in DOMESTIC_TRADE_TYPES:
+        return _trade_to_catanbot(action, state)
     return None
 
 
@@ -828,9 +995,26 @@ class CatanbotPlayer(Player):
     and the rest are queued (``stats["pending_discard"]``) for the engine's
     following ``DISCARD_RESOURCE`` prompts.  Observed runs of another
     player's ``DISCARD_RESOURCE`` actions are merged into one ``DISCARD``
-    observation delivered with the state before the first card.  The
-    domestic-trade prompts ``DECIDE_TRADE`` / ``DECIDE_ACCEPTEES`` are
-    answered with ``REJECT_TRADE`` / ``CANCEL_TRADE`` (``stats["trade_prompts"]``).
+    observation delivered with the state before the first card.
+
+    Domestic trades (3.3): with ``suppress_trades=True`` (the default) the bot
+    never offers and the prompts ``DECIDE_TRADE`` / ``DECIDE_ACCEPTEES`` are
+    answered with ``REJECT_TRADE`` / ``CANCEL_TRADE``.  With
+    ``suppress_trades=False`` the bot's ``PROPOSE_TRADE`` choices are played as
+    ``OFFER_TRADE`` (at most :data:`catanbot.engine.MAX_TRADE_PROPOSALS_PER_TURN`
+    per turn, only cards we hold), an incoming offer is decided by the bot in
+    ``PHASE_TRADE_RESPONSE`` and the accepters of our offer in
+    ``PHASE_TRADE_SELECT``; the engine's question to the offerer about its own
+    offer is answered ``REJECT_TRADE`` without a search.  ``stats`` counts
+    ``offers``, ``offers_accepted`` (offers at least one seat accepted),
+    ``trades_confirmed`` / ``trades_cancelled``, ``offers_received`` /
+    ``offers_accepted_by_us`` and ``self_offer_prompts``.  On 3.2.1 trades are
+    always suppressed.
+
+    ``times`` / ``choice_times`` hold the wall time (seconds) of every
+    ``decide`` call / of those with more than one playable action, including
+    the adapter's conversion and observation work (the compute-fairness
+    counterpart of :class:`BenchOpponent`'s timing).
     """
 
     def __init__(self, color: Color, spec: str = DEFAULT_SPEC, bot: Optional[Bot] = None, seed: int = 0,
@@ -838,15 +1022,20 @@ class CatanbotPlayer(Player):
         super().__init__(color)
         self.spec = spec
         self.bot: Bot = bot if bot is not None else make_bot(spec)
-        if isinstance(self.bot, SearchBot) and self.bot.config.trade_proposals != 0:
-            self.bot.config = replace(self.bot.config, trade_proposals=0)
+        self.suppress_trades = bool(suppress_trades) or not DOMESTIC_TRADING
+        if self.suppress_trades:
+            # No proposal can be played: do not let the search spend nodes on them.
+            for b in (self.bot, getattr(self.bot, "inner", None)):
+                if isinstance(b, SearchBot) and b.config.trade_proposals != 0:
+                    b.config = replace(b.config, trade_proposals=0)
         self.seed = seed
         self.rng = random.Random(seed)
         self.strict = strict
-        self.suppress_trades = suppress_trades
         self.observe_actions = observe
         self.last_explanation: Optional[str] = None
         self.stats: Dict[str, float] = {}
+        self.times: List[float] = []          # wall seconds of every decide() call
+        self.choice_times: List[float] = []   # ... of those with more than one playable action
         self.unmapped_kinds: Dict[str, int] = {}   # kind of every top-ranked action without a catanatron equivalent
         self._game_id = None
         self._mapping: Optional[BoardMapping] = None
@@ -863,7 +1052,11 @@ class CatanbotPlayer(Player):
     def _reset_stats(self) -> None:
         self.stats = {"decisions": 0, "trivial": 0, "searched": 0, "pending_robber": 0, "pending_discard": 0,
                       "trade_prompts": 0, "unmapped_top": 0, "fallback": 0, "errors": 0, "observe_errors": 0,
-                      "observed": 0, "search_time": 0.0}
+                      "observed": 0, "search_time": 0.0,
+                      "offers": 0, "offers_accepted": 0, "trades_confirmed": 0, "trades_cancelled": 0,
+                      "offers_received": 0, "offers_accepted_by_us": 0, "self_offer_prompts": 0}
+        self.times = []
+        self.choice_times = []
 
     def reset_state(self) -> None:
         """Forget the previous game (called by the bench; also triggered by a new ``game.id``)."""
@@ -978,6 +1171,7 @@ class CatanbotPlayer(Player):
 
     # -- decision ---------------------------------------------------------
     def decide(self, game: Game, playable_actions):
+        t0 = time.perf_counter()
         self.stats["decisions"] += 1
         playable = list(playable_actions)
         try:
@@ -992,7 +1186,59 @@ class CatanbotPlayer(Player):
             self.stats["errors"] += 1
             self._pending_robber = None
             self._pending_discard = []
-            return fallback_action(playable)
+            return self._fallback(game, playable)
+        finally:
+            dt = time.perf_counter() - t0
+            self.times.append(dt)
+            if len(playable) > 1:
+                self.choice_times.append(dt)
+
+    @staticmethod
+    def _fallback(game: Game, playable: List[CAction]) -> CAction:
+        if game.state.current_prompt in TRADE_PROMPTS:
+            for t in _TRADE_ANSWERS:          # never accept / confirm a trade by accident
+                for a in playable:
+                    if a.action_type == t:
+                        return a
+        return fallback_action(playable)
+
+    # -- domestic trades (3.3) --------------------------------------------
+    def _may_offer(self, st: State) -> bool:
+        """True when catanatron would accept an ``OFFER_TRADE`` from us now and the per-turn cap allows one."""
+        if self.suppress_trades or st.current_prompt != ActionPrompt.PLAY_TURN or st.is_road_building:
+            return False
+        seat = st.color_to_index[self.color]
+        if int(st.current_turn_index) != seat or not st.player_state[f"P{seat}_HAS_ROLLED"]:
+            return False
+        if not any(st.player_state[f"P{seat}_{r}_IN_HAND"] for r in CB_TO_RESOURCE):
+            return False
+        return _offers_this_turn(action_log(st)) < E.MAX_TRADE_PROPOSALS_PER_TURN
+
+    def _offer_action(self, action: A.Action, st: State) -> Optional[CAction]:
+        """The ``OFFER_TRADE`` for a catanbot ``PROPOSE_TRADE`` (``None`` unless well formed and affordable)."""
+        if len(action) != 3 or len(action[1]) != 5 or len(action[2]) != 5:
+            return None
+        give = tuple(int(x) for x in action[1])
+        get = tuple(int(x) for x in action[2])
+        if sum(give) <= 0 or sum(get) <= 0 or any(g < 0 for g in give + get):
+            return None
+        if any(give[r] and get[r] for r in range(5)):
+            return None
+        seat = st.color_to_index[self.color]
+        if any(st.player_state[f"P{seat}_{CB_TO_RESOURCE[r]}_IN_HAND"] < give[r] for r in range(5)):
+            return None
+        return CAction(self.color, AT_OFFER, give + get)
+
+    def _count_choice(self, chosen: A.Action) -> None:
+        kind = chosen[0]
+        if kind == A.PROPOSE_TRADE:
+            self.stats["offers"] += 1
+        elif kind == A.EXECUTE_TRADE:
+            self.stats["trades_confirmed"] += 1
+        elif kind == A.CANCEL_TRADE:
+            self.stats["trades_cancelled"] += 1
+        elif kind == A.ACCEPT_TRADE:
+            self.stats["offers_accepted_by_us"] += 1
 
     def _choose(self, game: Game, playable: List[CAction]) -> CAction:
         st = game.state
@@ -1002,8 +1248,19 @@ class CatanbotPlayer(Player):
         if DISCARD_RESOURCE is not None and prompt == ActionPrompt.DISCARD:
             return self._choose_discard(game, playable)
         if prompt in TRADE_PROMPTS:
-            return self._answer_trade(playable)
-        if len(playable) == 1:
+            self.stats["trade_prompts"] += 1
+            if self.suppress_trades:
+                return self._answer_trade(playable)
+            if prompt == DECIDE_TRADE:
+                if int(st.current_trade[10]) == st.color_to_index[self.color]:
+                    # catanatron asks the offerer too (seats after seat 0): never "accept" our own offer
+                    self.stats["self_offer_prompts"] += 1
+                    return self._answer_trade(playable)
+                self.stats["offers_received"] += 1
+            else:
+                self.stats["offers_accepted"] += 1
+        may_offer = self._may_offer(st)
+        if len(playable) == 1 and not may_offer:
             self.stats["trivial"] += 1
             return playable[0]
         index = index_playable(playable)
@@ -1024,6 +1281,8 @@ class CatanbotPlayer(Player):
             if key is None:
                 continue
             ca = index.get(key)
+            if ca is None and may_offer and a[0] == A.PROPOSE_TRADE:
+                ca = self._offer_action(a, st)   # offers are never listed in playable_actions
             if ca is not None:
                 lookup[a] = ca
                 cb_legal.append(a)
@@ -1040,6 +1299,14 @@ class CatanbotPlayer(Player):
             self.stats["search_time"] += time.perf_counter() - t0
             self.stats["searched"] += 1
             ranked = [r.action for r in (getattr(self.bot, "last_results", None) or [])]
+            if may_offer:
+                # The search may rank proposals outside the engine's bounded candidate list
+                # (intermediary / political deals): playable if well formed and affordable.
+                for a in ranked + [decision]:
+                    if a and a[0] == A.PROPOSE_TRADE and a not in lookup:
+                        ca = self._offer_action(a, st)
+                        if ca is not None:
+                            lookup[a] = ca
             chosen = None
             for a in ranked:
                 if a in lookup:
@@ -1060,11 +1327,11 @@ class CatanbotPlayer(Player):
                 self.last_explanation = None
         if chosen[0] == A.PLAY_KNIGHT:
             self._pending_robber = (int(chosen[1]), int(chosen[2]))
+        self._count_choice(chosen)
         return lookup[chosen]
 
     def _answer_trade(self, playable: List[CAction]) -> CAction:
         """3.3 domestic-trade prompts: decline (``REJECT_TRADE`` as a responder, ``CANCEL_TRADE`` as offerer)."""
-        self.stats["trade_prompts"] += 1
         for t in _TRADE_ANSWERS:
             for a in playable:
                 if a.action_type == t:
@@ -1116,6 +1383,185 @@ class CatanbotPlayer(Player):
             return fallback_action(playable)
         self._pending_discard = plan[1:]
         return a
+
+
+# ---------------------------------------------------------------------------
+# Opponent wrapper (timing + domestic-trade response rule)
+# ---------------------------------------------------------------------------
+def timing_summary(times: Sequence[float]) -> Dict[str, float]:
+    """``{n, mean_ms, p50_ms, p95_ms, max_ms, total_s}`` of per-decision wall times in seconds
+    (nearest-rank percentiles; zeros for an empty list)."""
+    n = len(times)
+    if not n:
+        return {"n": 0, "mean_ms": 0.0, "p50_ms": 0.0, "p95_ms": 0.0, "max_ms": 0.0, "total_s": 0.0}
+    xs = sorted(times)
+    total = float(sum(xs))
+
+    def pct(q: float) -> float:
+        return 1000.0 * xs[max(0, min(n - 1, int(math.ceil(q * n)) - 1))]
+
+    return {"n": n, "mean_ms": 1000.0 * total / n, "p50_ms": pct(0.50), "p95_ms": pct(0.95),
+            "max_ms": 1000.0 * xs[-1], "total_s": total}
+
+
+def _trade_of(st: State) -> Tuple[Tuple[int, ...], Tuple[int, ...], int]:
+    """``(offered, asked, offerer seat)`` of the pending 3.3 ``State.current_trade``."""
+    trade = st.current_trade
+    return tuple(int(x) for x in trade[:5]), tuple(int(x) for x in trade[5:10]), int(trade[10])
+
+
+class BenchOpponent(Player):
+    """A catanatron player as a bench opponent: per-decision timing and the trade-response rule.
+
+    Every ``decide`` is delegated to ``inner`` and its wall time recorded in
+    ``times`` (and in ``choice_times`` when more than one action was playable).
+    ``trade_rule`` (one of :data:`TRADE_MODES`; ``off`` behaves like
+    ``native``) decides how a 3.3 ``DECIDE_TRADE`` prompt - an offer from
+    catanbot - is answered:
+
+    * ``native``: ``inner.decide`` answers.  catanatron's players do so
+      degenerately (``docs/BENCHMARKS.md``): ``ValueFunctionPlayer`` always
+      rejects (``ACCEPT_TRADE`` does not move cards, so both answers tie and
+      the first listed, ``REJECT_TRADE``, wins), ``AlphaBetaPlayer`` /
+      ``SameTurnAlphaBetaPlayer`` / ``MCTSPlayer`` raise ``RuntimeError``
+      (their outcome expansion has no case for trade actions) - counted in
+      ``trade_stats["errors"]`` and answered ``REJECT_TRADE`` here - and the
+      random / ``VictoryPointPlayer`` players flip a coin.
+    * ``value``: OUR model of a sensible opponent: accept iff the player's
+      value function is strictly higher after the trade than before (both
+      hands updated as ``CONFIRM_TRADE`` would).  The value function is the
+      player's own when it has one (catanatron's value / alpha-beta players:
+      their ``value_fn`` and weights; our stand-ins: their ``_value``),
+      otherwise catanatron's ``base_fn`` with its default weights.
+    * ``fair``: ``value``, and never give more cards than received, and never
+      trade with a proposer who has ``vps_to_win - 2`` or more public VP.
+
+    The seat asked about its own offer (a catanatron quirk) and a seat that
+    cannot pay (only ``REJECT_TRADE`` playable) reject without consulting
+    anything.  ``trade_stats`` counts ``asked`` (answerable offers),
+    ``accepted``, ``rejected``, ``cannot_pay``, ``errors`` and ``self_offer``.
+    Observer hooks (``before`` / ``step`` / ``after`` on 3.3,
+    ``reset_state`` on 3.2.1) and unknown attributes are forwarded to ``inner``.
+    """
+
+    def __init__(self, inner: Player, trade_rule: str = "native", vps_to_win: int = 10):
+        Player.__init__(self, inner.color)
+        if trade_rule not in TRADE_MODES:
+            raise ValueError(f"trade_rule must be one of {TRADE_MODES}, got {trade_rule!r}")
+        self.inner = inner
+        self.trade_rule = trade_rule
+        self.vps_to_win = vps_to_win
+        self.times: List[float] = []
+        self.choice_times: List[float] = []
+        self.trade_stats: Dict[str, int] = {"asked": 0, "accepted": 0, "rejected": 0, "cannot_pay": 0,
+                                            "errors": 0, "self_offer": 0}
+        self._value_fn: Optional[Callable] = None
+
+    def __getattr__(self, name):
+        if name == "inner" or name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self.inner, name)
+
+    def __repr__(self) -> str:
+        return f"BenchOpponent({self.inner!r}, trade_rule={self.trade_rule})"
+
+    # -- forwarded hooks ----------------------------------------------------
+    def before(self, game) -> None:
+        hook = getattr(self.inner, "before", None)
+        if hook is not None:
+            hook(game)
+
+    def step(self, game_before_action, action) -> None:
+        hook = getattr(self.inner, "step", None)
+        if hook is not None:
+            hook(game_before_action, action)
+
+    def after(self, game) -> None:
+        hook = getattr(self.inner, "after", None)
+        if hook is not None:
+            hook(game)
+
+    def reset_state(self) -> None:
+        hook = getattr(self.inner, "reset_state", None)
+        if hook is not None:
+            hook()
+
+    # -- decisions ----------------------------------------------------------
+    def decide(self, game: Game, playable_actions):
+        t0 = time.perf_counter()
+        try:
+            if DECIDE_TRADE is not None and game.state.current_prompt == DECIDE_TRADE:
+                return self._answer_offer(game, list(playable_actions))
+            return self.inner.decide(game, playable_actions)
+        finally:
+            dt = time.perf_counter() - t0
+            self.times.append(dt)
+            if len(playable_actions) > 1:
+                self.choice_times.append(dt)
+
+    def _answer_offer(self, game: Game, playable: List[CAction]) -> CAction:
+        reject = next((a for a in playable if a.action_type == AT_REJECT), None)
+        accept = next((a for a in playable if a.action_type == AT_ACCEPT), None)
+        if reject is None:   # not a normal DECIDE_TRADE list: let the player handle it
+            return self.inner.decide(game, playable)
+        st = game.state
+        _, _, proposer = _trade_of(st)
+        if st.colors[proposer] == self.color:
+            self.trade_stats["self_offer"] += 1
+            return reject
+        self.trade_stats["asked"] += 1
+        if accept is None:
+            self.trade_stats["cannot_pay"] += 1
+            return reject
+        if self.trade_rule in ("native", "off"):
+            try:
+                answer = self.inner.decide(game, playable)
+            except Exception:
+                self.trade_stats["errors"] += 1
+                answer = reject
+            if answer not in (accept, reject):
+                self.trade_stats["errors"] += 1
+                answer = reject
+        else:
+            answer = accept if self.rule_accepts(game) else reject
+        self.trade_stats["accepted" if answer is accept else "rejected"] += 1
+        return answer
+
+    def value_fn(self) -> Callable:
+        """``fn(game, color) -> float`` used by the ``value`` / ``fair`` rules (see the class doc)."""
+        if self._value_fn is None:
+            inner = self.inner
+            if hasattr(inner, "value_fn_builder_name"):          # catanatron 3.3 value / alpha-beta players
+                from catanatron.players.value import get_value_fn
+                params = getattr(inner, "params", None)
+                self._value_fn = get_value_fn(inner.value_fn_builder_name, getattr(params, "weights", None))
+            elif callable(getattr(inner, "_value", None)):       # our stand-ins (catanbot.bench.catanatron_players)
+                self._value_fn = lambda game, color: inner._value(game)
+            else:
+                from catanatron.players.value import DEFAULT_WEIGHTS, base_fn
+                self._value_fn = base_fn(DEFAULT_WEIGHTS)
+        return self._value_fn
+
+    def rule_accepts(self, game: Game) -> bool:
+        """The ``value`` / ``fair`` rule on the pending offer (this seat must be able to pay)."""
+        from catanatron import state_functions as SF
+        st = game.state
+        receive, pay, proposer = _trade_of(st)
+        other = st.colors[proposer]
+        if self.trade_rule == "fair":
+            if sum(receive) < sum(pay):
+                return False
+            if int(st.player_state[f"P{proposer}_VICTORY_POINTS"]) >= self.vps_to_win - 2:
+                return False
+        fn = self.value_fn()
+        before = fn(game, self.color)
+        after_game = game.copy()
+        s2 = after_game.state
+        SF.player_freqdeck_add(s2, self.color, list(receive))
+        SF.player_freqdeck_subtract(s2, self.color, list(pay))
+        SF.player_freqdeck_subtract(s2, other, list(receive))
+        SF.player_freqdeck_add(s2, other, list(pay))
+        return fn(after_game, self.color) > before
 
 
 # ---------------------------------------------------------------------------
