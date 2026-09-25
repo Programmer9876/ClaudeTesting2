@@ -313,7 +313,8 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
                     f"pair weights: offers {getattr(args, 'rank_offer_weight', 1.0)}, setup "
                     f"{getattr(args, 'rank_setup_weight', 1.0)}, hold {getattr(args, 'rank_hold_weight', 1.0)}; "
                     f"offer target scale "
-                    f"{getattr(args, 'rank_offer_scale', 1.0) if delta else 1.0}")
+                    f"{getattr(args, 'rank_offer_scale', 1.0) if delta else 1.0}; sign hinge margin "
+                    f"{getattr(args, 'rank_sign_margin', 0.0) if delta else 0.0} x {getattr(args, 'rank_sign_weight', 1.0)}")
                 if len(pos):
                     from .selfplay import SIBLING_KINDS
                     counts = np.bincount(np.asarray(sk[pos], dtype=np.int64), minlength=len(SIBLING_KINDS) + 1)
@@ -332,7 +333,9 @@ def fit_replay(X_buf: np.ndarray, y_buf: np.ndarray, g_buf: np.ndarray, args: ar
                    input_noise=args.noise, refit_norm=not warm_from, log=log,
                    pairs=pairs, val_pairs=val_pairs, pair_weight=rank_weight,
                    pair_margin=getattr(args, "rank_margin", 0.5), pair_batch=getattr(args, "rank_batch", 256),
-                   consistency=cons, val_consistency=val_cons, consistency_weight=cons_weight, pair_mode=pair_mode)
+                   consistency=cons, val_consistency=val_cons, consistency_weight=cons_weight, pair_mode=pair_mode,
+                   pair_sign_margin=float(getattr(args, "rank_sign_margin", 0.0) or 0.0),
+                   pair_sign_weight=float(getattr(args, "rank_sign_weight", 1.0)))
     hist["n_pairs"] = n_pairs
     hist["n_val_pairs"] = n_val_pairs
     hist["n_cons"] = n_cons
@@ -580,6 +583,10 @@ def build_parser(sub=None) -> argparse.ArgumentParser:
     p.add_argument("--rank-delta-scale", type=float, default=1.0,
                    help="delta mode: target difference = scale x heuristic logit gap")
     p.add_argument("--rank-delta-cap", type=float, default=2.0, help="delta mode: max target difference (logits)")
+    p.add_argument("--rank-sign-margin", type=float, default=0.05,
+                   help="delta mode: bounded sign hinge relu(margin - difference) on pairs with a positive target "
+                        "(0 = off); the squared error alone barely moves the small hold-vs-road gaps")
+    p.add_argument("--rank-sign-weight", type=float, default=1.0, help="weight of the sign hinge (delta mode)")
     p.add_argument("--rank-offer-scale", type=float, default=5.0,
                    help="delta mode: incoming-offer pairs get scale x their target (their heuristic gap is a card "
                         "or two, ~0.02 logits; the search only needs its sign)")

@@ -291,13 +291,19 @@ def test_pair_delta_mode_gradient_and_magnitude():
     assert l == pytest.approx((1.0 * 0.6 ** 2 + 2.0 * 0.0 ** 2) / 2) and g[0] == pytest.approx(2 * 0.6 / 2) and g[1] == 0.0
     with pytest.raises(ValueError):
         pair_rank_loss(np.zeros(1), np.zeros(1), 0.1, None, "nope")
+    # the bounded sign hinge: only pairs with a positive target and a difference below the margin pay
+    ls, gs = pair_rank_loss(np.array([0.02, 0.5, -0.1]), np.array([0.0, 0.0, 0.0]), np.array([0.05, 0.4, 0.0]),
+                            None, "delta", sign_margin=0.1, sign_weight=2.0)
+    base = ((0.02 - 0.05) ** 2 + (0.5 - 0.4) ** 2 + (-0.1) ** 2) / 3
+    assert ls == pytest.approx(base + 2.0 * (0.1 - 0.02) / 3)
+    np.testing.assert_allclose(gs, np.array([2 * (0.02 - 0.05) / 3 - 2.0 / 3, 2 * 0.1 / 3, 2 * (-0.1) / 3]))
     rng = np.random.default_rng(21)
     net = ValueNet(n_in=3, hidden=(4,), seed=2, dtype=np.float64)
     net.fit_normalisation(rng.normal(size=(40, 3)))
     X = rng.normal(size=(6, 3))
     y = rng.integers(0, 2, size=6).astype(np.float64)
     P = (rng.normal(size=(5, 3)), rng.normal(size=(5, 3)), np.array([0.3, 0.0, 0.5, 0.2, 0.4]), np.array([2.0, 0.5, 1.0, 1.5, 0.0]))
-    kw = dict(weight_decay=0.01, pairs=P, pair_weight=0.7, pair_mode="delta")
+    kw = dict(weight_decay=0.01, pairs=P, pair_weight=0.7, pair_mode="delta", pair_sign_margin=0.3, pair_sign_weight=0.5)
     loss, gW, gb = net.loss_and_grads(X, y, **kw)
     analytic = np.concatenate([np.concatenate([w.ravel(), b.ravel()]) for w, b in zip(gW, gb)])
     theta = net.get_params()

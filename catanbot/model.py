@@ -117,15 +117,20 @@ PAIR_MODES = ("hinge", "delta")
 
 
 def pair_rank_loss(z_pos: np.ndarray, z_neg: np.ndarray, margin, weight=None,
-                   mode: str = "hinge") -> Tuple[float, np.ndarray]:
+                   mode: str = "hinge", sign_margin: float = 0.0, sign_weight: float = 1.0
+                   ) -> Tuple[float, np.ndarray]:
     """Pairwise loss on the logit difference ``z_pos - z_neg`` of two siblings and ``d loss / d z_pos``
     (``d loss / d z_neg`` is its negative).
 
     ``mode="hinge"``: ``mean(weight * softplus(margin - (z_pos - z_neg)))``, ordering only - the
     difference is pushed past ``margin`` and, the softplus never being zero, ever further.
     ``mode="delta"``: ``mean(weight * ((z_pos - z_neg) - margin) ** 2)``, i.e. the difference is
-    regressed onto ``margin`` as its target: ordering *and* magnitude.  ``margin`` is a scalar or one
-    value per pair, ``weight`` (one value per pair, default 1) scales each pair's term.
+    regressed onto ``margin`` as its target: ordering *and* magnitude.  With ``sign_margin > 0`` the
+    delta mode adds ``sign_weight * mean(weight * relu(sign_margin - (z_pos - z_neg)))`` over the pairs
+    whose target is positive: a bounded hinge (zero once the sign is right by ``sign_margin``) that pushes
+    with constant force where the squared error, proportional to a target of a few hundredths, would not.
+    ``margin`` is a scalar or one value per pair, ``weight`` (one value per pair, default 1) scales each
+    pair's term.
     """
     if mode not in PAIR_MODES:
         raise ValueError(f"unknown pair loss mode {mode!r}")
@@ -135,7 +140,13 @@ def pair_rank_loss(z_pos: np.ndarray, z_neg: np.ndarray, margin, weight=None,
     n = max(1, len(diff))
     if mode == "delta":
         d = diff - m
-        return float((w * d * d).mean()), 2.0 * w * d / n
+        loss = float((w * d * d).mean())
+        g = 2.0 * w * d / n
+        if sign_margin > 0:
+            viol = (np.broadcast_to(m, diff.shape) > 0) & (diff < sign_margin)
+            loss += float(sign_weight * (w * np.where(viol, sign_margin - diff, 0.0)).mean())
+            g = g - sign_weight * w * viol / n
+        return loss, g
     d = m - diff
     return float((w * _softplus(d)).mean()), -w * _sigmoid(d) / n
 
@@ -295,8 +306,8 @@ class ValueNet:
     def loss_and_grads(self, X: np.ndarray, y: np.ndarray, weight_decay: float = 0.0,
                        pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None, pair_weight: float = 1.0,
                        pair_margin: float = 0.5, consistency: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-                       consistency_weight: float = 1.0, pair_mode: str = "hinge"
-                       ) -> Tuple[float, List[np.ndarray], List[np.ndarray]]:
+                       consistency_weight: float = 1.0, pair_mode: str = "hinge", pair_sign_margin: float = 0.0,
+                       pair_sign_weight: float = 1.0) -> Tuple[float, List[np.ndarray], List[np.ndarray]]:
         """Mean BCE (+ L2 penalty, + the pairwise ranking / horizon-consistency terms of :meth:`fit` with
         ``pairs`` / ``consistency``) and its gradients w.r.t. ``W`` and ``b``.
 
@@ -318,7 +329,7 @@ class ValueNet:
             zp, acts_p = self._forward(self._prep(np.asarray(pairs[0])), keep=True)
             zn, acts_n = self._forward(self._prep(np.asarray(pairs[1])), keep=True)
             pl, gp = pair_rank_loss(zp, zn, pairs[2] if len(pairs) > 2 and pairs[2] is not None else pair_margin,
-                                    pairs[3] if len(pairs) > 3 else None, pair_mode)
+                                    pairs[3] if len(pairs) > 3 else None, pair_mode, pair_sign_margin, pair_sign_weight)
             loss += pair_weight * pl
             gp = (gp * pair_weight).astype(self.dtype)[:, None]
             self._backprop(acts_p, gp, gW, gb)
@@ -418,7 +429,8 @@ class ValueNet:
             val_pairs: Optional[Tuple[np.ndarray, np.ndarray]] = None,
             consistency: Optional[Tuple[np.ndarray, np.ndarray]] = None, consistency_weight: float = 1.0,
             val_consistency: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-            pair_mode: str = "hinge") -> Dict[str, object]:
+            pair_mode: str = "hinge", pair_sign_margin: float = 0.0, pair_sign_weight: float = 1.0
+            ) -> Dict[str, object]:
         """Train with mini-batch Adam.
 
         ``X`` ``(N, n_in)`` raw features (any float dtype), ``y`` ``(N,)``
@@ -438,7 +450,8 @@ class ValueNet:
         weight (the pair's term is multiplied by it; ``None`` = 1 for all).
         ``pair_mode`` selects :func:`pair_rank_loss`'s form: ``"hinge"``
         (ordering only) or ``"delta"`` (the margins are the *target*
-        differences: ordering and magnitude).  ``consistency = (X_a, X_b)`` adds
+        differences: ordering and magnitude, plus the bounded sign hinge
+        ``pair_sign_margin`` / ``pair_sign_weight``).  ``consistency = (X_a, X_b)`` adds
         ``consistency_weight * mean (z_a - z_b)^2`` on ``pair_batch`` rows
         per step the same way (``cons_loss`` / ``val_cons_loss`` in the
         history).  ``val_pairs`` are scored
@@ -568,7 +581,7 @@ class ValueNet:
                     p_pos += pair_batch
                     zp, acts_p = self._forward(noisy(Pp[pb]), keep=True)
                     zn, acts_n = self._forward(noisy(Pn[pb]), keep=True)
-                    pl, gp = pair_rank_loss(zp, zn, Pm[pb], Pw[pb], pair_mode)
+                    pl, gp = pair_rank_loss(zp, zn, Pm[pb], Pw[pb], pair_mode, pair_sign_margin, pair_sign_weight)
                     total_pair += pl
                     n_pair_steps += 1
                     gp = (gp * pair_weight).astype(self.dtype)[:, None]
@@ -618,7 +631,8 @@ class ValueNet:
             vpl = 0.0
             if has_val_pairs:
                 dv = self._forward(Vp) - self._forward(Vn)
-                vpl, _ = pair_rank_loss(self._forward(Vp), self._forward(Vn), Vm, Vw, pair_mode)
+                vpl, _ = pair_rank_loss(self._forward(Vp), self._forward(Vn), Vm, Vw, pair_mode, pair_sign_margin,
+                                        pair_sign_weight)
                 # share ordered correctly (in delta mode over the pairs whose target says pos > neg)
                 strict = np.asarray(Vm, np.float64) > 0 if pair_mode == "delta" else np.ones(len(dv), bool)
                 vpa = float((dv[strict] > 0).mean()) if strict.any() else 1.0
