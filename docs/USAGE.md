@@ -67,8 +67,13 @@ What happens:
    are only ever added through `players=`.  `--save-state parsed.json` keeps
    the parse so you can iterate with `recommend --state parsed.json --fix ...`
    without re-parsing.
-4. **Recommend** - an expectimax search (`--depth` turns of lookahead, 2 by
-   default; `--beam` width; `--samples` determinizations of the hidden
+4. **Recommend** - an expectimax search (`--depth` turns of lookahead, 1 by
+   default: our whole turn with exact dice / draw / steal / trade odds.  `--depth 2`
+   adds every opponent's simulated turn (about 5x the time); measured over 1200
+   benchmark games it is not stronger than depth 1 with the heuristic evaluator,
+   because the sampled opponents' turns are noisier than the decision margins, so
+   use it for the explanation of what opponents can do to you, not for strength;
+   `--depth 3` needs a large `--time` budget and is an analysis option only.  `--beam` width; `--samples` determinizations of the hidden
    opponent hands) ranks your moves with the trained value net
    (`models/value_net.npz` when it exists - otherwise the heuristic
    evaluator is used and the output says `heuristic evaluator (no trained

@@ -333,7 +333,7 @@ inside the noise.  On 276 decision nodes from real search-bot games the
 fixed depth 2 still disagrees with *itself* under different dice on 16 % of
 its top choices (main phase 23 %, discards 31 %) - almost as often as it
 disagrees with depth 1 (20 %) - so the sampled lookahead remains mostly
-noise at 12 samples.  ADVERSARIAL_TABLE_PLACEHOLDER
+noise at 12 samples.  Pooled adversarial numbers (seeds 31-34 + 41-42): vs ValueFunction stand-in depth 2 fixed 23.3 % (7.17 VP) vs depth 1 25.0 % (7.30 VP) over 840 games (-1.7 +/- 2.1 points); vs AlphaBeta stand-in 19.2 % (6.92 VP) vs 27.5 % (7.20 VP) over 360 games (-8.3 +/- 3.1 points); depth 2 costs 0.07 s per decision vs 0.015 s.  On 276 real-game decision nodes the fixed depth 2 disagrees with itself under different dice on 16 % of top choices.  Conclusion: with the heuristic evaluator the sampled opponents'-turn lookahead is not a strength lever; the advisor and self-play default to depth 1.
 
 ## 5. ML contract
 

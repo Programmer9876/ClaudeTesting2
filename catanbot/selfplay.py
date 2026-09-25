@@ -169,8 +169,8 @@ def make_bot(spec: str) -> Bot:
             expand=int(kw.get("expand", 8)),
             max_actions_per_turn=int(kw.get("actions", 6)),
             roll_samples=int(kw.get("rolls", 11)),
-            opp_roll_samples=int(kw.get("opprolls", 4)),
-            finished_lookahead=int(kw.get("lookahead", 3)),
+            opp_roll_samples=int(kw.get("opprolls", 12)),
+            finished_lookahead=int(kw.get("lookahead", 0)),   # 0 = every end-of-turn node (de-noised lookahead)
             trade_proposals=int(kw.get("trades", 3)),
             max_nodes=int(kw.get("nodes", 20000)),
         )

@@ -4,6 +4,36 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-25 15:40 UTC - lookahead fix verified: parity at best; depth 1 is the default everywhere
+
+The de-noising fix landed (every end-of-turn node gets the lookahead, 12
+stratified roll samples, no clamp inside the backup, reliability shrinkage
+k = 12, all-or-none depth-3 sub-search; bitwise native parity, 60 search
+tests).  Adversarial verification on new seeds and pooled over 840 / 360
+games: fixed depth 2 is -1.7 +/- 2.1 points vs the ValueFunction stand-in
+and -8.3 +/- 3.1 points vs the AlphaBeta stand-in relative to depth 1, at
+4-5x the decision time, and it still flips 16 % of its own decisions by
+dice sample.  Verdict: with the heuristic evaluator the sampled
+opponents'-turn lookahead is a noisy correction with a signal about a third
+of the static spread; it is not a strength lever.  Defaults now: advisor
+`--depth 1`, self-play depth 1, bot specs `lookahead=0,opprolls=12` when
+depth 2 is requested, depth 3 off.  Depth 2 remains useful for the advice
+text (what each opponent can do to you next round).
+
+What this means for the ML plan: the search cannot currently improve on the
+evaluator, so iterated self-play (search-improved targets) has no
+improvement operator to amortise; the remaining ML experiment (task #15,
+end-of-round targets + hold-epsilon) has a small expected gain and is
+parked for the user's decision.  The measured strength levers are
+elsewhere: trade proposals (+17 pp), openings (the stand-ins' opening book
+beats our setup picks from seats 2-3) and trade generation - all tunable
+with the ablation harness, which should get a mode that pairs a tunable
+against the Catanatron stand-ins.
+
+**Opus switch notice sent at 15:40 UTC** (all implementation pieces are
+integrated and verified; the remaining default work is benchmarking and
+tuning).  Not to be repeated.
+
 ## 2026-09-25 13:40 UTC - ablation sweep 2 (six more tunables)
 
 Trade proposals inside the search are the most valuable strategy term

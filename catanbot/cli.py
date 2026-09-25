@@ -680,7 +680,7 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
         if args.phase == PHASE_MAIN and not state.dice:
             state.dice = 8
     cfg = SearchConfig(depth=args.depth, beam=args.beam, expand=max(6, args.beam + 4),
-                       time_limit=getattr(args, "time", None), opp_roll_samples=4)
+                       time_limit=getattr(args, "time", None), opp_roll_samples=12, finished_lookahead=0)
     rng = random.Random(getattr(args, "seed", 0) or 0)
     results, sinfo = run_search(state, me, evaluator, cfg, args, model, politics, rng)
     report["search_seconds"] = sinfo["seconds"]
@@ -1224,7 +1224,7 @@ def _positive_float(text: str) -> float:
 
 def _add_recommend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--me", help="your colour (default: from the screenshot / state)")
-    p.add_argument("--depth", type=_int_range(1, 3), default=2, help="search depth in turns (1-3)")
+    p.add_argument("--depth", type=_int_range(1, 3), default=1, help="search depth in turns (1-3)")
     p.add_argument("--beam", type=_int_range(1), default=6, help="candidate sequences kept per search level (>= 1)")
     p.add_argument("--samples", type=_int_range(1), default=4, help="determinizations of hidden hands (>= 1)")
     p.add_argument("--model", help="value net path, or 'heuristic' (default: models/value_net.npz if present, else heuristic)")
