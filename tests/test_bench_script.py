@@ -339,6 +339,8 @@ def test_mixed_games_record_lineup_and_winner(tmp_path, capsys):
         assert set(r["timing"]["opp_by_name"]) == set(MIXED)
     wins = s["mixed"]["wins"]
     assert sum(wins.values()) == s["games"] == 2 and wins["catanbot"] == s["wins"]
+    assert set(s["timing"]["opp_by_name"]) == set(MIXED)
+    assert all(t["all"]["n"] > 0 for t in s["timing"]["opp_by_name"].values())
     import gzip
     (path,) = list(logs.iterdir())
     assert "1v3-mixed" in path.name
