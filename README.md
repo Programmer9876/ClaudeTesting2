@@ -60,7 +60,9 @@ uncertain is flagged and correctable with `--fix`.
 `watch` reads the Colonist.io screen live on your machine - board, player cards and game log - and
 prints each new log entry, an accept / reject / counter verdict the moment an opponent offers a
 trade, the card count (`--session`) and the top moves when the position changes.  Unchanged frames
-cost a few milliseconds; popups, scrolling and misread frames do not corrupt the board or the count.
+cost a few milliseconds.  The board is locked from clean frames (a popup over it does not count),
+and log entries are confirmed in order, once; the limits (a confident misread, an ambiguous jump of
+the log, the readers tuned on synthetic screenshots) are listed in `docs/USAGE.md`.
 Set it up once per screen (see `docs/USAGE.md`, "Live local reader"):
 
 ```bash

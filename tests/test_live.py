@@ -113,6 +113,49 @@ class TruthParser:
         return ParseResult(parsed=parsed, state=parsed_to_state(parsed), confidence=conf, warnings=[])
 
 
+class Screen:
+    """A scripted screen for :class:`LiveSession` (no rendering): :meth:`show` sets the log reader's
+    lines and the parse (with its confidence) of the next frame; the image changes where they did."""
+
+    BOX = (280, 40, 396, 296)
+
+    def __init__(self, parsed):
+        self.lines, self.parsed, self.conf, self.fail = [], parsed, None, None
+        self.log_ver = self.board_ver = self.reads = self.parses = 0
+
+    def image(self):
+        a = np.full((300, 400, 3), 90, np.uint8)
+        a[:40, :40] = (self.board_ver * 37) % 256
+        a[50:80, 290:320] = (self.log_ver * 53) % 256
+        return a
+
+    def reader(self, img, box=None, profile=None, players=None, cache=None):
+        self.reads += 1
+        return NS(lines=list(self.lines), box=box or self.BOX, warnings=[], confidence=1.0 if self.lines else 0.0)
+
+    def parse(self, img, me=None, layout=None):
+        self.parses += 1
+        if self.fail:
+            raise self.fail
+        p = json.loads(json.dumps(self.parsed))
+        conf = dict(self.conf or {"hexes": 1.0, "numbers": 1.0, "numbers_min": 1.0, "ports": 1.0})
+        return ParseResult(parsed=p, state=parsed_to_state(p), confidence=conf, warnings=[])
+
+    def session(self, **kw):
+        return LV.LiveSession(me="red", log_reader=self.reader, parse_fn=self.parse, log_box=self.BOX, **kw)
+
+    def show(self, sess, texts=None, parsed=None):
+        """One frame: ``texts`` (a new log view: strings or ``line`` objects) and / or ``parsed`` (a
+        board change: a new parse, or the same one redrawn when ``True``)."""
+        if texts is not None:
+            self.lines = [t if isinstance(t, NS) else line(t) for t in texts]
+            self.log_ver += 1
+        if parsed is not None:
+            self.parsed = self.parsed if parsed is True else parsed
+            self.board_ver += 1
+        return sess.step(self.image())
+
+
 def render(s, lines, reader, size=SIZE, seed=5, keep=40, **kw):
     lay = []
     first = max(0, len(lines) - keep)
@@ -299,23 +342,134 @@ def test_live_session_new_game_starts_over(game, rendered, tmp_path):
     assert not any("jumped" in w or "card count:" in w for u in ups for w in u.warnings)
 
 
+def test_live_session_players_lock_on_fresh_parses_and_a_corrected_list_restarts_the_count(tmp_path):
+    """An unchanged frame is no second look (nothing locks from it); a player list locked from two
+    frames that missed a player is corrected by 3 frames showing all, and the count starts over."""
+    p = parsed_of()
+    three = json.loads(json.dumps(p))
+    three["players"] = three["players"][:3]
+    sc = Screen(three)
+    sp = tmp_path / "s.json"
+    sess = sc.session(session_path=str(sp))
+    sc.show(sess, ["green rolled 1 2"], parsed=True)
+    sc.show(sess)                                                    # the same pixels again
+    assert sc.parses == 1 and sess.memory.colours is None and not sess.memory.locked
+    for _ in range(3):
+        sc.show(sess, parsed=True)
+    assert sess.memory.colours == ["red", "blue", "orange"] and sess.tracker.colors == ["red", "blue", "orange"]
+    ups = [sc.show(sess, parsed=p) for _ in range(3)] + [sc.show(sess) for _ in range(2)]
+    assert sess.memory.colours == ["red", "blue", "orange", "green"]
+    assert [q.color for q in sess.state.players] == ["red", "blue", "orange", "green"]
+    assert sess.tracker.colors == ["red", "blue", "orange", "green"] and (tmp_path / "s.json.previous").exists()
+    warned = [w for u in ups for w in u.warnings]
+    assert any("player list is corrected" in w for w in warned) and any("players were re-read" in w for w in warned)
+
+
+def test_live_session_judges_an_offer_with_the_count_up_to_it_and_after_a_late_board():
+    """The count is fed the entries up to an offer before it is judged (the proposer's cards got just
+    before it are counted), and an offer read before the board was is judged once there is a board."""
+    p = parsed_of()
+    blue = next(q for q in p["players"] if q["color"] == "blue")
+    blue["cards"] = 0
+    sc = Screen(p)
+    sess = sc.session()
+    sc.show(sess, ["green rolled 1 2"], parsed=True)
+    sc.show(sess, parsed=True)
+    sc.show(sess)
+    assert sess.tracker is not None and tuple(sess.tracker.counter.most_likely()[1]) == (0, 0, 0, 0, 0)
+    seen = []
+    real = LV.evaluate_offer
+
+    def spy(state, me, proposer, give, get, tracker=None, **kw):
+        seen.append(tuple(tracker.counter.most_likely()[proposer]))
+        return real(state, me, proposer, give, get, tracker=tracker, **kw)
+    p2 = json.loads(json.dumps(p))
+    next(q for q in p2["players"] if q["color"] == "blue")["cards"] = 2
+    try:
+        LV.evaluate_offer = spy
+        u = sc.show(sess, ["green rolled 1 2", "blue got 2 ore", "blue wants to give 2 ore for 1 sheep"], parsed=p2)
+    finally:
+        LV.evaluate_offer = real
+    assert len(u.offers) == 1 and seen == [(0, 0, 0, 0, 2)]
+    assert not any("cannot hold" in w for w in u.offers[0].warnings)
+    # an offer read while the board is not read yet waits (while it is open) for a game state
+    sc2 = Screen(p)
+    sc2.fail = ValueError("no board yet")
+    s2 = sc2.session()
+    u1 = sc2.show(s2, ["green rolled 1 2", "blue wants to give 2 ore for 1 sheep"], parsed=True)
+    sc2.fail = None
+    u2 = sc2.show(s2, parsed=True)
+    assert u1.offers == [] and [v.text for v in u2.offers] == ["blue wants to give 2 ore for 1 sheep"]
+    assert sc2.show(s2, parsed=True).offers == []                   # judged once
+
+
+def test_live_session_stops_waiting_on_a_bottom_line_that_never_reads():
+    """A bottom entry the reader never reads holds the card count and the re-reads of an unchanged
+    panel only for ``stall_frames`` reads."""
+    sc = Screen(parsed_of())
+    sess = sc.session()
+    sc.show(sess, ["green rolled 1 2", line("#?%", 0.2, key="junk")], parsed=True)
+    sc.show(sess, parsed=True)
+    ups = [sc.show(sess) for _ in range(6)]
+    assert sc.reads == 3 and not sess.stream.waiting and sess.stream.pending
+    assert [e.text for e in sess.stream.entries] == ["green rolled 1 2"]
+    assert sess.card_count is not None and any(u.card_count for u in ups)
+    assert sum(u.skipped for u in ups) >= 4
+
+
+def test_load_logocr_treats_a_broken_module_as_missing(monkeypatch, tmp_path, capsys):
+    import types
+    name = LV.LOGOCR_MODULE
+    mod = types.ModuleType(name)
+    mod.find_log_panel = lambda img, profile=None: None               # no read_log_panel, no teach
+    monkeypatch.setitem(sys.modules, name, mod)
+    assert LV.load_logocr() is None and "it has no read_log_panel, teach" in LV.logocr_missing_message()
+    sess = LV.LiveSession(me="red", parse_fn=TruthParser())
+    assert not sess.read_log and sess._reader is None
+    assert cli.main(["ocr", str(tmp_path / "shot.png"), "--log-region", "1000,120,265,504"]) == 2
+    assert "catanbot.vision.logocr" in capsys.readouterr().err
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    real = LV.importlib.import_module
+
+    def broken(n, *a, **k):
+        if n == name:
+            raise RuntimeError("cv2 build lacks feature X")
+        return real(n, *a, **k)
+    monkeypatch.setattr(LV.importlib, "import_module", broken)
+    assert LV.load_logocr() is None
+    assert "not available in this installation (importing it failed: RuntimeError: cv2 build lacks feature X)" \
+        in LV.logocr_missing_message()
+    assert not LV.LiveSession(me="red", parse_fn=TruthParser()).read_log
+
+
 def test_live_session_with_the_installed_log_reader(game, rendered):
     """Runs only once catanbot.vision.logocr is installed: the real OCR in the live loop on the
-    replay's first frames (board from the truth parser) - entries in order, each at most once, and
-    nearly all read exactly."""
+    replay's first frames (board from the truth parser) - entries in order, each at most once, no
+    gap, and nearly every entry the reader itself reads exactly (in some frame) comes out exactly:
+    the loop loses nothing the reader gets right (the reader's own accuracy is its benchmark's)."""
     import difflib
-    pytest.importorskip("catanbot.vision.logocr")
+    logocr = pytest.importorskip("catanbot.vision.logocr")
     reader, truth, imgs = rendered
-    sess = LV.LiveSession(me="red", parse_fn=truth)
-    assert sess.read_log
+    read_ok = set()
+
+    def spy(img, **kw):
+        res = logocr.read_log_panel(img, **kw)
+        lay = reader.frames[digest(img)][0]
+        if len(res.lines) == len(lay):
+            read_ok.update(e.index for e, ln in zip(lay, res.lines)
+                           if not e.partial and ln.text == e.canonical and ln.confidence >= 0.6)
+        return res
+    sess = LV.LiveSession(me="red", parse_fn=truth, log_reader=spy, log_finder=logocr.find_log_panel,
+                          log_cache=logocr.LineCache())
     got = []
     for img in imgs[:20] + [imgs[19]]:
         got.extend(e.text for e in sess.step(img).new_entries)
     s_end, lines_end = game[19]
     canon = [synth.canonical_log_text(x, s_end.players) for x in lines_end]
     sm = difflib.SequenceMatcher(a=canon, b=got, autojunk=False)
-    exact = sum(b.size for b in sm.get_matching_blocks())
-    assert exact >= 0.9 * len(canon) and len(got) <= len(canon) + 2, (exact, len(canon), len(got))
+    exact = {b.a + i for b in sm.get_matching_blocks() for i in range(b.size)}
+    assert len(exact & read_ok) >= 0.9 * len(read_ok) and len(got) <= len(canon) + 2, \
+        (len(exact & read_ok), len(read_ok), len(exact), len(canon), len(got))
     assert sess.stream.gaps == 0
 
 
@@ -418,14 +572,14 @@ def test_stream_gap_is_accepted_when_two_frames_agree_and_reported(log_lines):
     st2 = LV.LogStream(clock=lambda: t[0])
     st2.update(window(log_lines, 40))
     assert st2.update(window(log_lines, 120)) == []
-    new = st2.update(window(log_lines, 121))
-    assert [e.text for e in new] == log_lines[107:121] and new[0].gap_before and not new[1].gap_before
+    new = st2.update(window(log_lines, 121))                  # (with the entry that scrolled out in between)
+    assert [e.text for e in new] == log_lines[106:121] and new[0].gap_before and not new[1].gap_before
     assert st2.gaps == 1 and any("jumped" in w for w in st2.warnings)
     assert [e.text for e in st2.update(window(log_lines, 123))] == log_lines[121:123]
-    # a static view that shares nothing is accepted after gap_seconds (a quiet log after a real gap;
-    # the price: a panel left scrolled up past everything read for that long is taken for one too)
+    # a static view that shares nothing is never a gap, however long it stays (a panel left scrolled
+    # up past everything read); a quiet log after a real gap is taken once it grows
     t[0] += 30
-    assert st.update(window(log_lines, 5))[0].gap_before
+    assert st.update(window(log_lines, 5)) == [] and st.gaps == 0 and st.entries[-1].text == log_lines[39]
 
 
 def test_stream_no_panel_and_unreadable_entries(log_lines):
@@ -444,6 +598,72 @@ def test_stream_no_panel_and_unreadable_entries(log_lines):
     assert [e.text for e in new] == ["#?%", log_lines[22], log_lines[23]] and not new[0].countable
     assert new[0].kind == "unreadable" and all(e.countable for e in new[1:])
     assert all(e.countable is False or e.event is not None for e in st.entries)
+
+
+def test_stream_overlap_misread_at_the_live_end_and_a_gap_keep_the_log_single(log_lines):
+    """The log moved 11 entries between two reads of a 14-line panel: of the 3 overlap lines one is
+    re-read differently (another key) - aligned at the end of the log, not taken for a gap, the
+    overlap keeps its text.  A jump accepted as a gap does not take again an entry it still shows."""
+    st = LV.LogStream()
+    st.update(window(log_lines, 40))
+    w = window(log_lines, 51)
+    w[1] = line(w[1].text.replace("1", "2") + " x", 0.95, key="re-read")
+    assert [e.text for e in st.update(w)] == log_lines[40:51] and st.gaps == 0
+    st2 = LV.LogStream()
+    st2.update(window(log_lines, 40))
+    assert st2.update(window(log_lines, 53)) == []                  # one line of overlap: not proof enough
+    new = st2.update(window(log_lines, 54))
+    assert [e.text for e in new] == log_lines[40:54] and new[0].gap_before and st2.gaps == 1
+    assert [e.text for e in st2.entries] == log_lines[26:54]
+
+
+def test_stream_panel_left_scrolled_up_is_never_a_gap():
+    """Scrolled up past everything read, for any time: nothing is appended, and back at the live end
+    the log continues without a duplicate or a gap."""
+    t = [0.0]
+    st = LV.LogStream(clock=lambda: t[0])
+    log = [f"red got {i} wood" for i in range(1, 200)]
+    st.update([line(x) for x in log[100:114]])
+    for _ in range(4):
+        t[0] += 8
+        assert st.update([line(x) for x in log[50:64]]) == []
+    got = []
+    for end in range(115, 160):
+        t[0] += 2
+        got += st.update([line(x) for x in log[end - 14:end]])
+    assert [e.text for e in got] == log[114:159] and st.gaps == 0
+
+
+def test_stream_repeated_line_after_a_jump_is_reported_not_lost_silently():
+    """Entries 20 and 21 read the same; the next frame starts at 21: its top line matching 20 is no
+    proof of an overlap, so the jump is reported (the card count resynchronises)."""
+    log = [f"blue got {i} ore" for i in range(1, 21)] + ["green wants to give 1 sheep for 1 brick"] * 2 + \
+          [f"red got {i} wood" for i in range(1, 30)]
+    st = LV.LogStream()
+    st.update([line(x) for x in log[7:21]])
+    assert st.update([line(x) for x in log[21:35]]) == [] and st.update([line(x) for x in log[21:35]]) == []
+    new = st.update([line(x) for x in log[22:36]])
+    assert new[0].gap_before and st.gaps == 1 and any("jumped" in w for w in st.warnings)
+    assert [e.text for e in st.entries] == log[7:21] + log[22:36]
+
+
+def test_stream_unreadable_lines_are_released_together_and_scrolled_past(log_lines):
+    """Several entries the reader cannot read (dice icons) are released at once after
+    ``stall_frames`` frames; a panel that moved past lines still waiting aligns on them (no gap)."""
+    def frame(end, bad):
+        w = window(log_lines, end)
+        return [line("#?%", 0.3, key=f"bad{end - len(w) + i}") if end - len(w) + i in bad else x
+                for i, x in enumerate(w)]
+    st = LV.LogStream()
+    st.update(window(log_lines, 20))
+    outs = [st.update(frame(24, (20, 22))) for _ in range(3)]
+    assert outs[:2] == [[], []] and [e.text for e in outs[2]] == ["#?%", log_lines[21], "#?%", log_lines[23]]
+    assert [e.countable for e in outs[2]] == [False, True, False, True]
+    st2 = LV.LogStream()
+    st2.update(window(log_lines, 20))
+    assert st2.update(frame(30, (20,))) == [] and len(st2.pending) == 10
+    new = st2.update(window(log_lines, 37))                         # 16..22 scrolled out, 20 never read
+    assert [e.text for e in new] == ["#?%"] + log_lines[21:37] and not new[0].countable and st2.gaps == 0
 
 
 def test_stream_follows_whether_an_offer_is_open():
@@ -480,6 +700,7 @@ def test_board_memory_locks_and_keeps_the_board_under_a_popup():
     m = LV.BoardMemory()
     assert not m.update(p, CONF).locked
     assert m.update(p, CONF).locked
+    m.update(p, CONF)                                      # the pieces: voted by the 2 frames since the lock
     popup = json.loads(json.dumps(p))
     for i in (3, 4, 8):
         popup["hexes"][i] = {"resource": "desert", "number": None}
@@ -488,7 +709,7 @@ def test_board_memory_locks_and_keeps_the_board_under_a_popup():
         q["roads"] = q["roads"][:1]
     warned = []
     for _ in range(3):
-        u = m.update(popup, CONF)
+        u = m.update(popup, dict(CONF, numbers_min=0.05))  # a popup hides number tokens
         warned += u.warnings
         assert u.parsed["hexes"] == p["hexes"] and u.parsed["ports"] == p["ports"] and not u.new_game
         for a, b in zip(u.parsed["players"], p["players"]):
@@ -524,6 +745,70 @@ def test_board_memory_pieces_are_monotonic_with_city_upgrades():
     assert red(m.update(gone, CONF))["roads"] == red(u)["roads"]
 
 
+def test_board_memory_popup_pieces_never_count_and_a_steady_reading_corrects_a_piece():
+    """A popup (number tokens hidden; its cream colour read as a 'white' player's pieces) on the first
+    frames or later, seen again unchanged, adds no piece, player or lock; a remembered piece read
+    otherwise in 4 of the last 5 clean frames is replaced or removed."""
+    p = parsed_of()
+    taken = {v for q in p["players"] for v in q["settlements"] + q["cities"]}
+    free_v = next(v for v in range(B.NUM_VERTICES) if v not in taken)
+    blue_v = p["players"][1]["settlements"][0]
+    popup = json.loads(json.dumps(p))
+    popup["players"].append({"color": "white", "name": "white", "vp": 0, "cards": 0, "settlements": [free_v],
+                             "cities": [blue_v], "roads": list(p["players"][1]["roads"])})
+    hidden = dict(CONF, numbers_min=0.05)
+    m = LV.BoardMemory()
+    m.update(popup, hidden)
+    m.update(popup, hidden, fresh=False)
+    assert not m.locked and m.colours is None and not m.buildings and not m.roads
+    for _ in range(3):
+        m.update(p, CONF)
+    assert m.buildings[blue_v] == ("blue", False) and m.colours == ["red", "blue", "orange", "green"]
+    for _ in range(4):
+        m.update(popup, hidden)
+        m.update(popup, hidden, fresh=False)
+    assert "white" not in {c for c, _ in m.buildings.values()} | set(m.roads.values()) and free_v not in m.buildings
+    # blue's settlement really is red's, and a road of blue's is not there: 4 of the last 5 clean frames
+    fixed = json.loads(json.dumps(p))
+    fixed["players"][1]["settlements"].remove(blue_v)
+    fixed["players"][0]["settlements"].append(blue_v)
+    gone = fixed["players"][1]["roads"].pop()
+    for k in range(4):
+        u = m.update(fixed, CONF)
+        assert (m.buildings[blue_v] == ("red", False)) == (k == 3) and (gone in m.roads) == (k < 3)
+    assert any(f"vertex {blue_v}: a red settlement read in 4" in w for w in u.warnings)
+
+
+def test_board_memory_locks_on_clean_frames_and_corrects_a_wrong_lock():
+    p = parsed_of()
+    wrong = json.loads(json.dumps(p))
+    wrong["hexes"][0], wrong["hexes"][1] = wrong["hexes"][1], {"resource": "desert", "number": None}
+    assert sum(a != b for a, b in zip(wrong["hexes"], p["hexes"])) == 2
+    m = LV.BoardMemory()
+    m.update(wrong, dict(CONF, numbers_min=0.05))                  # a popup over two tiles on the first frame ...
+    m.update(wrong, dict(CONF, numbers_min=0.05), fresh=False)     # ... and the same pixels again
+    assert not m.locked
+    m.update(p, CONF)
+    assert m.update(p, CONF).locked and m.hexes == LV.BoardMemory._hex_sig(p)
+    # a wrong first lock (two clean frames misread alike) is corrected by 3 clean frames in a row
+    m2 = LV.BoardMemory()
+    m2.update(wrong, CONF)
+    m2.update(wrong, CONF)
+    ups = [m2.update(p, CONF) for _ in range(3)]
+    assert ups[1].parsed["hexes"] == wrong["hexes"] and ups[2].parsed["hexes"] == p["hexes"] and m2.locked
+    assert any("locked board is corrected" in w for w in ups[2].warnings) and not any(u.new_game for u in ups)
+    # the player list: two frames showed 3 of the 4 players, then all 4 for good
+    three = json.loads(json.dumps(p))
+    three["players"] = three["players"][:3]
+    m3 = LV.BoardMemory()
+    m3.update(three, CONF)
+    m3.update(three, CONF)
+    assert m3.colours == ["red", "blue", "orange"]
+    ups = [m3.update(p, CONF) for _ in range(3)]
+    assert [q["color"] for q in ups[1].parsed["players"]] == ["red", "blue", "orange"]
+    assert m3.colours == [q["color"] for q in ups[2].parsed["players"]] == ["red", "blue", "orange", "green"]
+
+
 def test_board_memory_detects_a_new_game():
     p = parsed_of()
     other = parsed_of(seed=11, turns=10)
@@ -535,8 +820,8 @@ def test_board_memory_detects_a_new_game():
     assert m.update(other, CONF).locked and m.update(other, CONF).parsed["hexes"] == other["hexes"]
     # the same board with the pieces gone (a rematch on the same map)
     m2 = LV.BoardMemory()
-    m2.update(p, CONF)
-    m2.update(p, CONF)
+    for _ in range(3):
+        m2.update(p, CONF)
     empty = json.loads(json.dumps(p))
     for q in empty["players"]:
         q["settlements"], q["cities"], q["roads"] = [], [], []
@@ -549,7 +834,7 @@ def test_board_memory_detects_a_new_game():
     covered = json.loads(json.dumps(p))
     covered["hexes"][:12] = other["hexes"][:12]
     assert sum(a != b for a, b in zip(covered["hexes"], p["hexes"])) >= 10
-    assert not any(m3.update(covered, CONF).new_game for _ in range(6))
+    assert not any(m3.update(covered, c).new_game for c in [CONF] * 2 + [dict(CONF, numbers_min=0.1)] * 4)
     assert not any(m3.update(other, dict(CONF, numbers_min=0.2)).new_game for _ in range(6))   # tokens hidden
     assert m3.locked and m3.update(p, CONF).parsed["hexes"] == p["hexes"] and not m3.suspect
 
@@ -587,14 +872,21 @@ def test_evaluate_offer_with_a_card_counter(game):
     tr = L.ColonistLogTracker.for_state(st, 0)
     tr.update([L.parse_log_text("\n".join(synth.canonical_log_text(x, s.players) for x in lines))], st)
     me_hand = st.players[0].resources
+    counted = tr.counter.most_likely()[1]
     give = [0] * 5
-    give[max(range(5), key=lambda r: -me_hand[r])] = 3                        # three of what we lack most
+    give[max(range(5), key=lambda r: counted[r])] = 1                         # a card blue holds (by the count)
     get = [0] * 5
     get[max(range(5), key=lambda r: me_hand[r])] = 1
     v = LV.evaluate_offer(st, 0, 1, give, get, tracker=tr)
     assert v.verdict in ("accept", "reject") or v.verdict.startswith("counter:")
-    assert v.rule_reason and v.lines and not any("not usable" in w for w in v.warnings)
+    assert v.rule_reason and v.lines and not any("not usable" in w or "cannot hold" in w for w in v.warnings)
     assert LV.evaluate_offer(st, 0, 0, give, get).reason == "not an offer to us"
+    # a count behind the log (blue offers cards it says blue cannot hold): judged on the public view
+    assert tr.is_exact(1)
+    lack = next(r for r in range(5) if counted[r] == 0)
+    stale = LV.evaluate_offer(st, 0, 1, [2 if r == lack else 0 for r in range(5)], get, tracker=tr)
+    assert any(w.startswith("the card count says blue cannot hold 2 ") for w in stale.warnings)
+    assert stale.rule_reason and stale.lines
 
 
 # ---------------------------------------------------------------------------

@@ -16,26 +16,33 @@ another window.  The pipeline of one :meth:`LiveSession.step` is
    :class:`LogStream`: the frame's confident, non-partial entries are aligned with the
    confirmed tail, an overlapping entry keeps its confirmed text (it is never re-read
    differently), a new bottom entry is confirmed when it reads the same in two consecutive
-   frames (or with confidence >= 0.9), a frame without a panel (a popup) changes nothing and a
-   gap (the log scrolled past while not watched) is accepted once two frames agree on it and
-   reported.  Every confirmed entry is emitted exactly once, in log order.
+   frames (or with confidence >= 0.9), entries the reader cannot read are kept in order (not
+   counted) once the entries after them are read, a frame without a panel (a popup) changes
+   nothing and a gap (the log scrolled past while not watched) is accepted once two frames
+   agree on it and the log grows at the bottom (a panel scrolled up never does), and reported.
+   Every confirmed entry is emitted exactly once, in log order.
 3. **board** (only when the rest of the screen changed) - the board / chrome parser
    (:func:`catanbot.vision.colonist.parse_image`, told the log box so the panel stays out of
-   the board analysis), then :class:`BoardMemory`: the static board (tiles, numbers, ports)
-   is locked once two consecutive confident parses agree and never re-read (a popup over the
-   board cannot change it), pieces are monotonic (added once seen in 2 of the last 3 parses,
-   settlement -> city upgrades, never removed because a frame missed them) and a new game
-   (another map, or the pieces gone, for 3 frames - never a popup) resets everything; while it
-   is only suspected, log gaps and the card count are held.
+   the board analysis), then :class:`BoardMemory`: only a clean parse counts (freshly parsed,
+   every number token read: nothing over the board; an unchanged frame is not parsed again and
+   is no second look).  The static board (tiles, numbers, ports) and the player list are locked
+   once two consecutive clean parses agree (a popup over the board cannot change them; 3 clean
+   parses in a row reading otherwise correct a wrong lock), pieces of the players' colours
+   are added once seen in 2 of the last 3 clean parses of the locked board, settlement -> city,
+   never removed because a frame missed them (only when 4 of the last 5 read otherwise), and a
+   new game (another map, or the pieces gone, for 3 frames - never a popup) resets
+   everything; while it is only suspected, log gaps and the card count are held.
 4. **offers** - a newly confirmed ``offer`` / ``counter`` entry of an opponent that is still
    open is evaluated at once with :func:`evaluate_offer` (the trade rules, the accept /
    reject / counter search of :mod:`catanbot.counteroffers` and, when the card counter runs,
-   the counted opponents' hands).
+   the counted opponents' hands - the counter first consumes the confirmed entries up to the
+   offer); one read before the board was waits, while open, for a game state.
 5. **card counting** - the :class:`~catanbot.colonist_log.ColonistLogTracker` of the
    ``--session`` file is fed only the stream's confirmed window (stable texts: the tracker
    would double count an entry whose reading changed) plus the latest state and bank, once
    the log has settled (never while an entry on screen is unconfirmed: the hand sizes would be
-   ahead of the log), and the session is saved.
+   ahead of the log - except a bottom entry that stayed unreadable for 3 reads), and the
+   session is saved; a corrected player list starts the count over.
 6. **recording** (``record_dir``) - changed frames as ``frames/NNNNN.png`` and JSON lines of
    the confirmed entries (``events.jsonl``), the board parses (``parses.jsonl``), the offer
    verdicts (``offers.jsonl``) and the raw log reads (``ocr.jsonl``): a dataset of the user's
@@ -95,16 +102,36 @@ RGB = Tuple[int, int, int]
 LOGOCR_MODULE = "catanbot.vision.logocr"
 
 
+#: The functions of the log OCR module the live loop and the CLI call.
+LOGOCR_FUNCTIONS = ("read_log_panel", "find_log_panel", "teach")
+_logocr_problem: Optional[str] = None          # why the last load_logocr() found no usable module
+
+
 def load_logocr() -> Any:
-    """The log OCR module, or ``None`` when it is not installed (or fails to import)."""
+    """The log OCR module, or ``None`` when it is not installed or not usable - it fails to import
+    (any exception) or lacks one of :data:`LOGOCR_FUNCTIONS`; :func:`logocr_missing_message` then
+    says why."""
+    global _logocr_problem
+    _logocr_problem = None
     try:
-        return importlib.import_module(LOGOCR_MODULE)
-    except ImportError:
+        mod = importlib.import_module(LOGOCR_MODULE)
+    except ImportError as ex:
+        if getattr(ex, "name", None) not in (None, LOGOCR_MODULE):     # installed, but a dependency is missing
+            _logocr_problem = f"importing it failed: {type(ex).__name__}: {ex}"
         return None
+    except Exception as ex:
+        _logocr_problem = f"importing it failed: {type(ex).__name__}: {ex}"
+        return None
+    missing = [f for f in LOGOCR_FUNCTIONS if not callable(getattr(mod, f, None))]
+    if missing:
+        _logocr_problem = "it has no " + ", ".join(missing)
+        return None
+    return mod
 
 
 def logocr_missing_message() -> str:
-    return (f"the local game-log reader ({LOGOCR_MODULE}) is not available in this installation, so the game "
+    why = f" ({_logocr_problem})" if _logocr_problem else ""
+    return (f"the local game-log reader ({LOGOCR_MODULE}) is not available in this installation{why}, so the game "
             "log is not read (no card counting or offer verdicts from the log; the board is still read)")
 
 
@@ -192,19 +219,25 @@ class LogStream:
 
     * the frame's non-partial lines are aligned with the confirmed entries (a line matches an
       entry by its pixel ``key`` or, when confident, by its text; low-confidence lines are
-      neutral) - the best offset wins when it has enough matches and few mismatches.  The
+      neutral) - the best offset wins when it has enough matches (two when the frame has three
+      confident lines or more and does not start at the log's first entry: one repeated line
+      such as ``bought Development Card`` proves nothing) and few mismatches (at the confirmed
+      end of the log, where the frame continues it, no more mismatches than matches).  The
       confirmed entries are indexed by text and key, so a panel scrolled up to any older part of
       the log is recognised ("inside": nothing new);
     * lines in the overlap keep their confirmed text (a different re-read is ignored);
     * a line after the overlap is confirmed when its confidence is >= ``confirm_conf`` or it
       read the same (text) in the previous frame at the same log position; confirmation stops
       at the first line that is not ready (the order is kept).  A line that stays unreadable
-      for ``stall_frames`` frames while later lines are read is confirmed as not countable;
+      for ``stall_frames`` frames while later lines are read is confirmed as not countable
+      (every such line counts its frames at once); a frame that moved past lines still waiting
+      aligns on them, and the lines it moved past are confirmed with their last reading;
     * a frame sharing nothing with the confirmed entries is a gap candidate: it is accepted when
-      the next frame agrees with it and either shows new entries at the bottom (the live end
-      of the log) or ``gap_seconds`` passed since the last aligned read (a panel scrolled far up
-      is not taken for a gap at once); the first entry after it has ``gap_before`` and a
-      warning is reported.
+      the next frame agrees with it and shows new entries at the bottom (the live end of the
+      log; a panel scrolled up, however long, never grows there); leading lines that are the
+      last confirmed entries, line for line, are not taken again, lines of the first frame that
+      scrolled out are kept, the first entry after the gap has ``gap_before`` and a warning is
+      reported.
 
     The stream also follows offers: an ``offer`` / ``counter`` stays open until its proposer
     trades, cancels or withdraws, someone accepts, or the turn moves on (a roll / turn line) -
@@ -212,11 +245,10 @@ class LogStream:
     """
 
     def __init__(self, min_conf: float = 0.6, confirm_conf: float = 0.9, stall_frames: int = 3,
-                 gap_seconds: float = 20.0, clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time):
         self.min_conf = float(min_conf)
         self.confirm_conf = float(confirm_conf)
         self.stall_frames = int(stall_frames)
-        self.gap_seconds = float(gap_seconds)
         self.clock = clock
         self.reset()
 
@@ -226,10 +258,9 @@ class LogStream:
         self._by_text: Dict[str, List[int]] = {}
         self._by_key: Dict[str, List[int]] = {}
         self.pending: List[_Seen] = []          # read after the confirmed end, not confirmed yet
-        self._stall = 0
-        self._stall_pos = -1
+        self._stalls: Dict[int, int] = {}       # log position -> frames unreadable while later lines were read
+        self._hold = 0                          # reads in a row that left only unreadable lines waiting
         self._gap_prev: Optional[List[_Seen]] = None
-        self._last_aligned: Optional[float] = None
         self.gaps = 0
         self.no_panel = 0
         self.warnings: List[str] = []           # of the last update
@@ -256,8 +287,10 @@ class LogStream:
         return m, x
 
     @staticmethod
-    def _valid(m: int, x: int) -> bool:
-        return m >= 1 and 3 * x <= m
+    def _valid(m: int, x: int, need: int = 1, end: bool = False) -> bool:
+        """``need`` matches and few mismatches - at the confirmed end (``end``: the frame continues
+        the log) no more mismatches than matches (an overlap line re-read differently)."""
+        return m >= need and (3 * x <= m or (end and x <= m))
 
     def _best_offset(self, items: Sequence[_Seen], recent: Optional[int] = 400) -> Optional[Tuple[int, int, int]]:
         """``(offset, matches, mismatches)`` of the frame against the confirmed entries (frame line
@@ -265,6 +298,7 @@ class LogStream:
         the entries sharing a key / text with a frame line (the ``recent`` last entries first, the
         whole log when none of them fits)."""
         n = len(self.entries)
+        many = sum(1 for it in items if it.confident) >= 3
         lo = max(0, n - recent) if recent else 0
         cands = set()
         for i, it in enumerate(items):
@@ -281,7 +315,8 @@ class LogStream:
         best = None
         for s in cands:
             m, x = self._score(self._refs, items, s)
-            if not self._valid(m, x):
+            # one match is enough for a frame of the log's first entries (it starts at entry 0)
+            if not self._valid(m, x, 2 if many and s > 0 else 1, s + len(items) > n):
                 continue
             score = (m - 2 * x + (1.5 if s + len(items) >= n else 0.0), m, s)
             if best is None or score > best[0]:
@@ -311,31 +346,42 @@ class LogStream:
         (compared at the same log position with the next frame's read)."""
         out: List[LogEntry] = []
         prev = self.pending
+        n0 = len(self.entries)
+
+        def ready(k: int, it: _Seen) -> bool:
+            same = k < len(prev) and it.confident and prev[k].confident and prev[k].norm == it.norm
+            return it.confident and (it.conf >= self.confirm_conf or same)
+
+        # a line not ready while a later line is read: one more unreadable frame for it - every such
+        # line at once (by log position), so several stuck lines do not hold the stream one by one
+        last_conf = max((k for k, it in enumerate(new) if it.confident), default=-1)
+        self._stalls = {n0 + k: self._stalls.get(n0 + k, 0) + 1 for k, it in enumerate(new[:last_conf])
+                        if not ready(k, it)}
         k = 0
         while k < len(new):
             it = new[k]
-            same = k < len(prev) and it.confident and prev[k].confident and prev[k].norm == it.norm
-            if it.confident and (it.conf >= self.confirm_conf or same):
+            if ready(k, it):
                 out.append(self._append(it, now, frame, gap=gap and not out))
                 k += 1
                 continue
-            # not ready: wait - unless it stays unreadable while the entries after it are read
-            pos = len(self.entries)
-            if any(x.confident for x in new[k + 1:]):
-                self._stall = self._stall + 1 if self._stall_pos == pos else 1
-                self._stall_pos = pos
-                if self._stall >= self.stall_frames:
-                    self.warnings.append(f"a log entry stayed unreadable (last read '{it.text}', confidence "
-                                         f"{it.conf:.2f}) while the ones after it were read; kept in order, not counted")
-                    out.append(self._append(it, now, frame, countable=False, gap=gap and not out))
-                    self._stall, self._stall_pos = 0, -1
-                    k += 1
-                    continue
-            else:
-                self._stall, self._stall_pos = 0, -1
+            # not ready: wait - unless it stayed unreadable while the entries after it were read
+            if self._stalls.get(n0 + k, 0) >= self.stall_frames:
+                self.warnings.append(f"a log entry stayed unreadable (last read '{it.text}', confidence "
+                                     f"{it.conf:.2f}) while the ones after it were read; kept in order, not counted")
+                out.append(self._append(it, now, frame, countable=False, gap=gap and not out))
+                k += 1
+                continue
             break
         self.pending = list(new[k:])
+        self._hold = self._hold + 1 if self.pending and not any(x.confident for x in self.pending) else 0
         return out
+
+    @property
+    def waiting(self) -> bool:
+        """Lines on screen wait for confirmation (the live session reads the panel again and holds
+        the card count) - not once only unreadable lines at the bottom were left for
+        ``stall_frames`` reads in a row (a line the reader never reads must not hold them for good)."""
+        return bool(self.pending) and self._hold < self.stall_frames
 
     def update(self, lines: Optional[Sequence[Any]], now: Optional[float] = None, frame: int = -1,
                allow_gap: bool = True) -> List[LogEntry]:
@@ -355,7 +401,6 @@ class LogStream:
         if n == 0 and self._gap_prev is None:
             # nothing confirmed yet: the waiting lines are matched to this frame by content (the
             # panel may have scrolled between the two reads)
-            self._last_aligned = now
             s = self._align_frames(self.pending, items, 1) if self.pending else None
             self.pending = self._shifted(self.pending, s, len(items)) if s is not None else []
             return self._confirm_new(items, now, frame)
@@ -363,11 +408,29 @@ class LogStream:
         if best is not None:
             s, _, _ = best
             self._gap_prev = None
-            self._last_aligned = now
             if s + len(items) <= n:
                 return []                       # inside the confirmed log (scrolled up / nothing new)
             return self._confirm_new(list(items[n - s:]), now, frame)
+        # the panel moved past lines still waiting (they scrolled out before they were confirmed): the
+        # frame continues the waiting lines, and the ones it moved past are confirmed as last read
+        s = self._align_frames(self.pending, items, 2) if self.pending else None
+        if s is not None and s >= 0:
+            self._gap_prev = None
+            out = self._release(self.pending[:s], now, frame)
+            self.pending = list(self.pending[s:])
+            return out + self._confirm_new(items, now, frame)
         return self._gap(items, now, frame, allow_gap)
+
+    def _release(self, lines: Sequence[_Seen], now: float, frame: int, gap: bool = False) -> List[LogEntry]:
+        """Lines that scrolled out before they were confirmed: kept in order with their last reading
+        (not counted when it was not confident)."""
+        out: List[LogEntry] = []
+        for it in lines:
+            if not it.confident:
+                self.warnings.append(f"a log entry scrolled out unreadable (last read '{it.text}', confidence "
+                                     f"{it.conf:.2f}); kept in order, not counted")
+            out.append(self._append(it, now, frame, countable=it.confident, gap=gap and not out))
+        return out
 
     def _gap(self, items: List[_Seen], now: float, frame: int, allow: bool = True) -> List[LogEntry]:
         """A frame sharing nothing with the confirmed entries."""
@@ -378,20 +441,34 @@ class LogStream:
         if prev is None or not allow:
             return []
         s = self._align_frames(prev, items, 2)
-        if s is None:
+        if s is None or s + len(items) <= len(prev):
+            return []                           # no new entry at the bottom: a panel scrolled up, not a jump
+        # accepted: the log as the two frames show it (the first frame's lines that scrolled out, then
+        # this frame's); its leading lines that are the last confirmed entries, line for line (frames
+        # overlapping the log by a line or two - too little to align on), are not taken again; the
+        # scrolled-out lines are confirmed as read, this frame's when read the same in both frames
+        # (the rest waits as usual)
+        lead = list(prev[:max(s, 0)])
+        seq = lead + list(items)
+        n = len(self.entries)
+
+        def same(j: int, e: int) -> bool:        # line j (in either frame's reading) is entry e
+            norm, key = self._refs[e]
+            alt = j + min(s, 0)
+            return any(bool(it.key and it.key == key) or (it.confident and it.norm == norm)
+                       for it in [seq[j]] + ([prev[alt]] if 0 <= alt < len(prev) else []))
+        drop = next((k for k in range(min(len(seq), n), 0, -1) if all(same(i, n - k + i) for i in range(k))), 0)
+        if drop == len(seq):
             return []
-        extended = s + len(items) > len(prev)
-        waited = self._last_aligned is None or now - self._last_aligned >= self.gap_seconds
-        if not (extended or waited):
-            return []
-        # accepted: lines read the same in both frames are confirmed, the rest waits as usual
-        self.pending = self._shifted(prev, s, len(items))
-        self.gaps += 1
         before = len(self.entries)
-        out = self._confirm_new(items, now, frame, gap=True)
+        self.gaps += 1
+        out = self._release(lead[drop:], now, frame, gap=True)
+        k = max(0, drop - len(lead))
+        items = items[k:]
+        self.pending = self._shifted(prev, s + k, len(items))
+        out += self._confirm_new(items, now, frame, gap=not out)
         if out:
             self._gap_prev = None
-            self._last_aligned = now
             self.warnings.append(f"the game log jumped: the entries on screen do not continue the {before} read so far "
                                  "(it scrolled past while the screen was not watched?); entries in between are missing "
                                  "and the card count resynchronises from the hand sizes")
@@ -472,18 +549,29 @@ class BoardUpdate:
 class BoardMemory:
     """What stays true between frames of one game.
 
+    * Only a *clean* frame counts: freshly parsed (``fresh``; the same pixels again are not a
+      second observation) with every number token read (``confidence["numbers_min"]`` >=
+      ``min_conf``: nothing lies over the board - a popup hides tokens and its colours read as
+      pieces).
     * The static board - tiles with their numbers, and the ports - is locked once two
-      consecutive confident parses (``confidence["hexes"]`` and ``["numbers"]`` >= ``min_conf``;
-      ports: ``["ports"]`` >= ``port_conf``) agree; afterwards every frame gets the locked values
-      and a frame that disagrees is reported once (a popup or a trade window over the board).
-    * Pieces are monotonic: a settlement / city / road is added once seen in ``votes`` of the
-      last ``window`` parses, a settlement becomes a city the same way, and nothing disappears
-      because one frame missed it.  The merged parse shows the remembered pieces plus the pieces
-      this frame shows on free spots (provisionally: a new road is visible at once, but only the
-      memory keeps it when a later frame misses it).
-    * The player list (colours, in panel order) is locked the same way; a player missing from a
-      frame keeps their last values, and a value a frame could not read (``None``) keeps the last
-      one read.
+      consecutive clean, confident parses (``confidence["hexes"]`` and ``["numbers"]`` >=
+      ``min_conf``; ports: ``["ports"]`` >= ``port_conf``) agree; afterwards every frame gets the
+      locked values and a frame that disagrees is reported once (a popup or a trade window over
+      the board).  Should ``relock_frames`` clean frames in a row agree on another reading of the
+      same map (fewer than ``new_board_diff`` tiles different), the lock was wrong and is replaced.
+    * Pieces: once the players are locked, a clean frame of the locked board (of any board while
+      none is locked) votes - a frame that differs from it or hides a token shows its pieces for
+      that frame only - and only pieces of the locked players' colours count.  A settlement / city / road is added once seen in ``votes`` of the last ``window``
+      votes, a settlement becomes a city the same way, and nothing disappears because a frame
+      missed it; a remembered piece read otherwise (another colour, or nothing) in ``steady`` of
+      the last ``steady_window`` votes is replaced / removed (a first reading that was wrong).  The
+      merged parse shows the remembered pieces plus the pieces this frame shows on free spots
+      (provisionally: a new road is visible at once, but only the memory keeps it when a later
+      frame misses it).
+    * The player list (colours, in panel order) is locked the same way (every token read, no
+      popup's colour), and replaced when ``relock_frames`` such frames in a row agree on other
+      players; a player missing from a frame keeps their last values, and a value a frame could
+      not read (``None``) keeps the last one read.
     * The robber, dice, current player, bank, the panel numbers and our hand come from the
       latest frame.
     * A new game - at least ``new_board_diff`` of the 19 locked tiles different in
@@ -495,13 +583,17 @@ class BoardMemory:
     """
 
     def __init__(self, min_conf: float = 0.6, port_conf: float = 0.5, votes: int = 2, window: int = 3,
-                 new_game_frames: int = 3, new_board_diff: int = 15):
+                 new_game_frames: int = 3, new_board_diff: int = 15, relock_frames: int = 3, steady: int = 4,
+                 steady_window: int = 5):
         self.min_conf = float(min_conf)
         self.port_conf = float(port_conf)
         self.votes = int(votes)
         self.window = int(window)
         self.new_game_frames = int(new_game_frames)
         self.new_board_diff = int(new_board_diff)
+        self.relock_frames = int(relock_frames)
+        self.steady = int(steady)
+        self.steady_window = int(steady_window)
         self.games = 0
         self.reset()
 
@@ -512,9 +604,11 @@ class BoardMemory:
         self._prev_ports: Optional[Tuple[Tuple[int, str], ...]] = None
         self.buildings: Dict[int, Tuple[str, bool]] = {}
         self.roads: Dict[int, str] = {}
-        self._history: Deque[Tuple[Dict[int, Tuple[str, bool]], Dict[int, str]]] = deque(maxlen=self.window)
+        self._history: Deque[Tuple[Dict[int, Tuple[str, bool]], Dict[int, str]]] = deque(
+            maxlen=max(self.window, self.steady_window))           # the pieces of the voting frames
         self.colours: Optional[List[str]] = None
         self._prev_colours: Optional[List[str]] = None
+        self._relock: Dict[str, List[Any]] = {}                  # another reading of a locked part, in a row
         self._last_player: Dict[str, Dict[str, Any]] = {}
         self._disagree: List[Tuple[Tuple[Any, Any], ...]] = []
         self._vanish = 0
@@ -527,20 +621,13 @@ class BoardMemory:
     def locked(self) -> bool:
         return self.hexes is not None
 
-    @property
-    def pending(self) -> bool:
-        """Something seen in the last parse is not confirmed yet (a piece, the board, the players)."""
-        if self.last is None:
-            return False
-        parsed, _ = self.last
-        if self.colours is None or (self.hexes is None and self._prev_hexes is not None):
-            return True
-        b, r = self._pieces(parsed)
-        for v, (col, city) in b.items():
-            cur = self.buildings.get(v)
-            if cur is None or (cur[0] == col and city and not cur[1]):
-                return True
-        return any(e not in self.roads for e in r)
+    def _streak(self, what: str, sig: Any) -> bool:
+        """One more clean frame reading ``what`` as ``sig`` (not the locked value): True once the
+        last ``relock_frames`` of them agree."""
+        s = self._relock.setdefault(what, [])
+        s.append(sig)
+        del s[:-self.relock_frames]
+        return len(s) >= self.relock_frames and all(x == sig for x in s)
 
     @staticmethod
     def _hex_sig(parsed: Dict[str, Any]) -> Optional[Tuple[Tuple[Any, Any], ...]]:
@@ -588,13 +675,18 @@ class BoardMemory:
     def update(self, parsed: Dict[str, Any], confidence: Optional[Dict[str, float]] = None,
                fresh: bool = True) -> BoardUpdate:
         """Merge one frame's parse; returns the merged parse (a new dict; ``parsed`` is not modified).
-        ``fresh=False`` (:meth:`revote`) repeats the last parse: it votes, but never starts a new game."""
+        ``fresh=False`` marks the same pixels seen again: merged, but not a new observation (it
+        neither votes, locks nor counts toward a new game)."""
         conf = dict(confidence or {})
         warns: List[str] = []
         new_game = False
         hsig = self._hex_sig(parsed)
         confident = (hsig is not None and conf.get("hexes", 0.0) >= self.min_conf
                      and conf.get("numbers", 0.0) >= self.min_conf)
+        # every number token read: nothing lies over the board (a popup hides tokens and its colours
+        # read as pieces) - only such a fresh frame is an observation that counts
+        tokens_ok = fresh and conf.get("numbers_min", 1.0) >= self.min_conf
+        clean = confident and tokens_ok
         b, r = self._pieces(parsed)
         # --- new game? ----------------------------------------------------------------------
         # A new map differs from the old one in nearly every tile (two random standard boards share
@@ -602,7 +694,6 @@ class BoardMemory:
         # fewer - and it hides number tokens, so a frame only counts with every token read.
         if self.hexes is not None and confident and fresh:
             diff = sum(1 for a, c in zip(hsig, self.hexes) if a != c)
-            tokens_ok = conf.get("numbers_min", 1.0) >= self.min_conf
             if diff >= self.new_board_diff and tokens_ok:
                 self._disagree.append(hsig)
                 self._disagree = self._disagree[-self.new_game_frames:]
@@ -610,7 +701,16 @@ class BoardMemory:
                     new_game = True
             else:
                 self._disagree = []
-            if diff and not new_game:
+            # the same map read the same other way in clean frames in a row: the first lock was wrong
+            relocked = False
+            if tokens_ok and 0 < diff < self.new_board_diff:
+                if self._streak("hexes", hsig):
+                    self.hexes, relocked = hsig, True
+                    warns.append(f"{self.relock_frames} clean frames in a row read {diff} tile(s) differently from "
+                                 "the locked board: the locked board is corrected")
+            elif tokens_ok:
+                self._relock.pop("hexes", None)
+            if diff and not new_game and not relocked:
                 self._warn_once(warns, "board-differs",
                                 f"a frame shows {diff} tile(s) different from the locked board (a popup or trade window "
                                 "over the board?); the locked board is kept")
@@ -632,53 +732,76 @@ class BoardMemory:
             self._history.clear()
         self.frames += 1
         self.last = (parsed, conf)
-        # --- lock the static board ------------------------------------------------------------
+        # --- lock the static board (clean frames only) ------------------------------------------
         if self.hexes is None:
-            if confident and self._prev_hexes == hsig:
+            if clean and self._prev_hexes == hsig:
                 self.hexes = hsig
-            self._prev_hexes = hsig if confident else None
+            if fresh:
+                self._prev_hexes = hsig if clean else None
         psig = self._port_sig(parsed)
+        port_ok = clean and psig is not None and conf.get("ports", 0.0) >= self.port_conf
         if self.ports is None:
-            if psig is not None and conf.get("ports", 0.0) >= self.port_conf and self._prev_ports == psig:
+            if port_ok and self._prev_ports == psig:
                 self.ports = [dict(p) for p in parsed["ports"] if isinstance(p, dict)]
-            self._prev_ports = psig if (psig is not None and conf.get("ports", 0.0) >= self.port_conf) else None
+            if fresh:
+                self._prev_ports = psig if port_ok else None
         elif psig is not None and psig != self._port_sig({"ports": self.ports}):
-            self._warn_once(warns, "ports-differ", "a frame shows other ports than the locked board; the locked ports "
-                                                   "are kept")
-        # --- pieces: 2 of the last 3 parses ---------------------------------------------------
-        self._history.append((b, r))
-        for v, (col, _) in b.items():
-            n_any = sum(1 for hb, _ in self._history if hb.get(v, ("",))[0] == col)
-            n_city = sum(1 for hb, _ in self._history if hb.get(v) == (col, True))
-            cur = self.buildings.get(v)
-            if cur is None:
-                if n_any >= self.votes:
-                    self.buildings[v] = (col, n_city >= self.votes)
-            elif cur[0] == col:
-                if not cur[1] and n_city >= self.votes:
-                    self.buildings[v] = (col, True)
-            elif n_any >= self.votes:
-                self._warn_once(warns, f"vertex-{v}", f"vertex {v}: a {col} building is seen where {cur[0]}'s was "
-                                                      "recorded; the first one is kept")
-        for e, col in r.items():
-            if e not in self.roads and sum(1 for _, hr in self._history if hr.get(e) == col) >= self.votes:
-                self.roads[e] = col
-        # --- players ------------------------------------------------------------------------------
+            if port_ok and self._streak("ports", psig):
+                self.ports = [dict(p) for p in parsed["ports"] if isinstance(p, dict)]
+                warns.append(f"{self.relock_frames} clean frames in a row read other ports than the locked ones: the "
+                             "locked ports are corrected")
+            else:
+                self._warn_once(warns, "ports-differ", "a frame shows other ports than the locked board; the locked "
+                                                       "ports are kept")
+        elif port_ok:
+            self._relock.pop("ports", None)
+        # --- players (before the pieces: only the players' colours are pieces) --------------------
         frame_players = [p for p in parsed.get("players") or [] if isinstance(p, dict)]
         cols = [str(p.get("color") or "").lower() for p in frame_players]
         by_col = {c: p for c, p in zip(cols, frame_players)}
         if self.colours is None:
-            if cols and cols == self._prev_colours:
-                self.colours = list(cols)
-            self._prev_colours = cols if cols else None
+            if tokens_ok:
+                if cols and cols == self._prev_colours:
+                    self.colours = list(cols)
+                self._prev_colours = cols if cols else None
         elif cols != self.colours:
             extra = [c for c in cols if c not in self.colours]
             missing = [c for c in self.colours if c not in cols]
-            if extra or missing:
+            if (extra or missing) and tokens_ok and self._streak("colours", tuple(cols)):
+                warns.append(f"{self.relock_frames} frames in a row show the players " + ", ".join(cols) + " (not "
+                             + ", ".join(self.colours) + "): the player list is corrected")
+                self.colours = list(cols)
+            elif extra or missing:
                 self._warn_once(warns, "players-differ",
                                 "a frame shows other players (" + ", ".join(cols) + ") than the game ("
                                 + ", ".join(self.colours) + "); the missing keep their last values")
+        elif tokens_ok:
+            self._relock.pop("colours", None)
         order = self.colours if self.colours is not None else cols
+        # --- pieces: votes of clean frames of the locked board ------------------------------------
+        if self.colours is not None:
+            b = {v: x for v, x in b.items() if x[0] in self.colours}
+            r = {e: c for e, c in r.items() if c in self.colours}
+        if tokens_ok and self.colours is not None and (self.hexes is None or hsig == self.hexes):
+            self._history.append((b, r))
+            recent = list(self._history)[-self.window:]
+            for v, (col, _) in b.items():
+                n_any = sum(1 for hb, _ in recent if hb.get(v, ("",))[0] == col)
+                n_city = sum(1 for hb, _ in recent if hb.get(v) == (col, True))
+                cur = self.buildings.get(v)
+                if cur is None:
+                    if n_any >= self.votes:
+                        self.buildings[v] = (col, n_city >= self.votes)
+                elif cur[0] == col:
+                    if not cur[1] and n_city >= self.votes:
+                        self.buildings[v] = (col, True)
+                elif n_any >= self.votes:
+                    self._warn_once(warns, f"vertex-{v}", f"vertex {v}: a {col} building is seen where {cur[0]}'s was "
+                                                          "recorded; the recorded one is kept unless read steadily")
+            for e, col in r.items():
+                if e not in self.roads and sum(1 for _, hr in recent if hr.get(e) == col) >= self.votes:
+                    self.roads[e] = col
+            self._steady_fix(warns)
         # shown: the confirmed pieces plus what this frame shows on free spots (provisional: a piece
         # seen once is on screen now, but only the memory keeps it when a later frame misses it)
         shown_b = dict(self.buildings)
@@ -720,13 +843,33 @@ class BoardMemory:
         merged["players"] = players
         return BoardUpdate(parsed=merged, warnings=warns, new_game=new_game, locked=self.hexes is not None)
 
-    def revote(self) -> Optional[BoardUpdate]:
-        """The frame did not change: its (last) parse counts again - a piece still on an unchanged
-        screen is confirmed without parsing the same pixels twice."""
-        if self.last is None:
-            return None
-        parsed, conf = self.last
-        return self.update(parsed, conf, fresh=False)
+    def _steady_fix(self, warns: List[str]) -> None:
+        """A remembered piece read otherwise - another colour, or nothing - in ``steady`` of the last
+        ``steady_window`` votes is replaced / removed (the first reading was wrong).  The same
+        colour's settlement never replaces its city (a city is never downgraded)."""
+        if len(self._history) < self.steady_window:
+            return
+        hist = list(self._history)[-self.steady_window:]
+
+        def desc(x: Any) -> str:
+            if x is None:
+                return "nothing"
+            return f"a {x[0]} {'city' if x[1] else 'settlement'}" if isinstance(x, tuple) else f"a {x} road"
+        for kind, memo, reads in (("vertex", self.buildings, [hb for hb, _ in hist]),
+                                  ("edge", self.roads, [hr for _, hr in hist])):
+            for k, cur in list(memo.items()):
+                col = cur[0] if kind == "vertex" else cur
+                other = [x for x in (h.get(k) for h in reads)
+                         if x is None or (x[0] if kind == "vertex" else x) != col]
+                alt = max(set(other), key=other.count) if other else cur
+                if other.count(alt) < self.steady:
+                    continue
+                if alt is None:
+                    del memo[k]
+                else:
+                    memo[k] = alt
+                warns.append(f"{kind} {k}: {desc(alt)} read in {self.steady} of the last {self.steady_window} clean "
+                             f"frames where {desc(cur)} was recorded; corrected")
 
 
 # ---------------------------------------------------------------------------
@@ -798,7 +941,9 @@ def evaluate_offer(state: GameState, me: int, proposer: int, give: Sequence[int]
     the verdict's ``lines``, a counter-offer it values :data:`COUNTER_MARGIN` above the rules'
     answer becomes the verdict, and a disagreement on accept / reject is said in the reason.  A
     hand that cannot pay ``get`` is always a reject (with the warning of
-    :func:`catanbot.cli.offer_affordability_warnings`).
+    :func:`catanbot.cli.offer_affordability_warnings`).  Only held cards can be offered: the
+    determinization is one where the proposer holds ``give``; when the count allows none (it is
+    behind the log, or wrong) the offer is judged on the public view, with a warning.
     """
     from ..cli import offer_affordability_warnings
     from ..counteroffers import offer_response_report
@@ -839,8 +984,17 @@ def evaluate_offer(state: GameState, me: int, proposer: int, give: Sequence[int]
     belief = None
     if tracker is not None and getattr(tracker, "counter", None) is not None:
         try:
-            decision = tracker.determinize(tracker.public_view(s), rng)
-            belief = tracker.counter
+            pub = tracker.public_view(s)
+            for _ in range(20):      # only held cards can be offered: a hand of the count that holds them
+                decision = tracker.determinize(pub, rng)
+                if all(decision.players[proposer].resources[r] >= give[r] for r in range(5)):
+                    belief = tracker.counter
+                    break
+            else:                    # the count is behind the log, or wrong
+                from .. import actions as A
+                base.warnings.append(f"the card count says {pc} cannot hold {A._counts_str(give)} (a missed or "
+                                     "misread log entry?); the offer is judged on the public view")
+                decision = s
         except Exception as ex:   # a count that does not fit this state: judge on the public view
             base.warnings.append(f"card count not usable for this offer ({ex})")
             decision = s
@@ -1169,6 +1323,7 @@ class LiveSession:
         self._detect_wait = 0
         self._read_failures = 0
         self._pending_warnings: List[str] = []
+        self._offer_wait: List[LogEntry] = []    # open offers read before there was a game state
         # the log reader
         self._logocr = None
         self._reader = log_reader
@@ -1176,11 +1331,11 @@ class LiveSession:
         self.cache = log_cache
         if self.read_log and self._reader is None:
             self._logocr = load_logocr()
-            if self._logocr is None:
+            self._reader = getattr(self._logocr, "read_log_panel", None)
+            if not callable(self._reader):
+                self._logocr = self._reader = None
                 self.read_log = False
                 self._pending_warnings.append(logocr_missing_message())
-            else:
-                self._reader = getattr(self._logocr, "read_log_panel")
         if self.read_log and self._finder is None and self._logocr is not None:
             self._finder = getattr(self._logocr, "find_log_panel", None)   # an injected reader finds its own panel
         if self.read_log and self.cache is None and self._logocr is not None and hasattr(self._logocr, "LineCache"):
@@ -1291,7 +1446,7 @@ class LiveSession:
         log_t, rest_t = self._split(thumb, box, factor)
         board_changed = self._board_region.changed(rest_t)
         log_changed = self.read_log and log_t is not None and self._log_region.changed(log_t)
-        need_log = self.read_log and (log_changed or bool(self.stream.pending)
+        need_log = self.read_log and (log_changed or self.stream.waiting
                                       or (box is None and self._detect_wait == 0))
         changed_any = False
         # --- the game log (first: it may find the panel the board parse must leave out) -------------
@@ -1317,10 +1472,7 @@ class LiveSession:
                 t0 = time.perf_counter()               # the new game's log, read into the fresh stream
                 self._read_log(pil, arr, box, upd)
                 upd.ocr_ms = (upd.ocr_ms or 0.0) + (time.perf_counter() - t0) * 1e3
-        elif self.memory.pending:
-            bu = self.memory.revote()                      # an unchanged frame confirms what it shows
-            if bu is not None:
-                self._apply_board(bu, [], upd)
+        # (an unchanged board is not read again, and it is no second observation of what it shows)
         upd.skipped = not changed_any
         if not changed_any:
             self.skipped += 1
@@ -1475,15 +1627,19 @@ class LiveSession:
         upd.new_game = True
         self.new_games += 1
         self.stream.reset()
-        self._fed_upto = 0
+        self._offer_wait = []
+        self._drop_count(upd, "new game", "of the last game")
         self._tracker_due = False
+
+    def _drop_count(self, upd: LiveUpdate, why: str, whose: str) -> None:
+        """The card count starts over (the session file so far is kept as ``FILE.previous``)."""
+        self._fed_upto = 0
         if self.tracker is not None and self.session_path and os.path.exists(self.session_path):
             try:
                 os.replace(self.session_path, self.session_path + ".previous")
-                self._warn(upd, f"new game: the card-count session of the last game was kept as "
-                                f"{self.session_path}.previous")
+                self._warn(upd, f"{why}: the card-count session {whose} was kept as {self.session_path}.previous")
             except OSError as ex:
-                self._warn(upd, f"new game: could not keep the old session file: {ex}")
+                self._warn(upd, f"{why}: could not keep the old session file: {ex}")
         self.tracker = None
         self._tracker_off = False
         self.card_count = None
@@ -1505,12 +1661,18 @@ class LiveSession:
         return None
 
     def _offers(self, upd: LiveUpdate) -> None:
-        if not upd.new_entries or self.state is None or self.me is None:
+        # an offer read before there is a game state (the board not read yet) waits while it is open
+        new = [e for e in upd.new_entries if e.kind in ("offer", "counter") and e.countable]
+        todo = [e for e in self._offer_wait + new if self.stream.is_open(e)]
+        if self.state is None or self.me is None:
+            self._offer_wait = todo
             return
+        self._offer_wait = []
         me = self.me
-        for e in upd.new_entries:
-            if e.kind not in ("offer", "counter") or not e.countable or not self.stream.is_open(e):
-                continue
+        tracker = self.tracker
+        if tracker is not None and [p.color for p in self.state.players] != list(tracker.colors):
+            tracker = None                            # counts other players (the list is being corrected)
+        for e in todo:
             ev = e.event
             proposer = self._seat(ev.player)
             if proposer is None:
@@ -1529,8 +1691,10 @@ class LiveSession:
             if ev.cards is None or ev.get is None:
                 self._warn(upd, f"offer not readable (cards missing): '{e.text}'")
                 continue
+            if tracker is not None:
+                self._count_upto(e.index + 1, upd)    # the count must not be behind the log at the offer
             try:
-                v = evaluate_offer(self.state, me, proposer, ev.cards, ev.get, tracker=self.tracker,
+                v = evaluate_offer(self.state, me, proposer, ev.cards, ev.get, tracker=tracker,
                                    evaluator=self._evaluator(), seed=self.seed + e.index)
             except Exception as ex:
                 self._warn(upd, f"offer evaluation failed for '{e.text}': {type(ex).__name__}: {ex}")
@@ -1553,6 +1717,9 @@ class LiveSession:
             return
         if not self.state.players or self.memory.colours is None:
             return                                    # wait until the player list is settled
+        if self.tracker is not None and [p.color for p in self.state.players] != list(self.tracker.colors):
+            # the player list was corrected (BoardMemory re-locked it): the count starts over with it
+            self._drop_count(upd, "the players were re-read", "so far")
         if self.tracker is None:
             from ..colonist_log import ColonistLogTracker, SessionError
             try:
@@ -1562,31 +1729,19 @@ class LiveSession:
                 self._warn(upd, f"card counting is off: {ex}")
                 return
             self._tracker_due = True
-        if [p.color for p in self.state.players] != list(self.tracker.colors):
-            self._warn(upd, "the players on screen differ from the card count's; the count is not updated")
-            return
         if not self._tracker_due or self.memory.suspect:
             return
         # the screen's hand sizes must not be ahead of the confirmed log: never while an entry on
         # screen waits for confirmation; right after a board change wait a frame (animations),
         # but at most two
-        if self.stream.pending:
+        if self.stream.waiting:
             return
         if board_changed and self._defer < 2:
             self._defer += 1
             return
         self._defer = 0
         self._tracker_due = False
-        # the confirmed entries not fed yet, after an overlap with the ones fed before (the tracker
-        # aligns on it); a gap among them splits the window so the tracker sees the gap too
-        start = max(0, self._fed_upto - self.tracker_overlap)
-        g = self.stream.last_gap_index
-        if g >= self._fed_upto and g > start:
-            windows = [[e.event for e in self.stream.entries[start:g] if e.countable and e.event is not None],
-                       self.stream.window(g)]
-        else:
-            windows = [self.stream.window(start)]
-        windows = [w for w in windows if w]
+        windows = self._windows(len(self.stream.entries))
         bank = list(self.state.bank) if (self.parsed or {}).get("bank") else None
         try:
             self.tracker.update(windows, self.state, bank)
@@ -1608,6 +1763,39 @@ class LiveSession:
                 self.tracker.save(self.session_path)
             except OSError as ex:
                 self._warn(upd, f"could not save the card-count session {self.session_path}: {ex}")
+
+    def _windows(self, end: int) -> List[List[Any]]:
+        """The confirmed entries before ``end`` not fed yet, after an overlap with the ones fed before
+        (the tracker aligns on it); a gap among them splits the window so the tracker sees the gap too."""
+        start = max(0, self._fed_upto - self.tracker_overlap)
+        g = self.stream.last_gap_index
+        cuts = [start, g, end] if self._fed_upto <= g < end and g > start else [start, end]
+        ents = self.stream.entries
+        windows = [[e.event for e in ents[a:b] if e.countable and e.event is not None] for a, b in zip(cuts, cuts[1:])]
+        return [w for w in windows if w]
+
+    def _count_upto(self, end: int, upd: LiveUpdate) -> None:
+        """Before an offer is judged, the tracker consumes the confirmed entries up to it - without
+        the reconciliation with the screen, whose hand sizes may be ahead of the confirmed log (the
+        next full update does that).  Not across a gap: only the hand sizes resynchronise the count."""
+        tr = self.tracker
+        if (tr is None or getattr(tr, "counter", None) is None or end <= self._fed_upto or self.memory.suspect
+                or self._fed_upto <= self.stream.last_gap_index < end):
+            return
+        tr.warnings, tr.new_entries, tr._unknown_names, tr._state = [], 0, [], self.state
+        try:
+            for w in self._windows(end):
+                tr._window_bank = None
+                tr._consume(list(w), None)          # ColonistLogTracker.update's consuming step, no reconcile
+        except Exception as ex:
+            self._warn(upd, f"card count update failed: {type(ex).__name__}: {ex}")
+            return
+        finally:
+            tr._state, tr._rest, tr._target, tr._window_bank = None, (), None, None
+        self._fed_upto = end
+        self._tracker_due = True
+        for w in tr.warnings:
+            self._warn(upd, f"card count: {w}")
 
     # --- recording ---------------------------------------------------------------------------
     def _safe_record(self, name: str, obj: Dict[str, Any], upd: LiveUpdate) -> None:

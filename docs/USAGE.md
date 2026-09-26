@@ -332,11 +332,18 @@ What makes it safe to leave running (`vision/live.py`):
   skipped (about 6 ms at 1280x800 and 1920x1080), a frame where only the log
   moved costs the OCR only, and the board parser (about 1 s) runs only when
   the rest of the screen changed.
-* **Board memory** - the tiles, numbers and ports are locked once two
-  frames agree, so a popup or trade window over the board cannot change
-  them (a frame that disagrees is reported once).  Pieces never disappear
-  because one frame missed them: a road / settlement / city is kept once
-  seen in 2 of the last 3 reads, and a settlement only ever becomes a city.
+* **Board memory** - only a clean read counts: a frame parsed afresh (an
+  unchanged screen is not a second look) with every number token read (a
+  popup hides tokens, and its colours would read as pieces).  The tiles,
+  numbers, ports and the player list are locked once two clean reads in a
+  row agree, so a popup or trade window over the board cannot change them
+  (a frame that disagrees is reported once); should 3 clean reads in a row
+  agree on something else, the first lock was wrong and is corrected (said
+  once).  Pieces count only in the players' colours and only from clean
+  reads of the locked board, and never disappear because one frame missed
+  them: a road / settlement / city is kept once seen in 2 of the last 3
+  clean reads, a settlement becomes a city the same way, and a remembered
+  piece is changed only when 4 of the last 5 clean reads show otherwise.
   A new game (another map in 3 frames in a row, every number token read; or
   the same map with nearly all pieces gone) resets the board, the log and
   the card count, and says so; a trade window over part of the board never
@@ -344,20 +351,27 @@ What makes it safe to leave running (`vision/live.py`):
 * **Stable log** - each new log entry is confirmed once it reads the same
   in two frames in a row (or with high confidence), in log order, exactly
   once; an entry already confirmed is never re-read differently (the card
-  counter would count it twice).  A popup over the panel changes nothing;
-  scrolling the panel up is recognised; if the log moved on while the
-  screen was not watched (another window in front), the jump is reported
-  and the card count resynchronises from the hand sizes on screen.
+  counter would count it twice).  An entry the reader cannot read is kept
+  in order, not counted, once the entries after it are read (or it
+  scrolled out).  A popup over the panel changes nothing; scrolling the
+  panel up is recognised however long it stays there; if the log moved on
+  while the screen was not watched (another window in front), the jump is
+  reported and the card count resynchronises from the hand sizes on
+  screen.
 * **Card count** - the counter is fed only the confirmed entries plus the
   hand sizes / your hand / the bank of the latest frame, once the log has
-  settled (never while an entry on screen is still unconfirmed).  With
+  settled (never while an entry on screen is still unconfirmed, unless it
+  stayed unreadable for 3 reads).  With
   `--session FILE` it is saved after every update and continued after a
   restart; a new game moves the old file to `FILE.previous`.
 * **Offers** - a new offer (or a counter-offer to your offer) from an
   opponent is judged at once: the trade rules give accept / reject (with
   the counted hands when the session runs), the accept / reject / counter
   look-ahead over the proposer's turn gives the best answer, and a
-  counter-offer is suggested when it is clearly worth more.  Your own
+  counter-offer is suggested when it is clearly worth more.  The count is
+  first brought up to the offer; if it still says the proposer cannot hold
+  what they offer, the offer is judged on what is public (with a
+  warning).  An offer read before the board was waits for it.  Your own
   offers are skipped; an offer that was already accepted, cancelled or
   overtaken by the next roll is not judged.
 * **No spam, no crash** - every warning is printed once per session; a
@@ -442,8 +456,14 @@ stopped: 812 frames (640 unchanged, 150 board reads, 95 log reads), 214 log entr
   it `watch` and `analyze` read the board only (one warning) and `ocr`,
   `ocr-teach`, `ui-profile --detect` stop with an error.
 * An entry misread with high confidence the first time it is seen is
-  confirmed as read (teach the reader).  A panel left scrolled up past
-  everything read so far for 20 s is taken for a jump of the log.
+  confirmed as read (teach the reader).  After a jump of the log, overlap
+  lines misread with high confidence can be taken as new entries, and a
+  jump whose first entry reads like the last one read (a repeated offer)
+  loses that entry - both reported as a jump, the count resynchronises.
+  Scrolling down inside a panel scrolled up past everything read looks
+  like the log growing after a jump.
+* The board, the players and the pieces lock from two clean reads: the
+  first ones come with the second change of the screen outside the log.
 * A popup covering the log only delays it; a popup covering the board for a
   frame only hides new pieces for that frame.  A board change the thumbnail
   cannot see (a one-digit change smaller than a few pixels) is picked up
