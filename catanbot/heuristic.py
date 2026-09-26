@@ -17,6 +17,7 @@ import numpy as np
 from . import accel as _accel  # optional C++ extension (catanbot_core); see docs/CPP.md
 from . import actions as A
 from . import board as B
+from . import placement as _pl  # module attributes read at call time (PORT_MODEL, PORT_GENERIC_ONCE: tunables)
 from .actions import Action
 from .counting import expected_hidden_vp
 from .devcards import best_year_of_plenty, should_buy_dev, should_play_monopoly
@@ -30,6 +31,12 @@ from .trading import candidate_offers, offer_is_feeding_leader, plan_trades, sho
 
 BUILD_VALUE = {"city": 3.2, "settlement": 2.8, "dev card": 1.0, "road": 0.5}
 EXPOSURE_WEIGHT = 0.25  # weight of robber.steal_exposure_fast in static_value (tunable; the C++ port keeps its own 0.25)
+# static_value's port term (tunables, needs_python_evaluator: cpp/heuristic.cpp keeps constexpr copies of these
+# defaults; docs/PRIORITY_PLAN.md step 4 "ports.constants").  +PORT_STATIC_GENERIC per building on a 3:1 port,
+# PORT_STATIC_2TO1_BASE + PORT_STATIC_2TO1_SLOPE x robber-free production of t per building on a 2:1 t port.
+PORT_STATIC_GENERIC = 0.2
+PORT_STATIC_2TO1_BASE = 0.15
+PORT_STATIC_2TO1_SLOPE = 4.0
 
 
 def longest_road_length(state: GameState, player: int) -> int:
@@ -140,16 +147,57 @@ def static_value(state: GameState, player: int) -> float:
             score += 0.15 * lr
     if state.largest_army_owner != player:
         score += 0.45 * p.played_knights
-    # Ports that match our production.
-    for v in p.settlements + p.cities:
+    # Ports that match our production (static_port_term; the default path is spelled out here so that the
+    # arithmetic, and the C++ parity, stay exactly today's).
+    if _pl.PORT_MODEL or _pl.PORT_GENERIC_ONCE:
+        score += static_port_term(state, p.settlements + p.cities, prod_free, scarcity)
+    else:
+        for v in p.settlements + p.cities:
+            t = state.ports.get(v)
+            if t is None:
+                continue
+            if t == B.PORT_GENERIC:
+                score += PORT_STATIC_GENERIC
+            else:
+                score += PORT_STATIC_2TO1_BASE + PORT_STATIC_2TO1_SLOPE * prod_free[t]
+    return score
+
+
+def static_port_term(state: GameState, buildings: Sequence[int], prod_free: Sequence[float],
+                     scarcity: Optional[Sequence[float]] = None) -> float:
+    """``static_value``'s port term for the buildings ``buildings`` (settlements and cities) whose robber-free
+    production is ``prod_free`` - also what ``conversion.PORT_LEDGER`` and the ports flow provider cancel.
+
+    * ``placement.PORT_MODEL = 0`` (default): ``PORT_STATIC_GENERIC`` per building on a 3:1 port (once in all with
+      ``placement.PORT_GENERIC_ONCE``) and ``PORT_STATIC_2TO1_BASE + PORT_STATIC_2TO1_SLOPE x prod_free[t]`` per
+      building on a 2:1 ``t`` port;
+    * 1 / 2 (ports.surplus_value): ``placement.PORT_STATIC_W x PE(prod_free; 4:1 everywhere -> our ratios)``, the
+      calibrated card value of all our ports jointly (a second 3:1 adds nothing);
+    * 3: the 2:1 constants per building plus the calibrated 3:1 part ``PORT_STATIC_W x PE(prod_free; the 2:1 ports'
+      ratios -> our ratios)``.
+    """
+    model = _pl.PORT_MODEL
+    if model in (1, 2):
+        sc = resource_scarcity(state) if scarcity is None else scarcity
+        return _pl.PORT_STATIC_W * _pl.port_pe(prod_free, [4] * 5, _pl.ratios_of(state, buildings), sc)[0]
+    out = 0.0
+    generic = 0
+    for v in buildings:
         t = state.ports.get(v)
         if t is None:
             continue
         if t == B.PORT_GENERIC:
-            score += 0.2
+            generic += 1
+            if model == 3 or (_pl.PORT_GENERIC_ONCE and generic > 1):
+                continue
+            out += PORT_STATIC_GENERIC
         else:
-            score += 0.15 + 4.0 * prod_free[t]
-    return score
+            out += PORT_STATIC_2TO1_BASE + PORT_STATIC_2TO1_SLOPE * prod_free[t]
+    if model == 3 and generic:
+        sc = resource_scarcity(state) if scarcity is None else scarcity
+        rho = _pl.ratios_of(state, buildings)
+        out += _pl.PORT_STATIC_W * _pl.port_pe(prod_free, _pl.ratios_of(state, buildings, generic=False), rho, sc)[0]
+    return out
 
 
 class HeuristicEvaluator:

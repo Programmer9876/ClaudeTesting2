@@ -820,6 +820,14 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
         advice["win_paths"] = race_lines(state, me)
     except Exception as ex:  # pragma: no cover
         advice["win_paths"] = [f"(win paths unavailable: {ex})"]
+    if getattr(args, "port_advice", False) or _port_advice_switch():
+        # ports.advice (catanbot/portvalue.py, off by default): is a port spot worth its land alternative, the roads,
+        # the race and who wants it.  Display only; the advisor path, never the search's per-action explanations.
+        try:
+            from .portvalue import advice_lines
+            advice["ports"] = advice_lines(state, me, [r.action for r in results[:5]])
+        except Exception as ex:  # pragma: no cover
+            advice["ports"] = [f"(port advice unavailable: {ex})"]
     if tracker is not None:
         from .inference import is_fully_known
         cc = tracker.report()
@@ -859,6 +867,12 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
     return report
 
 
+def _port_advice_switch() -> bool:
+    """``portvalue.ADVICE`` (a registered tunable, default 0) when the module is loaded (``tuning`` loads it)."""
+    pv = sys.modules.get("catanbot.portvalue")
+    return pv is not None and bool(pv.ADVICE)
+
+
 def print_report(state: GameState, me: int, report: Dict[str, Any], parse_warnings: Sequence[str] = (),
                  confidence: Optional[Dict[str, float]] = None) -> None:
     print(_section("Board"))
@@ -894,7 +908,7 @@ def print_report(state: GameState, me: int, report: Dict[str, Any], parse_warnin
               ("offer", "Offer response (accept / reject / counter, after the proposer's turn)"),
               ("trading", "Trading"), ("seven_risk", "7-protection"), ("robber", "Knight / robber"),
               ("dev_cards", "Development cards"), ("politics", "Politics"), ("win_paths", "Win paths"),
-              ("opponents", "Opponents")]
+              ("ports", "Ports (is this port worth it?)"), ("opponents", "Opponents")]
     for key, title in titles:
         lines = report["advice"].get(key) or []
         if not lines:
@@ -1342,6 +1356,10 @@ def _add_recommend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--paths", type=float, default=0.0, metavar="W",
                    help="search with the win-path race term at weight W (0 = off, the default; see docs/STRATEGY.md "
                         "'Win-path races'); the 'Win paths' advice section is shown either way")
+    p.add_argument("--port-advice", action="store_true",
+                   help="also print 'is this port worth it' lines: cards a port spot saves vs the best land spot, the "
+                        "roads each needs, the race for it and who wants it (off by default; see docs/STRATEGY.md "
+                        "'Ports')")
     p.add_argument("--trade-floor", type=float, default=None, metavar="W",
                    help="never recommend proposing or accepting a player trade that does not beat your own bank / port "
                         "rate for the same cards by W x the partner's gain x their danger (0 = ties go to the bank); "

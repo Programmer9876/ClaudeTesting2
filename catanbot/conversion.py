@@ -183,15 +183,12 @@ def cost_per_roll(state: GameState, settlements: Sequence[int], cities: Sequence
 
 def static_port_credit(state: GameState, settlements: Sequence[int], cities: Sequence[int]) -> float:
     """``heuristic.static_value``'s port term for these buildings: +0.2 per building on a 3:1 port, 0.15 + 4 x the
-    robber-free production of ``t`` per building on a 2:1 ``t`` port (what :data:`PORT_LEDGER` cancels)."""
+    robber-free production of ``t`` per building on a 2:1 ``t`` port (what :data:`PORT_LEDGER` cancels) - with the
+    ports area's switches (``heuristic.static_port_term``: the port constants, ``placement.PORT_MODEL``) whatever
+    static's port term currently is, so the saving always replaces exactly static's credit (one owner)."""
+    from .heuristic import static_port_term   # heuristic imports the strategy modules; this one stays light
     prod, _ratios = economy(state, settlements, cities)
-    out = 0.0
-    for v in list(settlements) + list(cities):
-        t = state.ports.get(v)
-        if t is None:
-            continue
-        out += 0.2 if t == B.PORT_GENERIC else 0.15 + 4.0 * prod[t]
-    return out
+    return static_port_term(state, list(settlements) + list(cities), prod)
 
 
 def rolls_left(state: GameState) -> float:

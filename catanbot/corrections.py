@@ -4,8 +4,9 @@ Several strategy terms are search-time corrections on top of the static value: a
 points ``C_i`` added to ``heuristic.static_value`` before the evaluator's softmax, computed in Python on top of
 the C++ static values, so that neither ``static_value`` nor ``cpp/*`` changes and no ``needs_python_evaluator``
 re-exec is needed.  Win-path races (``winpaths.PathsContext``) were the first; the conversion cost
-(``conversion.ConversionContext``) and acq.progress (``acquisition.AcqContext``, the trades area) followed; the ports
-/ robber terms of docs/PRIORITY_PLAN.md (steps 4-5) are the next.  Instead of each wrapping the evaluator on its own
+(``conversion.ConversionContext``), acq.progress (``acquisition.AcqContext``, the trades area) and the ports flow
+provider (``portvalue.PortFlowContext``, switched by the module weight ``ports.FLOW_KAPPA``; it stands down when
+``conv`` owns our seat's port value) followed; the robber terms of docs/PRIORITY_PLAN.md (step 5) are the next.  Instead of each wrapping the evaluator on its own
 (and wrapping each other, three softmaxes per leaf), they are *providers* of one :class:`CorrectionHub`:
 
 * a provider has ``corrections(state) -> per-seat points`` (``None`` or all zeros = nothing to add), and
@@ -32,6 +33,7 @@ switched on, and then winpaths' ``PathsContext`` is its first provider (built th
 from __future__ import annotations
 
 import math
+import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -52,6 +54,14 @@ def static_values(state: GameState) -> List[float]:
             if not _accel._unsupported(exc):
                 raise
     return _accel.static_values(state)
+
+
+def ports_flow_on() -> bool:
+    """``ports.FLOW_KAPPA != 0`` (catanbot/portvalue.py).  Read through ``sys.modules``: an override of it imports
+    the module (``tuning.apply`` resolves the target), so a process that never imported it has it at 0 - and the
+    default bot never imports portvalue."""
+    pv = sys.modules.get("catanbot.portvalue")
+    return pv is not None and bool(pv.FLOW_KAPPA)
 
 
 def _softmax(z: Sequence[float], T: float) -> List[float]:
@@ -90,22 +100,37 @@ class CorrectionHub:
             self.temperature = 16.0
         self.stats: Dict[str, Any] = {"evals": 0, "corrected": 0, "passed": 0, "chance_leaves": 0,
                                       "chance_states": 0, "seconds": 0.0}
+        self.port_owner: Optional[str] = None     # for_search: "conv" / "flow" / None (see there)
 
     @classmethod
     def for_search(cls, base, root: GameState, me: int, cfg) -> "CorrectionHub":
         """The providers ``cfg`` switches on, in the fixed order: winpaths (``paths``), conversion (``conv``),
-        acquisition (``acq``, catanbot/acquisition.py acq.progress)."""
+        acquisition (``acq``, catanbot/acquisition.py acq.progress), ports flow (``ports.FLOW_KAPPA != 0``, a module
+        weight of catanbot/portvalue.py: :func:`ports_flow_on`).
+
+        One owner for our seat's port value (``port_owner``): ``conv`` credits our ports through its conversion
+        saving and cancels static's port credit, so with ``conv`` on the ports flow provider is not built
+        (``port_owner = "conv"``); with only the flow switch on it owns it (``"flow"``); else None (static's
+        constants)."""
         providers: List[Any] = []
+        owner: Optional[str] = None
         if getattr(cfg, "paths", 0):
             from . import winpaths   # the same constructor as paths = 1 alone
             providers.append(winpaths.PathsEvaluator.for_search(base, root, me, cfg).ctx)
         if getattr(cfg, "conv", 0):
             from .conversion import ConversionContext
             providers.append(ConversionContext(root, me))
+            owner = "conv"
         if getattr(cfg, "acq", 0):
             from .acquisition import AcqContext
             providers.append(AcqContext.for_search(root, me, cfg))
-        return cls(base, providers)
+        if ports_flow_on() and owner is None:
+            from .portvalue import PortFlowContext
+            providers.append(PortFlowContext(root, me))
+            owner = "flow"
+        hub = cls(base, providers)
+        hub.port_owner = owner
+        return hub
 
     # --- corrections --------------------------------------------------------------------------
     def corrections(self, state: GameState) -> Optional[List[float]]:

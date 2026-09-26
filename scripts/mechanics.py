@@ -15,7 +15,8 @@ and returns what the user's areas are supposed to change:
   the first post-setup settlement / city), ``settle_before_city`` (1 if the first post-setup build of the two is
   a settlement), ``port_settled`` / ``port_round`` / ``port_kind`` (first building on a port node; round 0 =
   setup);
-* bank trades: counts at 4:1 / 3:1 / 2:1, ``share_4to1``, cards given;
+* bank trades: counts at 4:1 / 3:1 / 2:1, ``share_4to1``, cards given, ``cards_saved`` (4 x cards received -
+  cards given: the cards our ports saved over trading everything at 4:1; the ports gate's primary metric);
 * player trades (3.3 domestic trading): offers made / received, trades done, cards gained;
 * robber: moves by us, moves onto the VP leader's hexes (``robber_on_leader``) and the leader's pips blocked,
   rolls with the robber on our hexes, production cards we lost to the robber (``cards_lost_block``) and our
@@ -409,6 +410,7 @@ def game_mechanics(items: Sequence[Sequence[Any]], board: Dict[str, Any], our_co
     m["port_round"] = port_round
     m["port_kind"] = port_kind
     m["share_4to1"] = (m["bank_4to1"] / m["bank_trades"]) if m["bank_trades"] else None
+    m["cards_saved"] = 4 * m["bank_trades"] - m["bank_cards_given"]
     m["robber_leader_share"] = (m["robber_on_leader"] / m["robber_moves"]) if m["robber_moves"] else None
     m["knights_held_end"] = sum(1 for cd, _ in devs if cd == "KNIGHT")
     m["distinct_produced"] = len(produced_types)
@@ -594,8 +596,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"{br['games']} games from {len(paths)} file(s); replayed hands equal the logged final hands in "
           f"{br['hand_checks'][1]}/{br['hand_checks'][0]} seat-games")
     print(f"{'metric':24} {'ours':>10} {'opponents':>10}")
-    for k in list(KEY_METRICS) + ["pooled_share_4to1", "distinct_produced", "settlements_built", "bank_trades",
-                                  "robber_moves", "robber_leader_share", "robber_on_us_rolls", "discarded",
+    for k in list(KEY_METRICS) + ["pooled_share_4to1", "cards_saved", "distinct_produced", "settlements_built",
+                                  "bank_trades", "robber_moves", "robber_leader_share", "robber_on_us_rolls", "discarded",
                                   "stolen_by_us", "monopoly_haul", "dev_bought", "dev_held10"]:
         a, o = br["ours"].get(k), br["opponents"].get(k)
 

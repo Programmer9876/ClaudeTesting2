@@ -451,14 +451,9 @@ def conversion_points(state: GameState, player: int, vertices: Sequence[int]) ->
 
 def spot_port_bonus(state: GameState, player: int, v: int, own_prod: Optional[Sequence[float]] = None) -> float:
     """The port part of ``placement.score_settlement_spot`` for ``v`` (0 without a port): what the conversion
-    policy cancels under ``conversion.PORT_LEDGER``, so that a port spot gains exactly its trade savings."""
-    port = state.ports.get(v)
-    if port is None:
-        return 0.0
-    if port == B.PORT_GENERIC:
-        return 1.0
-    own = P.player_production(state, player, ignore_robber=True) if own_prod is None else own_prod
-    return 0.5 + 6.0 * (own[port] + P.vertex_production(state, v, ignore_robber=True)[port])
+    policy cancels under ``conversion.PORT_LEDGER``, so that a port spot gains exactly its trade savings
+    (``placement.spot_port_bonus``: 1.0 / 0.5 + 6 x by default, and whatever the ports area's switches make it)."""
+    return P.spot_port_bonus(state, player, v, own_prod)
 
 
 def _ledger() -> bool:

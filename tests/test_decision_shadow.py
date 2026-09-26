@@ -103,3 +103,33 @@ def test_proof_source_replays_one_archived_game():
     rows, games = DS.run_proof(SPEC, cands, ["robber", "knight"], paths[:1], 1, log=open(os.devnull, "w"))
     assert len(games) == 1 and games[0]["errors"] == 0
     assert rows and DS.summarize(rows, cands)["aa"]["changed"] == 0
+
+
+def test_settle_class_port_tags_and_summary():
+    """The ports screen's class (docs/PRIORITY_PLAN.md step 4): setup settlement placements and decisions with at
+    least two legal settlement spots; settle rows record the port under each arm's chosen settlement."""
+    from catanbot import actions as A
+    from catanbot import board as B
+    from catanbot import engine as E
+    from catanbot.state import new_game
+    s = new_game(4, rng=random.Random(3))
+    legal = E.legal_actions(s)
+    assert "settle" in DS.classes_of(s, legal) and "setup" in DS.classes_of(s, legal)
+    m = s.copy()
+    m.phase = "main"
+    assert "settle" not in DS.classes_of(m, [(A.BUILD_SETTLEMENT, 1), (A.END_TURN,)])
+    assert "settle" in DS.classes_of(m, [(A.BUILD_SETTLEMENT, 1), (A.BUILD_SETTLEMENT, 7), (A.END_TURN,)])
+    v_port = next(iter(s.ports))
+    v_land = next(v for v in range(B.NUM_VERTICES) if v not in s.ports)
+    assert DS.port_tag(s, (A.SETUP_SETTLEMENT, v_port)) == B.PORT_NAMES[s.ports[v_port]]
+    assert DS.port_tag(s, [A.BUILD_SETTLEMENT, v_land]) == "" and DS.port_tag(s, (A.END_TURN,)) is None
+    rows = [{"cls": ["setup", "settle"], "def": ["x"], "ms_def": 1.0, "cand": {"c": {"a": ["y"], "ms": 1.0}},
+             "ports": {"def": "", "c": "3:1"}},
+            {"cls": ["main", "settle"], "def": ["x"], "ms_def": 1.0, "cand": {"c": {"a": ["x"], "ms": 1.0}},
+             "ports": {"def": "wheat", "c": "wheat"}},
+            {"cls": ["main"], "def": ["x"], "ms_def": 1.0, "cand": {"c": {"a": ["x"], "ms": 1.0}}}]
+    sp = DS.summarize(rows, [DS.Candidate("c", {}, {})])["c"]["settle_ports"]
+    assert sp["setup"]["def"] == {"n": 1, "settled": 1, "port": 0, "generic": 0}
+    assert sp["setup"]["cand"] == {"n": 1, "settled": 1, "port": 1, "generic": 1}
+    assert sp["main"]["def"]["port"] == sp["main"]["cand"]["port"] == 1
+    assert "settle_ports" not in DS.summarize(rows[2:], [DS.Candidate("c", {}, {})])["c"]

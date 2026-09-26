@@ -20,12 +20,18 @@ weights and flags are installed with ``tuning.apply`` around the candidate searc
 ``SearchConfig`` field); a NAME without a dot is a bot-spec key (``expand=4``, ``paths=1``) whose ``SearchConfig``
 fields are replaced.  An A/A candidate (``aa``: nothing changed) is always added: it must change 0 decisions
 (``aa_ok``), else the shadow itself is nondeterministic and its numbers mean nothing.  A tunable read by the
-static evaluator (``needs_python_evaluator``) re-executes the script with ``CATANBOT_NO_ACCEL=1``.
+static evaluator (``needs_python_evaluator``) re-executes the script with ``CATANBOT_NO_ACCEL=1``; with
+``--py-shadow`` it does not: only the shadow searches (the default re-search, the A/A and every candidate) run on
+the Python evaluator, while the game's own decisions stay on C++ (a proof replay ignores them anyway), which makes a
+Python-evaluator screen of hundreds of proof games affordable.
 
 Phase classes (``--phases``, default all): setup, roll, main, robber (the robber move after a 7), discard, trade
 (answering / selecting), knight (any decision where playing a knight is legal - the knight's hex and victim are part
-of that action) and buy_dev (buying a development card is legal).  A decision can be in several classes (roll +
-knight, main + buy_dev).  ``--main-every N`` shadows only every N-th main-phase decision that is in no other
+of that action), buy_dev (buying a development card is legal) and settle (a setup settlement placement, or a
+decision with at least two legal settlement spots: the ports screen's "multi-spot settlement decisions").  A
+decision can be in several classes (roll + knight, main + buy_dev, setup + settle).  Settle rows also record the
+port under each arm's chosen settlement (``ports``: the port name, "" for a settlement off the ports, None for
+another first action), summarised per candidate as ``settle_ports``.  ``--main-every N`` shadows only every N-th main-phase decision that is in no other
 covered class (main decisions are ~80% of all; the robber shadow samples 1 in 5).
 
 Output: per candidate the changed share overall and per class, the changed kinds (default kind -> candidate
@@ -52,7 +58,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-CLASSES = ("setup", "roll", "main", "robber", "discard", "trade", "knight", "buy_dev")
+PY_SHADOW = False     # --py-shadow: the shadow searches run on the Python evaluator (C++ switched off around them)
+CLASSES = ("setup", "roll", "main", "robber", "discard", "trade", "knight", "buy_dev", "settle")
 
 
 def _p95(xs: Sequence[float]) -> float:
@@ -121,7 +128,19 @@ def classes_of(state, legal) -> Tuple[str, ...]:
         out.append("knight")
     if any(a[0] == A.BUY_DEV for a in legal):
         out.append("buy_dev")
+    if ph == S.PHASE_SETUP_SETTLEMENT or sum(1 for a in legal if a[0] == A.BUILD_SETTLEMENT) >= 2:
+        out.append("settle")
     return tuple(out)
+
+
+def port_tag(state, action) -> Optional[str]:
+    """The port under a settlement action (its name, "" off the ports); None for any other action."""
+    from catanbot import actions as A
+    from catanbot import board as B
+    if not action or action[0] not in (A.SETUP_SETTLEMENT, A.BUILD_SETTLEMENT):
+        return None
+    t = state.ports.get(action[1])
+    return "" if t is None else B.PORT_NAMES[t]
 
 
 # ---------------------------------------------------------------------------
@@ -196,15 +215,19 @@ class ShadowBot:
         return dataclasses.replace(base, **repl) if repl else base
 
     def _search(self, state, me, cfg, k, overrides):
-        from catanbot import tuning
+        from catanbot import accel, tuning
         from catanbot.search import Searcher
         token = tuning.apply(overrides) if overrides else None
+        cpp = accel.AVAILABLE
+        if PY_SHADOW:
+            accel.AVAILABLE = False      # every evaluator site checks the flag at call time
         try:
             sr = Searcher(self.inner.evaluator, cfg, self.inner.model, self.inner.belief, self.inner.politics)
             t0 = time.process_time()
             res = sr.search(state, me, random.Random(k))
             dt = time.process_time() - t0
         finally:
+            accel.AVAILABLE = cpp
             if token is not None:
                 tuning.restore(token)
         return (list(res[0].action) if res else None), dt
@@ -224,6 +247,9 @@ class ShadowBot:
         for c in self.candidates:
             a1, t1 = self._search(state, me, self._config(c), k, {n: v for n, v in c.overrides.items()})
             row["cand"][c.label] = {"a": a1, "ms": round(1000.0 * t1, 3)}
+        if "settle" in cls:
+            row["ports"] = {"def": port_tag(state, a0)}
+            row["ports"].update({lab: port_tag(state, got["a"]) for lab, got in row["cand"].items()})
         self.rows.append(row)
 
 
@@ -325,6 +351,7 @@ def summarize(rows: Sequence[Dict[str, Any]], candidates: Sequence[Candidate]) -
             ms_c.append(got["ms"])
         md = sum(ms_d) / len(ms_d) if ms_d else float("nan")
         mc = sum(ms_c) / len(ms_c) if ms_c else float("nan")
+        sp = settle_ports(rows, c.label)
         out[c.label] = {"overrides": {k: v for k, v in c.overrides.items()}, "spec_keys": dict(c.spec_keys),
                         "n": n, "changed": changed, "share": changed / n if n else None,
                         "by_class": {k: dict(v, share=(v["changed"] / v["n"] if v["n"] else None))
@@ -332,6 +359,30 @@ def summarize(rows: Sequence[Dict[str, Any]], candidates: Sequence[Candidate]) -
                         "kinds": dict(kinds.most_common()), "ms_def_mean": md, "ms_mean": mc,
                         "ms_ratio_mean": mc / md if md and md == md else None,
                         "ms_ratio_p95": (_p95(ms_c) / _p95(ms_d)) if ms_d and _p95(ms_d) > 0 else None}
+        if sp is not None:
+            out[c.label]["settle_ports"] = sp
+    return out
+
+
+def settle_ports(rows: Sequence[Dict[str, Any]], label: str) -> Optional[Dict[str, Any]]:
+    """Port picks over the settle rows (those with ``ports``), default vs candidate ``label``: settlement choices
+    (``settled``), on a port (``port``), on a 3:1 port (``generic``), split into setup and main."""
+    out = None
+    for r in rows:
+        tags = r.get("ports")
+        if tags is None or label not in tags:
+            continue
+        if out is None:
+            out = {ph: {arm: {"n": 0, "settled": 0, "port": 0, "generic": 0} for arm in ("def", "cand")}
+                   for ph in ("setup", "main")}
+        ph = "setup" if "setup" in r["cls"] else "main"
+        for arm, tag in (("def", tags.get("def")), ("cand", tags.get(label))):
+            d = out[ph][arm]
+            d["n"] += 1
+            if tag is not None:
+                d["settled"] += 1
+                d["port"] += int(tag != "")
+                d["generic"] += int(tag == "3:1")
     return out
 
 
@@ -371,6 +422,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--main-every", type=int, default=1, help="shadow every N-th main-phase decision only")
     ap.add_argument("--no-aa", action="store_true", help="do not add the A/A identity candidate")
     ap.add_argument("--keep-rows", action="store_true", help="keep the per-decision rows in --json")
+    ap.add_argument("--py-shadow", action="store_true",
+                    help="run the shadow searches (default, A/A and candidates) on the Python evaluator without "
+                         "re-executing the whole script under CATANBOT_NO_ACCEL=1 (the games stay on C++)")
     ap.add_argument("--json", help="write the result here")
     args = ap.parse_args(argv)
     from catanbot import tuning
@@ -384,7 +438,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     bad = set(phases) - set(CLASSES)
     if bad:
         raise SystemExit(f"error: unknown phase class(es) {sorted(bad)}")
-    if any(c.needs_python() for c in cands):
+    global PY_SHADOW
+    PY_SHADOW = bool(args.py_shadow)
+    if any(c.needs_python() for c in cands) and not PY_SHADOW:
         from catanbot import accel
         if accel.AVAILABLE and not accel.disabled_by_env() and argv is None:
             print("re-executing with CATANBOT_NO_ACCEL=1 (a candidate is read by the Python static evaluator)",
@@ -420,8 +476,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"  {c.label:24} changed {s['changed']}/{s['n']} ({share}); {cls}; ms ratio {ratio}")
         for kname, cnt in list(s["kinds"].items())[:5]:
             print(f"      {cnt:4d}  {kname}")
+        for ph, arms in (s.get("settle_ports") or {}).items():
+            d, c = arms["def"], arms["cand"]
+            if d["n"]:
+                print(f"      settle/{ph}: port picks {d['port']} -> {c['port']} (3:1 {d['generic']} -> "
+                      f"{c['generic']}) of {d['n']} decisions")
     if args.json:
-        out = {"source": args.source, "spec": spec, "evaluator": tuning.evaluator_mode(), "phases": phases,
+        out = {"source": args.source, "spec": spec,
+               "evaluator": "python (shadow searches only)" if PY_SHADOW else tuning.evaluator_mode(), "phases": phases,
                "main_every": args.main_every,
                "games": games, "decisions": len(rows), "aa_ok": aa_ok, "candidates": summ,
                "cpu_s": time.process_time() - cpu0}

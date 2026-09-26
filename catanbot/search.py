@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -153,8 +154,19 @@ _ROLL_ORDER = sorted(B.ROLL_PROB.items(), key=lambda kv: -kv[1])
 
 # SearchConfig fields whose leaf corrections need the hub (catanbot/corrections.py; CorrectionHub.for_search
 # builds their providers).  paths is not one of them: paths = 1 alone keeps winpaths.PathsEvaluator, and it joins
-# the hub as a provider only next to one of these.
+# the hub as a provider only next to one of these.  The ports flow provider is switched by a module weight instead
+# (ports.FLOW_KAPPA, catanbot/portvalue.py; see _hub_needed).
 _HUB_FIELDS = ("conv", "acq")
+
+
+def _hub_needed(cfg: "SearchConfig") -> bool:
+    """A hub provider is on: a ``_HUB_FIELDS`` field, or ``ports.FLOW_KAPPA != 0`` (read through ``sys.modules``
+    like ``corrections.ports_flow_on``: the default bot never imports catanbot/portvalue.py, and an override of the
+    weight imports it)."""
+    if any(getattr(cfg, f) for f in _HUB_FIELDS):
+        return True
+    pv = sys.modules.get("catanbot.portvalue")
+    return pv is not None and bool(pv.FLOW_KAPPA)
 
 # Node budget one leaf of the depth >= 3 lookahead needs for its reduced sub-search (``reduced_config``'s floor).
 # ``_future_values`` runs the sub-search for every leaf or for none (``REDUCED_SEARCH_MIN_NODES`` x leaves must be
@@ -303,7 +315,7 @@ class Searcher:
             v = float(self._eval([state], [me])[0])
             return [ScoredAction(legal[0], v, self.explain(state, legal[0], me), [legal[0]], v)]
         if state.phase not in (PHASE_SETUP_SETTLEMENT, PHASE_SETUP_ROAD):
-            if any(getattr(cfg, f) for f in _HUB_FIELDS):
+            if _hub_needed(cfg):
                 from . import corrections   # lazy: nothing of it is imported or run with every provider off
                 self._corr = corrections.CorrectionHub.for_search(self.evaluator, state, me, cfg)
             elif cfg.paths:

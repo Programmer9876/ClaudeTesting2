@@ -232,6 +232,149 @@ threshold (not "the strongest at the table") so that early in the game, when
 nobody is a robber magnet yet, only concentration is charged."""
 
 
+# ---------------------------------------------------------------------------
+# Ports (docs/PRIORITY_PLAN.md step 4, area "ports"; docs/STRATEGY.md "Ports")
+# ---------------------------------------------------------------------------
+# The spot score's port bonus.  Tunables (catanbot/portvalue.py registers them), all needs_python_evaluator:
+# cpp/heuristic.cpp (score_spot) keeps constexpr copies of these defaults, so an override reaches the C++ static
+# value only after an ADOPT hard-codes it there.  The defaults are today's literals (byte-identical).
+PORT_SPOT_GENERIC = 1.0        # a 3:1 spot: flat bonus
+PORT_SPOT_2TO1_BASE = 0.5      # a 2:1 spot on t: base + slope x (our production of t + the spot's own)
+PORT_SPOT_2TO1_SLOPE = 6.0
+# ports.constants (F2): 1 = a generic 3:1 port counts once - static's +PORT_STATIC_GENERIC once however many of our
+# buildings stand on 3:1 ports, and a 3:1 spot's bonus is 0 when we already own a 3:1 (every ratio <= 3).
+PORT_GENERIC_ONCE = 0
+# ports.surplus_value (F1): 0 = the constants above (default); 1 = the calibrated conversion model in the spot score
+# and in static_value's port term; 2 = static only; 3 = 3:1 only (spot and static; the 2:1 constants are kept).
+# heuristic.static_value reads PORT_MODEL / PORT_GENERIC_ONCE through this module (``_pl.PORT_MODEL``), never
+# through a from-import, which would freeze the value and make an override a silent A/A.
+PORT_MODEL = 0
+PORT_A0 = 0.08                 # F1: cards per roll converted at 4:1 whatever the surplus (the fitted intercept) ...
+PORT_B = 0.75                  # ... plus this share of the surplus (fit on our no-port rolls: T1 0.060 + 0.87 x
+#                                model, R1 0.116 + 0.63 x model)
+PORT_ELAST = 0.25              # F1: half credit for the extra conversion at a cheaper ratio (x1.19 at 3:1, x1.43 at 2:1)
+PORT_SPOT_W = 1.0              # F1: weight of the calibrated spot bonus (pips-equivalents x the complement factor)
+PORT_STATIC_W = 0.8            # F1: static points per pips-equivalent (0.55 + 0.25: static's weight of one pip)
+
+
+def ratios_with(rho: Sequence[int], port: int) -> List[int]:
+    """Bank ratios ``rho`` after adding a port of type ``port`` (``B.PORT_GENERIC`` or a resource)."""
+    if port == B.PORT_GENERIC:
+        return [min(x, 3) for x in rho]
+    out = list(rho)
+    out[port] = 2
+    return out
+
+
+def ratios_of(state: GameState, buildings: Iterable[int], generic: bool = True) -> List[int]:
+    """Bank ratios given by the ports under ``buildings`` (``generic=False``: the 2:1 ports only)."""
+    rho = [4] * 5
+    for v in buildings:
+        t = state.ports.get(v)
+        if t is None or (t == B.PORT_GENERIC and not generic):
+            continue
+        rho = ratios_with(rho, t)
+    return rho
+
+
+def port_ratios(state: GameState, player: int, extra_port: Optional[int] = None) -> List[int]:
+    """``state.port_ratio(player, r)`` for every resource, with a port of type ``extra_port`` added."""
+    p = state.players[player]
+    rho = ratios_of(state, p.settlements + p.cities)
+    return rho if extra_port is None else ratios_with(rho, extra_port)
+
+
+def owns_generic_port(state: GameState, player: int) -> bool:
+    p = state.players[player]
+    return any(state.ports.get(v) == B.PORT_GENERIC for v in p.settlements + p.cities)
+
+
+def demand_shares() -> List[float]:
+    """``D_r``: RESOURCE_DEMAND as shares (RESOURCE_DEMAND / 5 at mean 1: 0.187 / 0.187 / 0.168 / 0.234 / 0.224)."""
+    tot = sum(RESOURCE_DEMAND)
+    return [d / tot for d in RESOURCE_DEMAND]
+
+
+def port_conversion(prod: Sequence[float], a0: Optional[float] = None, b: Optional[float] = None) -> List[float]:
+    """F1 ``conv_r = A0 prod_r / I + B s_r``: cards of ``r`` per roll a seat with robber-free production ``prod``
+    (cards per roll) gives to the bank, ``s_r = max(0, prod_r - D_r I)`` its surplus and ``I = sum prod``.  The
+    intercept is the lumpy conversion of a low-surplus economy (our bot converts 0.06-0.12 cards per roll even so)."""
+    a0 = PORT_A0 if a0 is None else a0
+    b = PORT_B if b is None else b
+    inc = sum(prod)
+    if inc <= 0.0:
+        return [0.0] * 5
+    D = demand_shares()
+    return [a0 * prod[r] / inc + b * max(0.0, prod[r] - D[r] * inc) for r in range(5)]
+
+
+def port_gain(prod: Sequence[float], rho: Sequence[int], rho2: Sequence[int], elast: Optional[float] = None,
+              conv: Optional[Sequence[float]] = None) -> float:
+    """F1 ``G = sum_r conv_r (1/rho2_r - 1/rho_r) (1 + ELAST (4/rho2_r - 1))``: extra needed cards per roll that
+    the ratios ``rho2`` buy over ``rho`` from the same conversions (0 when no ratio improves: a second 3:1, a 3:1
+    on top of a 2:1 that already covers the surplus)."""
+    e = PORT_ELAST if elast is None else elast
+    conv = port_conversion(prod) if conv is None else conv
+    g = 0.0
+    for r in range(5):
+        if rho2[r] < rho[r]:
+            g += conv[r] * (1.0 / rho2[r] - 1.0 / rho[r]) * (1.0 + e * (4.0 / rho2[r] - 1.0))
+    return g
+
+
+def port_need_weights(prod: Sequence[float], scarcity: Sequence[float]) -> Tuple[float, float]:
+    """F1 ``(w, c)`` over the deficits ``d_r = max(0, D_r I - prod_r)``: ``w`` the demand x sqrt(scarcity) value of
+    a needed card (1 without a deficit) and ``c`` their mean complement factor ``1 / (1 + 4 prod_r)`` (0.5)."""
+    inc = sum(prod)
+    D = demand_shares()
+    d = [max(0.0, D[r] * inc - prod[r]) for r in range(5)]
+    tot = sum(d)
+    if tot <= 0.0:
+        return 1.0, 0.5
+    w = sum(d[r] * RESOURCE_DEMAND[r] * (scarcity[r] ** 0.5) for r in range(5)) / tot
+    c = sum(d[r] / (1.0 + 4.0 * prod[r]) for r in range(5)) / tot
+    return w, c
+
+
+def port_pe(prod: Sequence[float], rho: Sequence[int], rho2: Sequence[int],
+            scarcity: Sequence[float]) -> Tuple[float, float]:
+    """F1 ``(PE, c)``: the pips-equivalent ``36 G w`` of going from ratios ``rho`` to ``rho2`` for the production
+    ``prod``, and the complement factor ``c`` of :func:`port_need_weights`."""
+    g = port_gain(prod, rho, rho2)
+    if g <= 0.0:
+        return 0.0, 0.5
+    w, c = port_need_weights(prod, scarcity)
+    return 36.0 * g * w, c
+
+
+def spot_port_bonus(state: GameState, player: int, v: int, own_prod: Optional[Sequence[float]] = None,
+                    prod_v: Optional[Sequence[float]] = None, scarcity: Optional[Sequence[float]] = None) -> float:
+    """The port part of :func:`score_settlement_spot` for ``player`` settling ``v`` (0 without a port).
+
+    Default: ``PORT_SPOT_GENERIC`` for a 3:1 spot, ``PORT_SPOT_2TO1_BASE + PORT_SPOT_2TO1_SLOPE x (own[t] +
+    prod_v[t])`` for a 2:1 ``t`` spot (today's 1.0 / 0.5 + 6 x, bit for bit); ``PORT_GENERIC_ONCE``: a 3:1 spot is
+    worth 0 when ``player`` already owns a 3:1.  ``PORT_MODEL`` 1 (every spot) / 3 (3:1 spots): ``PORT_SPOT_W x
+    PE(own + prod_v; rho_now -> rho_with_v) x (0.6 + 0.8 c)``, the calibrated card value in the units of land pips
+    (the same complement factor), so the argmax over spots decides "port vs land" directly."""
+    port = state.ports.get(v)
+    if port is None:
+        return 0.0
+    own = player_production(state, player, ignore_robber=True) if own_prod is None else own_prod
+    pv = vertex_production(state, v, ignore_robber=True) if prod_v is None else prod_v
+    model = PORT_MODEL
+    if model == 1 or (model == 3 and port == B.PORT_GENERIC):
+        rho = port_ratios(state, player)
+        prod = [own[r] + pv[r] for r in range(5)]
+        sc = resource_scarcity(state) if scarcity is None else scarcity
+        pe, c = port_pe(prod, rho, ratios_with(rho, port), sc)
+        return PORT_SPOT_W * pe * (0.6 + 0.8 * c)
+    if port == B.PORT_GENERIC:
+        if PORT_GENERIC_ONCE and owns_generic_port(state, player):
+            return 0.0
+        return PORT_SPOT_GENERIC
+    return PORT_SPOT_2TO1_BASE + PORT_SPOT_2TO1_SLOPE * (own[port] + pv[port])
+
+
 def hex_block_weights(state: GameState, scarcity: Optional[Sequence[float]] = None) -> List[float]:
     """Per hex: pips x RESOURCE_DEMAND x scarcity ** 0.5 (0 for the desert) - a settlement's W_b(h)."""
     scarcity = resource_scarcity(state) if scarcity is None else scarcity
@@ -433,12 +576,9 @@ def score_settlement_spot(state: GameState, player: int, v: int,
         wb = min(prod[B.WOOD], prod[B.BRICK]) * 36.0
         ow = min(prod[B.ORE], prod[B.WHEAT]) * 36.0
         score += 0.35 * (wb + ow)
-    port = state.ports.get(v)
-    if port is not None:
-        if port == B.PORT_GENERIC:
-            score += 1.0
-        else:
-            score += 0.5 + 6.0 * (own_prod[port] + prod[port])
+    if v in state.ports:
+        # the port bonus (spot_port_bonus: today's constants by default; ports.constants / ports.surplus_value)
+        score += spot_port_bonus(state, player, v, own_prod, prod, scarcity)
     eocc = state.occupied_edges()
     score += 0.35 * _expansion_potential(state, v, occ, eocc)
     # Blockability: how much more of our income one robber placement could switch off.
