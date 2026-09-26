@@ -48,6 +48,8 @@ Before each chunk the queue checks two guards:
 Where things go:
 - Row results go to `<dir>/<row>.jsonl`, in ablate_catanatron's format. campaign.py can share the directory.
 - Verdicts and CPU bookkeeping go to `<dir>/ledger.jsonl`.
+- `scripts/archive_queue.py --dir <dir>` copies each finished row's per-game results into the repository,
+  compressed, at `docs/queue/games/` (README there).
 - Self-play chunks go to `<dir>/selfplay/<row>/<value>/chunk_<k>.json`.
 
 ## Reading verdicts
