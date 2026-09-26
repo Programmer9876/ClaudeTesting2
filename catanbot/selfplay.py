@@ -21,6 +21,10 @@ Trading-style keys (heuristic and search bots, DESIGN section 11):
 ``offer_temp=0.5`` (temperature over the proposal ranking) and
 ``trade_eps=0.05`` (random accept / reject or random proposal).
 
+Tuned constants (any bot): ``tune=danger.TURNS_HALF:2.4;devcards.KNIGHT_VALUE:0.62`` wraps the bot in
+a ``ParamBot`` with those ``catanbot.tuning`` overrides (``agents/param_bot.py``; printed by
+``scripts/tune_joint.py`` for the league gate).  Without the key nothing changes.
+
 ``make_bot(spec)`` builds the bot.  ``play_game`` runs one game and can
 record training samples (feature vectors from every player's perspective at
 every decision, labelled with the eventual winner); ``GameResult.bias``
@@ -164,6 +168,13 @@ def _trade_style(kw: Dict[str, str]) -> Dict[str, float]:
 
 def make_bot(spec: str) -> Bot:
     name, kw = parse_spec(spec)
+    if "tune" in kw:
+        # ``tune=NAME:VALUE;...``: the bot of the rest of the spec inside a ParamBot with those registry
+        # overrides (agents/param_bot.py; how scripts/tune_joint.py hands a tuned set to the league gate).
+        from .agents.param_bot import ParamBot, parse_tune
+        inner = name + (":" + ",".join(f"{k}={v}" for k, v in kw.items() if k != "tune")
+                        if len(kw) > 1 else "")
+        return ParamBot(make_bot(inner), parse_tune(kw["tune"]), label="tuned")
     if name == "random":
         return RandomBot(end_turn_bias=float(kw.get("end", 0.0)))
     if name == "heuristic":

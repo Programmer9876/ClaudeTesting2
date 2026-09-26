@@ -13,6 +13,12 @@ change: the wrapper has the same interface as the inner bot.
 covers ``inner.decide`` only: the apply / restore of the overrides around it is measured
 separately (``overhead``, seconds), so a candidate that needs many patches is not charged
 for the harness's own work while the default side (empty overrides) pays none.
+
+Bot spec form: ``selfplay.make_bot`` wraps the bot in a ``ParamBot`` when the spec has a
+``tune=NAME:VALUE;NAME:VALUE`` key (:func:`parse_tune` / :func:`format_tune`), e.g.
+``search:depth=1,beam=4,expand=8,evaluator=heuristic,tune=danger.TURNS_HALF:2.4;devcards.KNIGHT_VALUE:0.62``.
+That is how a tuned parameter set (``scripts/tune_joint.py``) reaches the league gate and the
+Catanatron benchmark as an ordinary spec; a spec without the key builds exactly the bot it always did.
 """
 from __future__ import annotations
 
@@ -97,3 +103,45 @@ class ParamBot(Bot):
 
     def __repr__(self) -> str:
         return f"ParamBot({self.inner!r}, {self.overrides!r})"
+
+
+# ---------------------------------------------------------------------------
+# Overrides inside a bot spec (``tune=``)
+# ---------------------------------------------------------------------------
+def parse_tune(text: str) -> Dict[str, Any]:
+    """``"danger.TURNS_HALF:2.4;devcards.KNIGHT_VALUE:0.62"`` -> ``{name: value}`` through the registry's
+    parsers (flags ``on`` / ``off``, resource vectors ``a/b/c/d/e``)."""
+    out: Dict[str, Any] = {}
+    for item in text.split(";"):
+        if not item.strip():
+            continue
+        name, sep, value = item.partition(":")
+        if not sep:
+            raise ValueError(f"tune= entries are NAME:VALUE separated by ';', got {item!r}")
+        t = tuning.find(name.strip())
+        out[t.name] = t.parse(value.strip())
+    return out
+
+
+def format_tune(overrides: Dict[str, Any]) -> str:
+    """Inverse of :func:`parse_tune` (registry formatting: ``%g`` floats, ``on`` / ``off``, ``a/b/c/d/e``)."""
+    return ";".join(f"{tuning.find(k).name}:{tuning.find(k).format(v)}" for k, v in overrides.items())
+
+
+def tuned_spec(base_spec: str, overrides: Dict[str, Any]) -> str:
+    """``base_spec`` with ``overrides`` built in: search knobs that have a spec key become that key
+    (``trades=``, ``counter_margin=``, ...), everything else goes into ``tune=`` (merged with one already there)."""
+    from ..selfplay import parse_spec
+    name, kw = parse_spec(base_spec)
+    rest = parse_tune(kw.pop("tune", ""))
+    for k, v in overrides.items():
+        t = tuning.find(k)
+        if t.kind == "search" and t.spec_key:
+            if name != "search":
+                raise ValueError(f"{t.name} is a search knob but the base spec {base_spec!r} is not a search bot")
+            kw[t.spec_key] = t.format(v)
+        else:
+            rest[t.name] = v
+    if rest:
+        kw["tune"] = format_tune(rest)
+    return name + (":" + ",".join(f"{k}={v}" for k, v in kw.items()) if kw else "")

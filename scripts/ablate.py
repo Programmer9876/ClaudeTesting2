@@ -9,9 +9,16 @@
     python3 scripts/ablate.py --sweep-all --games 4 --workers 2 --out docs/ABLATIONS.md
     python3 scripts/ablate.py --tunable search.counters --counters --games 1000 \
         --base-spec search:depth=1,beam=4,expand=8,evaluator=heuristic      # counter-offer rules on
+    python3 scripts/ablate.py --factorial danger.danger_multiplier=off,danger.steal_factor=off --games 600 \
+        --workers 3 --json dm_x_sf.json                                      # 2x2: main effects + interaction
 
 ``--counters`` plays every game under the counter-offer rules variant (``GameState.allow_counters``, off in
 the base game): responders may counter, and the report adds the counters made / taken per side.
+
+``--factorial NAME=V1,NAME2=V2[,...]`` (2 to 4 factors; a bare flag name means "off") plays every
+combination of the factors at their test values (each against the all-default base, 2 seats vs 2, on
+the SAME seeds and seat patterns for every cell) and reports each cell, each main effect and each
+interaction (``AB - A - B + base``) with a paired 95% interval (``catanbot/factorial.py``, docs/TUNING.md).
 
 Every game seats the SAME bot spec on both sides: the tunable at a candidate value
 ('C' seats) and at its default ('D' seats), 2-vs-2 in 4-player games and a rotating
@@ -289,6 +296,93 @@ def sweep(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Factorial (2^k) tests
+# ---------------------------------------------------------------------------
+def factorial_spec(ts: List[Tunable], base_spec: Optional[str]) -> str:
+    """One base spec every factor acts in (the most demanding default, or ``base_spec`` checked per factor)."""
+    if base_spec:
+        for t in ts:
+            resolve_spec(t, base_spec)
+        return base_spec
+    if any(t.requires_depth >= 2 for t in ts):
+        return DEFAULT_DEEP_SPEC
+    return DEFAULT_SEARCH_SPEC if any(t.requires_search for t in ts) else DEFAULT_CHEAP_SPEC
+
+
+def _game_vp_diff(rec: Dict[str, Any]) -> float:
+    """Mean final VP of the candidate seats minus that of the default seats in one game."""
+    pat, vps = rec["pattern"], rec["vps"]
+    c = [vps[i] for i, s in enumerate(pat) if s == "C"]
+    d = [vps[i] for i, s in enumerate(pat) if s == "D"]
+    return sum(c) / len(c) - sum(d) / len(d)
+
+
+def run_factorial(args) -> int:
+    from catanbot import factorial as F
+    try:
+        factors = F.parse_factors(args.factorial)
+    except (ValueError, KeyError) as ex:
+        print(f"error: --factorial: {ex}", file=sys.stderr)
+        return 2
+    ts = [tuning.find(n) for n, _ in factors]
+    maybe_reexec(any(t.needs_python_evaluator for t in ts))
+    base_spec = factorial_spec(ts, args.base_spec)
+    k = len(factors)
+    mode = tuning.evaluator_mode()
+    workers = max(1, args.workers)
+    print(f"factorial 2^{k}: " + ", ".join(f"{n}={tuning.find(n).format(v)} (default {tuning.find(n).format(tuning.find(n).default)})"
+                                          for n, v in factors))
+    print(f"base spec {base_spec}; {args.players} players; {args.games} paired games per cell x {2 ** k - 1} cells "
+          f"(= {args.games * (2 ** k - 1)} games; the base cell is 0 by construction); seed {args.seed}; workers "
+          f"{workers}" + ("; counter-offer rules ON" if args.counters else ""))
+    print(f"evaluator mode: {mode}")
+    if args.plan:
+        for c in F.cells(k)[1:]:
+            print(f"  cell {F.cell_label(factors, c)}: overrides {F.cell_overrides(factors, c)}")
+        print("seat patterns: " + " ".join(p for p, _ in tuning.paired_jobs(min(args.games, 6), args.seed, args.players)))
+        return 0
+    t_start = time.time()
+    cells: Dict[int, Dict[str, Any]] = {}
+    for c in F.cells(k)[1:]:
+        label = F.cell_label(factors, c)
+
+        def progress(i, n, r, label=label):
+            if not args.quiet:
+                print(f"  [{label}] game {i}/{n}: winner seat {r['winner']} ({r['pattern']}), vps {r['vps']}, "
+                      f"{r['turns']} turns, {r['duration']:.1f}s", file=sys.stderr, flush=True)
+
+        results = tuning.run_paired(base_spec, F.cell_overrides(factors, c), args.games, args.seed, args.players,
+                                    workers=workers, max_turns=args.max_turns, progress=progress,
+                                    allow_counters=args.counters)
+        st = tuning.paired_stats(results)
+        st.update(cell=c, label=label, overrides=F.cell_overrides(factors, c))
+        cells[c] = st
+        lo, hi = st["ci95"]
+        print(f"  cell {label}: {st['games']} games, cand {st['cand_wins']}W / default {st['def_wins']}W, delta "
+              f"{pct(st['delta'])} +- {100 * st['se']:.1f}pp [{pct(lo)}, {pct(hi)}], avg VP {st['avg_vp_cand']:.2f} vs "
+              f"{st['avg_vp_def']:.2f}, extra {fmt(st['extra_ms'], 2)} ms/decision", flush=True)
+    seeds = [[r["seed"] for r in cells[c]["records"]] for c in cells]
+    if any(s != seeds[0] for s in seeds):
+        raise SystemExit("internal error: the cells were not played on the same seeds")
+    win = F.analyse(factors, {c: [r["diff"] for r in st["records"]] for c, st in cells.items()})
+    vp = F.analyse(factors, {c: [_game_vp_diff(r) for r in st["records"]] for c, st in cells.items()})
+    print(f"\nfactorial 2^{k} on {win['units']} common games per cell ({base_spec}, {mode}):")
+    print("\n".join(F.format_report(win, "games", True, "per-seat win rate, candidate seats minus default seats")))
+    print("\n".join(F.format_report(vp, "games", False, "final VP, candidate seats minus default seats")))
+    if win["units"] < 30:
+        print("  (smoke size: nothing here is significant; an interaction needs ~4x the games of a main effect)")
+    if args.json:
+        report = {"factorial": [[n, v] for n, v in factors], "base_spec": base_spec, "players": args.players,
+                  "games": args.games, "seed": args.seed, "workers": workers, "max_turns": args.max_turns,
+                  "allow_counters": bool(args.counters), "evaluator_mode": mode, "seconds": time.time() - t_start,
+                  "cells": [cells[c] for c in sorted(cells)], "win": win, "vp": vp}
+        with open(args.json, "w") as f:
+            json.dump(json_safe(report), f, indent=1)
+        print(f"wrote {args.json}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
@@ -311,6 +405,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", action="store_true", help="no per-game progress lines")
     p.add_argument("--plan", action="store_true", help="print the plan (spec, mode, candidates) without playing")
     p.add_argument("--list", action="store_true", help="print the registry and exit")
+    p.add_argument("--factorial", metavar="NAME=V,NAME2=V2",
+                   help="2^k factorial test (2-4 factors; a bare flag name = off): every combination vs the base on "
+                        "the same seeds; main effects and interactions with paired 95%% CIs")
     p.add_argument("--sweep-all", action="store_true", help="run every tunable at its candidates; write --out")
     p.add_argument("--kinds", help="sweep: only these kinds (weight,flag,search)")
     p.add_argument("--only", help="sweep: only these tunable names (comma separated)")
@@ -326,9 +423,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if args.sweep_all:
         return sweep(args)
+    if args.factorial:
+        if args.tunable:
+            print("error: use either --tunable or --factorial", file=sys.stderr)
+            return 2
+        return run_factorial(args)
     if not args.tunable:
         build_parser().print_usage()
-        print("error: --tunable, --list or --sweep-all is required", file=sys.stderr)
+        print("error: --tunable, --factorial, --list or --sweep-all is required", file=sys.stderr)
         return 2
     try:
         t = tuning.find(args.tunable)
