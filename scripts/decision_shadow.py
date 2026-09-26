@@ -436,7 +436,10 @@ def gate_share(result: Dict[str, Any], label: str, classes: Sequence[str]) -> Op
 #     actions (no knight legal) change; G4 ms ratio <= 1.2
 #     mean and <= 1.5 p95.  Failing G1 or G4 unlocks the knight_kick fallback (``fallback_trigger``).
 #   insurance (R1b): G1 >= 3% of knight holders' roll / main first actions change; G2 in >= 60% of those changes
-#     the candidate keeps the knight while P_hit is above its median; G3 <= 1% of non-holders' roll / main first
+#     the knight play flips in the exposure's direction - kept while P_hit is above its median, spent below it (the
+#     design's literal "kept while above the median" share is reported as kept_exposed: the centring the same design
+#     requires makes quiet holders spend knights, so the literal share counts only half of the intended changes);
+#     G3 <= 1% of non-holders' roll / main first
 #     actions change; G4 |mean C_ins| over insured leaves <= 0.05 points (centring; ``ins_offset_cal`` = the mean
 #     D x P_hit that INS_OFFSET should be); G5 ms ratio <= 1.3 mean.
 #   duration (R1c): G1 >= 2% of robber / knight decisions change (plus readouts).
@@ -566,10 +569,15 @@ def robber_gates(rows: Sequence[Dict[str, Any]], label: str, gset: str) -> Dict[
         ph = sorted(r["rob"]["p_hit"] for r in hold if r["rob"].get("p_hit") is not None)
         med = (ph[len(ph) // 2] if len(ph) % 2 else 0.5 * (ph[len(ph) // 2 - 1] + ph[len(ph) // 2])) if ph else None
         chg = [r for r in hold if r["cand"][label]["a"] != r["def"]]
-        kept = [r for r in chg if (r["cand"][label]["a"] or [None])[0] != "play_knight"
-                and med is not None and r["rob"].get("p_hit", -1.0) > med]
-        s2 = {"n": len(chg), "kept_exposed": len(kept), "share": (len(kept) / len(chg)) if chg else None,
-              "p_hit_median": med}
+        plays = lambda a: bool(a) and a[0] == "play_knight"                           # noqa: E731
+        above = lambda r: med is not None and r["rob"].get("p_hit", -1.0) > med      # noqa: E731
+        kept = [r for r in chg if not plays(r["cand"][label]["a"]) and above(r)]
+        # the knight-play status flips: kept (the default played it) or spent (the default did not)
+        flip = [r for r in chg if plays(r["def"]) != plays(r["cand"][label]["a"])]
+        cons = [r for r in flip if plays(r["def"]) == above(r)]      # kept above the median, spent below it
+        s2 = {"n": len(flip), "consistent": len(cons), "share": (len(cons) / len(flip)) if flip else None,
+              "changed": len(chg), "kept_exposed": len(kept),
+              "kept_exposed_share": (len(kept) / len(chg)) if chg else None, "p_hit_median": med}
         tot = {"ins_n": 0, "ins_sum_c": 0.0, "ins_sum_dp": 0.0}
         for r in rows:
             rst = r["cand"][label].get("rstats") or {}
@@ -578,8 +586,9 @@ def robber_gates(rows: Sequence[Dict[str, Any]], label: str, gset: str) -> Dict[
         mean_c = tot["ins_sum_c"] / tot["ins_n"] if tot["ins_n"] else None
         g["G1"] = _gate(s1, s1["n"] > 0 and s1["share"] >= 0.03, ">= 3% of knight holders' roll / main first "
                                                                   "actions change")
-        g["G2"] = _gate(s2, bool(chg) and s2["share"] >= 0.60, ">= 60% of the changed holder decisions keep the "
-                                                                "knight while P_hit is above its median")
+        g["G2"] = _gate(s2, bool(flip) and s2["share"] >= 0.60,
+                        ">= 60% of the holder decisions whose knight play flips follow exposure: kept with P_hit "
+                        "above its median, spent below it (the design's literal count: kept_exposed of changed)")
         g["G3"] = _gate(s3, s3["n"] == 0 or s3["share"] <= 0.01, "<= 1% of non-holders' roll / main first actions "
                                                                   "change")
         g["G4"] = _gate({"insured_leaves": tot["ins_n"], "mean_c_ins": mean_c},

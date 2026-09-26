@@ -174,14 +174,19 @@ def test_robber_gates_on_synthetic_rows():
     # insurance: holders' decisions, P_hit median, centring from the candidates' robber_eval counters
     hold = lambda p: {"def": None, "cand": {"x": None}, "holder": True, "blocked": 0.0, "p_hit": p, "d": 5.0}  # noqa
     rst = {"ins_n": 10, "ins_sum_c": 0.2, "ins_sum_dp": 21.0, "evals": 10, "nonzero": 10, "kick_sets": 0}
-    rows = [_rrow(["roll", "knight"], ["play_knight", 1, 2], ["roll"], hold(0.9), rst=rst),
-            _rrow(["roll", "knight"], ["play_knight", 1, 2], ["roll"], hold(0.8), rst=rst),
+    rows = [_rrow(["roll", "knight"], ["play_knight", 1, 2], ["roll"], hold(0.9), rst=rst),      # kept, exposed
+            _rrow(["roll", "knight"], ["play_knight", 1, 2], ["roll"], hold(0.8), rst=rst),      # kept, exposed
             _rrow(["roll", "knight"], ["roll"], ["roll"], hold(0.1), rst=rst),
             _rrow(["main", "knight"], ["end_turn"], ["end_turn"], hold(0.2), rst=rst),
+            _rrow(["main", "knight"], ["end_turn"], ["play_knight", 2, 1], hold(0.05), rst=rst),  # spent, quiet
+            _rrow(["roll", "knight"], ["roll"], ["play_knight", 2, 1], hold(0.85), rst=rst),     # spent, exposed
+            _rrow(["roll", "knight"], ["play_knight", 1, 2], ["play_knight", 2, 1], hold(0.7), rst=rst),  # no flip
             _rrow(["main"], M, M, plain, rst=rst)]
     g = DS.robber_gates(rows, "x", "insurance")
-    assert g["gates"]["G1"]["n"] == 4 and g["gates"]["G1"]["changed"] == 2 and g["gates"]["G1"]["pass"]
-    assert g["gates"]["G2"]["kept_exposed"] == 2 and g["gates"]["G2"]["pass"]
+    assert g["gates"]["G1"]["n"] == 7 and g["gates"]["G1"]["changed"] == 5 and g["gates"]["G1"]["pass"]
+    g2 = g["gates"]["G2"]
+    assert g2["p_hit_median"] == 0.7 and g2["n"] == 4 and g2["consistent"] == 3 and g2["share"] == 0.75 and g2["pass"]
+    assert g2["changed"] == 5 and g2["kept_exposed"] == 2 and g2["kept_exposed_share"] == 0.4   # the literal count
     assert g["gates"]["G3"]["n"] == 1 and g["gates"]["G3"]["pass"]
     assert abs(g["gates"]["G4"]["mean_c_ins"] - 0.02) < 1e-12 and g["gates"]["G4"]["pass"]
     assert abs(g["ins_offset_cal"] - 2.1) < 1e-12 and g["pass"]

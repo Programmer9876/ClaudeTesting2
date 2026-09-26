@@ -1438,7 +1438,7 @@
     "pass_if": true
    },
    "requires": "step 5 code (search.robber_corr, search.kick, catanbot/robber_eval.py, catanbot/knightkick.py, decision_shadow.py --robber-gates) is in the working tree; a command row is not tunable-checked, so enable it by hand after --bump-code --areas robber (epoch B3)",
-   "notes": "R1a persistence shadow gates (the design): G1 >= 30% of the default's robber / knight moves onto a would-kick knight holder kicking within one roll change; G2 <= 3% of the other robber / knight decisions change; G3 <= 1% of main-phase first actions change; G4 ms ratio <= 1.2 mean, <= 1.5 p95. PASS unlocks robber_la_bundle and robber_persistence."
+   "notes": "R1a persistence shadow gates (the design): G1 >= 30% of the default's robber / knight moves onto a would-kick knight holder kicking within one roll change; G2 <= 3% of the other robber / knight decisions (the default blocks no would-kick holder; hits on holders kicking after 2+ rolls are a readout) change; G3 <= 1% of main-phase first actions change; G4 ms ratio <= 1.2 mean, <= 1.5 p95. PASS unlocks robber_la_bundle and robber_persistence."
   },
   {
    "name": "robber_gate_kick_trigger",
@@ -1502,7 +1502,7 @@
     "pass_if": true
    },
    "requires": "step 5 code (search.robber_corr, search.kick, catanbot/robber_eval.py, catanbot/knightkick.py, decision_shadow.py --robber-gates) is in the working tree; a command row is not tunable-checked, so enable it by hand after --bump-code --areas robber (epoch B3)",
-   "notes": "R1b knight insurance shadow gates: G1 >= 3% of knight holders' roll / main first actions change; G2 >= 60% of those changes keep the knight while P_hit is above its median; G3 <= 1% of non-holders' change; G4 |mean C_ins| over insured leaves <= 0.05 points (centring); G5 ms ratio <= 1.3. PASS = INSURANCE_W goes to the SPSA robber group (a request to its owner); no standalone A/B."
+   "notes": "R1b knight insurance shadow gates: G1 >= 3% of knight holders' roll / main first actions change; G2 >= 60% of the holder decisions whose knight play flips follow exposure (kept with P_hit above its median, spent below it; the design's literal 'kept while exposed' share is reported as kept_exposed); G3 <= 1% of non-holders' change; G4 |mean C_ins| over insured leaves <= 0.05 points (centring); G5 ms ratio <= 1.3. PASS = INSURANCE_W goes to the SPSA robber group (a request to its owner); no standalone A/B."
   },
   {
    "name": "robber_gate_r1c",
