@@ -403,6 +403,19 @@ Resolution:
   - the SPSA knob groups;
   - then milder versions of shelved ideas.
 
+## Selective depth for long-term strategies (user, 2026-09-26 21:40 UTC)
+
+- **The user's view:** the default bot already plays very good Catan.  Most of the added strategies (ports,
+  diversification, road blocking) are long-term plans that a one-turn search cannot see, so they need depth to
+  work.  Some decisions need more depth and some do not.
+- **Decision:** try deeper search *selectively*, only on decisions tied to those strategies, **even if the
+  depth diagnosis (docs/designs/depth_diagnosis.md, being written) is inconclusive**.
+- **How:** built off by default like every other term; its A/A must show default play unchanged; then the usual
+  paired screen.  If the screen is inconclusive, it goes to human testing with the advisor rather than on ice.
+- **Caveat to design around:** a port or a diversified spot pays off over many turns, far past depth 3-4.
+  Tree depth can see a road race or a blocking move.  The economic payoff of a spot may need a targeted
+  simulation of the next turns instead.
+
 ## Rule for Colonist-information rows (user, 2026-09-26)
 
 Discards are public on Colonist.  Every counted-mode row sets `"discards_public": true` next to

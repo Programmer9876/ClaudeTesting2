@@ -407,7 +407,7 @@ python3 scripts/replay_export.py --tests T2,T8,H1 --workers 2      # omit --test
 # rewrite index.html only (after editing the page or the core), from the existing parts
 python3 scripts/replay_export.py --tests T2,T8,H1 --merge-only
 # validate the bundle against the original logs, results files and manifests
-node scripts/check_replay_bundle.mjs --bundle $S/replay_archive
+node scripts/check_replay_bundle.mjs --bundle $S/replay_archive           # add --expect-all for the full 18 tests
 ```
 
 The page template is `scripts/replay_archive_template.html`; the exporter

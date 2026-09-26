@@ -1346,3 +1346,35 @@ Checks run for this revision (read-only, from `/home/user/ClaudeTesting2`):
   `sha256sum` of the snapshot's `public_info.py`, `counting.py` and `catanatron_adapter.py`.
 * grep of the three adapters for the functions listed in 6.2, and of `scripts/replay_catanatron.py` for
   `--action`.
+
+## 13. Integration run (2026-09-26, full bundle)
+
+`$S/replay_archive` was exported from scratch for all 18 tests and checked end to end. This section supersedes the
+estimates in section 0 and 3.6.
+
+* **Export.** `nice -n 10 python3 scripts/replay_export.py --workers 2 --fresh-code` (python3 orchestrator; workers
+  under `/home/user/venv_cat33/bin/python`, R1/R2 under `python3`), while the test queue used 3 of the 4 cores:
+  9 min 15 s wall, 16 min 38 s user + 8 s system CPU, 119 jobs (96 shard workers, 22 head-digest jobs, 1
+  truth-only job), exit 0. All 9,600 games exported (T1, T4, T7, R1 1,000 each; the other 14 tests 400 each), every
+  replay equal to the log's final fingerprint. Counted games: stats equal 2,200/2,200, 5,069,695 audited calls with
+  0 violations, twin exact 2,200/2,200, audited belief identical 2,200/2,200, `headSame` 2,200/2,200. Index totals
+  equal the results files (wins as in section 1) and the hidden-VP table of section 1; no "same seed, different
+  deal" exception (5,800 deals).
+* **Bundle.** 98 files (index.html 134,131 B, index.json.gz 269,446 B, 96 shards 46,267–370,603 B), 13,821,993 B
+  in all (68,157,775 B decompressed); one publish. Bot layer (5.6, gzip, measured by the exporter): T7 2,579 KB,
+  T8 826 KB, T9 807 KB, T11 855 KB. The plain-JSON fallback (68.2 MB) would need two publishes.
+* **Validator** (`node scripts/check_replay_bundle.mjs --bundle $S/replay_archive --expect-all`, 94 s): 9,600/9,600
+  games decode to the original logs' final state and to their index rows; 2,200 bot views pass the invariants and
+  the text check; parsers 20/20; contrast passes.
+* **Per-position comparison** (every position of every sampled game, JS decoder against the Python replay): the
+  exporter's own sample (88 games, 29 counted, 29,170 positions, belief included; swap test 29/29); an independent
+  sample of 90 games (5 random per test, 20 counted, 28,417 positions) written by a scratch script that replays with
+  the repository adapter and reads catanatron's state directly (`$S/integrate/indep_truth.py`, not the exporter);
+  the same 20 counted games through the exporter's `--truth-only` pass (belief at 5,639 positions). 0 mismatches.
+  A tampered truth file (one hand card, one `p` +1 %, one `E` +0.01) is reported.
+* **Fix.** The first full run found 2 mismatches, both in `bv.sum.minP`: it was rounded to 8 decimals, so T11-186's
+  minimum chance 2.47e-9 was stored as 0 and T7-278's 6.05e-9 as 1e-8. `minP` is now kept to 6 significant digits
+  (`_sig`, pinned by `test_min_chance_keeps_relative_precision`); 1,312 counted games changed in that field only,
+  the 74 full-information shards are byte-identical between the two runs.
+* **pytest** `tests/test_replay_export.py`: 32 passed, 4 skipped (3.2.1-only) under `/home/user/venv_cat33/bin/python`;
+  21 passed, 15 skipped (3.3-only and snapshot tests) under `python3`.
