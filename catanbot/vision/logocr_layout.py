@@ -965,29 +965,35 @@ def _classify_icon(lay: PanelLayout, ic: Icon) -> None:
         ic.fill = (int(face_lum), int(face_lum), int(face_lum))
         return
     body_px = px[~face_like] if (~face_like).sum() >= 3 else px
-    if not lay.dark:
-        # blur mixes the white pictogram into the fill: keep the darker half
+    if True:
+        # blur mixes the (white / tan) pictogram into the fill: keep the darker part
         lb = body_px.mean(axis=1)
         body_px = body_px[lb <= np.percentile(lb, 60)]
     colour = np.median(body_px, axis=0)
     ic.fill = (int(colour[0]), int(colour[1]), int(colour[2]))
-    # the face-down card's tan pattern vs the white pictograms of the resource cards
-    r_, g_, b_ = px[:, 0], px[:, 1], px[:, 2]
-    tan = float(((r_ > 170) & (g_ > 0.7 * r_) & (b_ < 0.62 * r_) & (g_ - b_ > 35)).mean())
+    # the face-down card's tan pattern vs the white pictograms of the resource cards: the colour of
+    # the brightest body pixels (blur mixes the mark with the fill, JPEG thins it; a white mark keeps
+    # a high blue / red ratio, a tan one does not)
+    lb_all = px.mean(axis=1)
+    top = px[lb_all >= np.percentile(lb_all, 85)]
+    mark = np.median(top, axis=0) if top.size else colour
+    mark_gain = float(mark.mean() - colour.mean())
+    br = float(mark[2]) / max(1.0, float(mark[0]))
     t = max(1, int(round(0.18 * min(hh, ww))))
     ring = np.ones((hh, ww), dtype=bool)
     ring[t:hh - t, t:ww - t] = False
     rp = full[ring]
-    teal = float(((rp[:, 1] - rp[:, 0] > 60) & (rp[:, 2] - rp[:, 0] > 50)).mean()) if rp.size else 0.0
+    teal = float(np.median(np.minimum(rp[:, 1] - rp[:, 0], rp[:, 2] - rp[:, 0]))) if rp.size else 0.0
     dists = []
     for kind, refs in ICON_REFS.items():
         d = min(float(np.sqrt(((colour - np.asarray(r, dtype=np.float32)) ** 2).sum())) for r in refs)
         if kind == "dev":
-            d -= 60.0 * min(1.0, teal / 0.2)
-        if kind == "card":
-            d -= 50.0 * min(1.0, tan / 0.12)
-        elif kind in ("brick", "wood", "ore", "dev"):
-            d += 30.0 * min(1.0, tan / 0.12)
+            d -= 60.0 * float(np.clip((teal - 8.0) / 25.0, 0.0, 1.0))
+        if mark_gain >= 25.0 and kind in ("card", "brick"):
+            if kind == "card":
+                d += 80.0 * float(np.clip((br - 0.56) / 0.1, 0.0, 1.0))
+            else:
+                d += 80.0 * float(np.clip((0.62 - br) / 0.1, 0.0, 1.0))
         dists.append((d, kind))
     dists.sort()
     ic.kind = dists[0][1]
@@ -1015,7 +1021,8 @@ def _trim(mask: np.ndarray) -> Tuple[int, int, int, int]:
     return r0, r1, c0, c1
 
 
-def _icon_shape(mask: np.ndarray, span: float, shape_only: bool = False) -> Tuple[bool, bool, bool]:
+def _icon_shape(mask: np.ndarray, span: float, shape_only: bool = False, die_like: bool = False
+                ) -> Tuple[bool, bool, bool]:
     """``(is_icon, is_card, is_ring)`` of one (trimmed) blob mask: a (rounded) rectangle - its
     middle rows / columns span nearly the whole box and its rows filled between their outermost
     pixels cover the box (an O / Q of a bold name only ~0.8) - either solid (a card, a die on the
@@ -1040,7 +1047,8 @@ def _icon_shape(mask: np.ndarray, span: float, shape_only: bool = False) -> Tupl
     solid = float(mask.mean())
     ring_b, ring_i = _ring_score(mask)
     is_card = solid >= 0.55
-    is_ring = ring_b >= 0.5 and ring_i <= 0.35 and ww >= 0.6 * hh
+    # (a die with a light face: blurred pips may touch the outline and fill the inside more)
+    is_ring = ring_b >= 0.5 and ring_i <= (0.5 if die_like else 0.35) and ww >= 0.6 * hh
     return (is_card or is_ring), is_card, is_ring
 
 
@@ -1068,6 +1076,21 @@ def _icon_parts(full: np.ndarray, die_like: bool = False) -> List[Tuple[int, int
     # column dips than the gaps
     w1, g1 = (1.0 * hh, 0.22 * hh) if die_like else (0.75 * hh, 0.133 * hh)
     n = max(1, int(round((ww + g1) / (w1 + g1))))
+    # the rounded corners leave notches between glued icons in the top / bottom rows even when blur
+    # fills the gaps in the middle
+    best_rows: List[List[Tuple[int, int]]] = []
+    for r in (0, 1, hh - 2, hh - 1):
+        if not 0 <= r < hh:
+            continue
+        runs = [(a, b) for a, b in _runs(full[r], 1) if b - a >= max(2, 0.35 * w1)]
+        best_rows.append(runs)
+    counts = [len(rr) for rr in best_rows]
+    if counts:
+        m = max(counts)
+        if m >= 2 and 0.65 * n <= m <= 1.5 * n + 0.5 and counts.count(m) >= 2:
+            rr = best_rows[counts.index(m)]
+            cuts = [0] + [int(round((rr[i][1] + rr[i + 1][0]) / 2.0)) for i in range(len(rr) - 1)] + [ww]
+            return list(zip(cuts[:-1], cuts[1:]))
     if n == 1:
         return [(0, ww)]
     cuts = [int(round(i * (ww + g1) / n - (g1 / 2 if 0 < i < n else 0))) for i in range(n + 1)]
@@ -1124,14 +1147,16 @@ def _find_icons(lab: np.ndarray, cm: _Comps, ids: Sequence[int], ya: int, hmin: 
         # glued icons all span the full height (most columns of a blob of bold letters only span
         # the x-height)
         colspan = np.where(full.any(axis=0), hh - np.argmax(full[::-1], axis=0) - np.argmax(full, axis=0), 0)
-        if float((colspan >= 0.85 * hh).mean()) < 0.7:
-            continue
-        boxes = []
-        any_ring = False
         dl = False
         if rgb is not None:
             dl = _die_like(rgb[y0 - ya:y1 - ya, x0:x1], None if bg is None else bg[(y0 + y1) // 2 - ya])
-        for pc0, pc1 in _icon_parts(full, dl):
+        # (a die's rounded outline: slightly looser; its face is light, a name's letters are not)
+        if float((colspan >= (0.8 if dl else 0.85) * hh).mean()) < (0.6 if dl else 0.7):
+            continue
+        boxes = []
+        any_ring = False
+        parts = _icon_parts(full, dl)
+        for pc0, pc1 in parts:
             sub = mask[:, pc0:pc1]
             cols = np.flatnonzero(sub.any(axis=0))
             if cols.size == 0:
@@ -1139,7 +1164,16 @@ def _find_icons(lab: np.ndarray, cm: _Comps, ids: Sequence[int], ya: int, hmin: 
             q0, q1 = pc0 + int(cols[0]), pc0 + int(cols[-1]) + 1
             sub = mask[:, q0:q1]
             t0, t1, u0, u1 = _trim(sub)
-            ok, is_card, is_ring = _icon_shape(sub[t0:t1, u0:u1], span)
+            ok, is_card, is_ring = _icon_shape(sub[t0:t1, u0:u1], span, die_like=dl)
+            if not ok and len(parts) > 1 and q1 - q0 >= 5:
+                # a cut at a blurred gap leaves the gap's column on one side: drop it and retry
+                for a, b in ((q0 + 1, q1), (q0, q1 - 1), (q0 + 1, q1 - 1)):
+                    sub2 = mask[:, a:b]
+                    v0, v1, w0, w1 = _trim(sub2)
+                    ok, is_card, is_ring = _icon_shape(sub2[v0:v1, w0:w1], span, die_like=dl)
+                    if ok:
+                        q0, q1, sub, t0, t1, u0, u1 = a, b, sub2, v0, v1, w0, w1
+                        break
             if not ok:
                 continue
             any_ring |= is_ring and not is_card
@@ -1291,8 +1325,41 @@ def _band_metrics(lay: PanelLayout) -> None:
         lay._cap = float(span_up - top[0]) if top.size else 1.4 * lay.xh     # type: ignore[attr-defined]
     else:
         lay._cap = 1.4 * lay.xh                    # type: ignore[attr-defined]
+    if len(profs) >= 3:
+        _refine_baselines(lay)
     for band in lay.bands:
         band.xline = band.baseline - lay.xh
+
+
+def _refine_baselines(lay: PanelLayout) -> None:
+    """A short run with a heavy descender ("got") can put the densest-rows baseline at the
+    descender's bottom: with the panel's x-height known, the baseline is where the ink drops
+    going down AND one x-height above it the ink rises (the x-line), so that pair is looked for
+    near the first estimate and taken when it is clearly the better one."""
+    xh = int(round(lay.xh))
+    if xh < 4:
+        return
+    for band in lay.bands:
+        ya, prof = band._prof                          # type: ignore[attr-defined]
+        if prof.sum() <= 0:
+            continue
+        pk = np.concatenate([[0.0], prof / max(1e-6, float(prof.max())), [0.0]])   # pk[i + 1] = row i
+
+        def score(b: int) -> float:                    # b: baseline row (first row below the body)
+            if b - xh - 1 < -1 or b >= prof.size + 1:
+                return -9.0
+            drop = pk[b] - pk[b + 1]                   # rows b - 1 -> b
+            rise = pk[b - xh + 1] - pk[b - xh]         # rows b - xh - 1 -> b - xh
+            return drop + rise
+        b0 = int(round(band.baseline - ya))
+        cur = score(b0)
+        best, bb = cur, b0
+        for b in range(b0 - int(round(0.6 * xh)), b0 + int(round(0.3 * xh)) + 1):
+            v = score(b)
+            if v > best:
+                best, bb = v, b
+        if bb != b0 and best > cur + 0.25:
+            band.baseline = float(ya + bb)
 
 
 # ---------------------------------------------------------------------------
@@ -1464,14 +1531,37 @@ def _token_colour(lay: PanelLayout, band: Band, pieces: Sequence[Word]) -> Tuple
     return (float(col[0]), float(col[1]), float(col[2]))
 
 
-def _lab(rgb: Sequence[float]) -> np.ndarray:
-    """CIE L*a*b* of an sRGB colour (0..255)."""
+_XYZ = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
+_WHITE = np.array([0.95047, 1.0, 1.08883])
+
+
+def _lab_many(rgb: np.ndarray) -> np.ndarray:
+    """CIE L*a*b* of sRGB colours (``(N, 3)``, 0..255)."""
     c = np.asarray(rgb, dtype=np.float64) / 255.0
     c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
-    xyz = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]]) @ c
-    xyz = xyz / np.array([0.95047, 1.0, 1.08883])
+    xyz = (c @ _XYZ.T) / _WHITE
     f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16.0 / 116.0)
-    return np.array([116.0 * f[1] - 16.0, 500.0 * (f[0] - f[1]), 200.0 * (f[1] - f[2])])
+    return np.stack([116.0 * f[..., 1] - 16.0, 500.0 * (f[..., 0] - f[..., 1]), 200.0 * (f[..., 1] - f[..., 2])],
+                    axis=-1)
+
+
+def _lab(rgb: Sequence[float]) -> np.ndarray:
+    """CIE L*a*b* of an sRGB colour (0..255)."""
+    return _lab_many(np.asarray(rgb, dtype=np.float64)[None, :3])[0]
+
+
+def _flat_palette(palette: Dict[str, List[Tuple[float, float, float]]], exclude_grey: bool
+                  ) -> Tuple[List[str], np.ndarray, np.ndarray]:
+    cols: List[str] = []
+    refs: List[Tuple[float, float, float]] = []
+    for col, rs in palette.items():
+        if exclude_grey and col == "white":
+            continue
+        cols.append(col)
+        refs.extend(rs)
+    owner = np.concatenate([np.full(len(rs), i) for i, (col, rs) in
+                            enumerate((c, palette[c]) for c in cols)]) if cols else np.zeros(0, dtype=np.int64)
+    return cols, np.asarray(refs, dtype=np.float64).reshape(-1, 3), owner.astype(np.int64)
 
 
 def classify_name_colour(rgb: Sequence[float], palette: Dict[str, List[Tuple[float, float, float]]],
@@ -1482,30 +1572,27 @@ def classify_name_colour(rgb: Sequence[float], palette: Dict[str, List[Tuple[flo
     With ``bg`` the colour may be a partial-coverage mix with the background (blur, thin strokes):
     each reference is scaled along its mixing line (coverage 0.45..1.2) before the CIE76 distance.
     """
-    lab = _lab(rgb)
-    best: List[Tuple[float, str]] = []
-    bgv = None if bg is None else np.asarray(bg, dtype=np.float64)
-    obs = np.asarray(rgb, dtype=np.float64)
-    for col, refs in palette.items():
-        if exclude_grey and col == "white":
-            continue
-        ds = []
-        for r in refs:
-            rv = np.asarray(r, dtype=np.float64)
-            if bgv is not None:
-                v = rv - bgv
-                vv = float(v @ v)
-                a = float((obs - bgv) @ v) / vv if vv > 1.0 else 1.0
-                a = min(1.2, max(0.45, a))
-                rv = np.clip(bgv + a * v, 0, 255)
-            ds.append(float(np.linalg.norm(lab - _lab(rv))))
-        best.append((min(ds), col))
-    if not best:
+    cols, R, owner = _flat_palette(palette, exclude_grey)
+    if not cols or R.shape[0] == 0:
         return "?", 0.0, 1e9
-    best.sort()
-    margin = best[1][0] - best[0][0] if len(best) > 1 else 50.0
-    conf = min(1.0, margin / 12.0) * (1.0 if best[0][0] < 25.0 else 0.6)
-    return best[0][1], float(conf), float(best[0][0])
+    obs = np.asarray(rgb, dtype=np.float64)[:3]
+    lab = _lab(obs)
+    rv = R
+    if bg is not None:
+        bgv = np.asarray(bg, dtype=np.float64)[:3]
+        v = R - bgv
+        vv = (v * v).sum(axis=1)
+        a = np.where(vv > 1.0, ((obs - bgv) @ v.T) / np.maximum(vv, 1e-9), 1.0)
+        a = np.clip(a, 0.45, 1.2)
+        rv = np.clip(bgv + a[:, None] * v, 0, 255)
+    ds = np.linalg.norm(lab[None, :] - _lab_many(rv), axis=1)
+    per = np.full(len(cols), np.inf)
+    np.minimum.at(per, owner, ds)
+    order = np.argsort(per, kind="stable")
+    d0 = float(per[order[0]])
+    margin = float(per[order[1]]) - d0 if len(cols) > 1 else 50.0
+    conf = min(1.0, margin / 12.0) * (1.0 if d0 < 25.0 else 0.6)
+    return cols[int(order[0])], float(conf), d0
 
 
 # ---------------------------------------------------------------------------
@@ -1585,30 +1672,91 @@ def _group_band(lay: PanelLayout, band: Band) -> None:
     band.items = toks
 
 
+def _hue_code(rgb: Sequence[float]) -> int:
+    """A coarse colour code (12 hue sectors centred on red, orange, yellow ... so the usual player
+    colours sit mid-sector; 12 for a greyish colour)."""
+    r, g, b = (float(v) for v in rgb)
+    mx, mn = max(r, g, b), min(r, g, b)
+    if mx - mn < 40.0:
+        return 12
+    if mx == r:
+        hue = ((g - b) / (mx - mn)) % 6.0
+    elif mx == g:
+        hue = (b - r) / (mx - mn) + 2.0
+    else:
+        hue = (r - g) / (mx - mn) + 4.0
+    return int(hue * 2.0 + 0.5) % 12
+
+
+#: The entry key's coverage map: block size (pixels) and levels of the block mean coverage.
+KEY_BLOCK = 2
+KEY_LEVELS = 2
+
+
 def _entry_key(lay: PanelLayout, bands: Sequence[Band]) -> str:
-    """Content hash of an entry's normalised ink: coverage (colour distance / the text contrast) in
-    4 levels plus the colour of the strong pixels, trimmed to the ink - independent of the vertical
-    position and (up to anti-aliasing) of the stripe colour."""
+    """Content hash of an entry's normalised ink.
+
+    Only the entry's own pixels count: the colour difference to the entry's own background (the
+    median colour of its rows), divided by the strongest difference nearby (so it is the ink's
+    coverage of the pixel, whatever the ink and background colours: a stripe colour change leaves
+    it unchanged), in a tight box per row, averaged over 3x3 blocks and quantised coarsely (so
+    the one-level rendering differences near a stripe edge almost never flip a level); plus the
+    rows' offsets relative to the first row (not to the panel crop, whose inner edge can move by a
+    pixel) and per token a coarse colour (a name's hue sector, an icon's kind and die face).
+    Nothing depends on panel-wide estimates or on the neighbouring entries, so an unchanged entry
+    keeps its key when it scrolls."""
     h = hashlib.blake2b(digest_size=12)
-    cmax = max(30.0, float(getattr(lay, "_text_norm", 150.0)))
+    if not bands:
+        return h.hexdigest()
+    H = lay.rgb.shape[0]
+    ya0 = min(b._ya for b in bands)                    # type: ignore[attr-defined]
+    yb0 = max(b._yb for b in bands)                    # type: ignore[attr-defined]
+    ebg = np.median(lay.rgb[ya0:yb0].reshape(-1, 3), axis=0).astype(np.int16)
+    ref_y = ref_x = None
     for band in bands:
-        ya, yb = band._ya, band._yb                    # type: ignore[attr-defined]
-        d = lay.dist[ya:yb]
-        lev = np.clip(np.floor(d / cmax * 4.0), 0, 4).astype(np.uint8)
-        rows = np.flatnonzero(lev.max(axis=1) > 0)
-        cols = np.flatnonzero(lev.max(axis=0) > 0)
-        if rows.size == 0:
+        y0 = max(0, band.y0 - 1)
+        y1 = min(H, band.y1 + 1)
+        px = lay.rgb[y0:y1].astype(np.int16)
+        # signed: ink is darker than the background on a light panel, lighter on a dark one (the
+        # resampling halo on the other side, clipped differently on each stripe, counts as none)
+        pol = 1 if lay.dark else -1
+        d = np.maximum(0, (pol * (px - ebg)).max(axis=2)).astype(np.float32)
+        if cv2 is not None:
+            m = cv2.dilate(d, np.ones((5, 5), np.uint8))
+        else:
+            m = d.copy()
+            for ax in (0, 1):
+                for sh in (1, 2):
+                    m = np.maximum(m, np.roll(d, sh, axis=ax))
+                    m = np.maximum(m, np.roll(d, -sh, axis=ax))
+        cov = np.where(m >= 48.0, d / np.maximum(m, 1.0), 0.0)
+        own = cov >= 0.5
+        if not own.any():
             h.update(b"|empty")
             continue
-        r0, r1, c0, c1 = rows[0], rows[-1] + 1, cols[0], cols[-1] + 1
-        sub = lev[r0:r1, c0:c1]
-        rgb = lay.rgb[ya + r0:ya + r1, c0:c1] >> 5
-        colour = np.where(sub[:, :, None] >= 3, rgb, 0).astype(np.uint8)
-        h.update(np.asarray(sub.shape, dtype=np.int32).tobytes())
-        h.update(np.asarray([c0], dtype=np.int32).tobytes() if False else b"")
-        h.update(sub.tobytes())
-        h.update(colour.tobytes())
-        h.update(b"|")
+        rows = np.flatnonzero(own.any(axis=1))
+        cols = np.flatnonzero(own.any(axis=0))
+        r0, r1, c0, c1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+        sub = cov[r0:r1, c0:c1]
+        hh, ww = sub.shape
+        kb = KEY_BLOCK
+        ph, pw = (-hh) % kb, (-ww) % kb
+        if ph or pw:
+            sub = np.pad(sub, ((0, ph), (0, pw)))
+        blk = sub.reshape(sub.shape[0] // kb, kb, sub.shape[1] // kb, kb).mean(axis=(1, 3))
+        lev = np.minimum(KEY_LEVELS - 1, blk * KEY_LEVELS).astype(np.uint8)
+        top = y0 + r0
+        if ref_y is None:
+            ref_y, ref_x = top, c0
+        h.update(np.asarray([r1 - r0, c1 - c0, top - ref_y, c0 - ref_x], dtype=np.int32).tobytes())
+        h.update(lev.tobytes())
+        codes = []
+        for it in band.items:
+            if isinstance(it, Icon):
+                codes.append(f"{it.kind}{it.face}")
+            elif isinstance(it, NameTok):
+                codes.append(f"n{_hue_code(getattr(it, 'rgb', (0, 0, 0)))}")
+        h.update((",".join(codes) + "|").encode())
     return h.hexdigest()
 
 

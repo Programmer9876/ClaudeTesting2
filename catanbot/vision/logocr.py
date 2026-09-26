@@ -338,6 +338,20 @@ def _parse_ok(text: str) -> Tuple[Any, bool]:
     return ev, ok
 
 
+def _repair_numbers(text: str) -> Optional[str]:
+    """A line that does not parse because a number's digits were read as two words ("stole 1 1
+    brick": wide digit spacing in some fonts): the first join of adjacent digit words that makes
+    it parse, else None."""
+    words = text.split(" ")
+    for i in range(len(words) - 1):
+        a, b = words[i], words[i + 1]
+        if a.isdigit() and b.isdigit() and len(a) + len(b) <= 2:
+            cand = " ".join(words[:i] + [a + b] + words[i + 2:])
+            if _parse_ok(cand)[1]:
+                return cand
+    return None
+
+
 # ---------------------------------------------------------------------------
 # the reader
 # ---------------------------------------------------------------------------
@@ -461,7 +475,12 @@ def read_log_panel(img: Any, box: Optional[Sequence[float]] = None, profile: Opt
             text, conf, dbg, notes = decoded[id(first_of[ck])]
             ev0, ok0 = _parse_ok(text)
             if not ok0:
-                conf = min(conf, 0.35)
+                fixed = _repair_numbers(text)
+                if fixed is not None:
+                    text, conf = fixed, min(conf, 0.55)
+                    notes = list(notes) + ["digits split by a wide gap joined into one number"]
+                else:
+                    conf = min(conf, 0.35)
             fresh[ck] = (text, conf, dbg, notes)
             if cache is not None:
                 cache.put(ck, (text, conf, dbg, notes))

@@ -78,8 +78,8 @@ MAX_SPAN = 4
 MAX_SEG_XH = 2.3
 #: At or below this x-height (pixels) every ink column is a cut candidate; above it, only the
 #: intervals between natural cuts wider than ``DENSE_WIDE`` x-heights get every column.
-DENSE_XH_ALL = 5.5
-DENSE_WIDE = 0.95
+DENSE_XH_ALL = 6.5
+DENSE_WIDE = 0.8
 DENSE_XH = 8.0
 
 MODEL_PATH_ENV = "CATANBOT_LOGOCR_MODEL"
@@ -325,6 +325,7 @@ def segment_features(ri: RunInk, bounds: Sequence[int], gaps: Sequence[float], m
     B = np.asarray(bounds, dtype=np.int64)
     G_ = np.asarray(gaps, dtype=np.float64)
     maxw = MAX_SEG_XH * xh + 1.0
+    wide_gap = max(2.0, 0.45 * xh)          # a word space: never inside one glyph
     I, J = [], []
     for i in range(nb - 1):
         lim = nb if max_span is None else min(nb, i + 1 + max_span)
@@ -333,6 +334,8 @@ def segment_features(ri: RunInk, bounds: Sequence[int], gaps: Sequence[float], m
                 break
             I.append(i)
             J.append(j)
+            if j < nb - 1 and 50 > G_[j] >= wide_gap:
+                break
     if not I:
         return np.zeros((0, NUM_FEATURES), dtype=np.float32), []
     I = np.asarray(I)

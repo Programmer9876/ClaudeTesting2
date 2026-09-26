@@ -239,6 +239,9 @@ def _space_logp(gap_px: float, xh: float) -> Tuple[float, float]:
     return math.log(p), math.log(1.0 - p)
 
 
+#: Lexicon words whose score upper bound (log-prob) is below this are not tried on a run.
+WORD_UB_MIN = -40.0
+
 #: Marker word of a player name drawn in the text colour (the grey / white player).
 NAME_WORD = "\x00NAME"
 _NAME_SLOT_AFTER = ("<s>", "from", "with")
@@ -273,6 +276,15 @@ def decode_run(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: Sequenc
     wb[0] = wb[-1] = True
     # --- lexicon words: banded DP over all words at once ---------------------------------------
     M, lens, words = _lexicon_arrays()
+    # words that cannot score (a letter no segment of the run shows at all) are left out: an
+    # upper bound of a word's score is the sum of its letters' best segment scores
+    cmax = lp.max(axis=0)
+    ub = np.where(np.arange(M.shape[1])[None, :] < lens[:, None], cmax[M], 0.0).sum(axis=1)
+    keep = np.flatnonzero(ub > WORD_UB_MIN)
+    if keep.size < M.shape[0]:
+        M, lens, words = M[keep], lens[keep], [words[i] for i in keep.tolist()]
+    if M.shape[0] == 0:
+        M, lens, words = _lexicon_arrays()
     W, Lmax = M.shape
     start = np.where(wb, sp, NEG).astype(np.float32)
     start[0] = 0.0
@@ -281,6 +293,7 @@ def decode_run(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: Sequenc
     best_end = np.full((W, nb), NEG, dtype=np.float32)
     best_st = np.zeros((W, nb), dtype=np.int64)
     nsf = ns.astype(np.float32)
+    LPT = np.ascontiguousarray(LPB.transpose(1, 2, 0))          # (shift, class, start)
     active = np.arange(W)
     for k in range(Lmax):
         active = active[lens[active] > k]
@@ -292,12 +305,11 @@ def decode_run(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: Sequenc
         new = np.full((active.size, nb), NEG, dtype=np.float32)
         nst = np.zeros((active.size, nb), dtype=np.int64)
         for sft in range(1, min(D, nb - 1) + 1):
-            seg = LPB[:nb - sft, sft, :][:, ck].T
-            cand = cur[:, :nb - sft] + seg
+            cand = cur[:, :nb - sft] + LPT[sft, :, :nb - sft][ck]
             tgt = new[:, sft:]
             better = cand > tgt
-            new[:, sft:] = np.where(better, cand, tgt)
-            nst[:, sft:] = np.where(better, cst[:, :nb - sft], nst[:, sft:])
+            np.copyto(tgt, cand, where=better)
+            np.copyto(nst[:, sft:], cst[:, :nb - sft], where=better)
         dp[active] = new
         st[active] = nst
         done = active[lens[active] == k + 1]
