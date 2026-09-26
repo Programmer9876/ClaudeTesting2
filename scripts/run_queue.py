@@ -869,7 +869,7 @@ class Queue:
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
                  cpu: Callable[[], float] = children_cpu, proc_list: Callable[[], List[Tuple[int, str]]] = list_processes,
                  proc_stat: Callable[[], Tuple[List[int], int]] = read_proc_stat, runner=None, log=sys.stdout,
-                 tunable_check: bool = True, src_root: str = ROOT):
+                 tunable_check: bool = True, src_root: str = ROOT, poll_s: float = 30.0):
         self.plan_path = plan_path
         self.dir = os.path.abspath(d)
         os.makedirs(os.path.join(self.dir, "logs"), exist_ok=True)
@@ -891,7 +891,8 @@ class Queue:
         self.runner = runner or self._run_process
         self.log = log
         self.tunable_check = tunable_check
-        self.src_root = src_root
+        self.src_root = os.path.abspath(src_root)
+        self.poll_s = poll_s
         self.ledger = Ledger(os.path.join(self.dir, "ledger.jsonl"))
         self.indexes = IndexCache()
         self.plan = load_plan(plan_path)
@@ -1800,7 +1801,7 @@ class Queue:
             try:
                 while True:
                     try:
-                        return proc.wait(timeout=30.0)
+                        return proc.wait(timeout=self.poll_s)
                     except subprocess.TimeoutExpired:
                         if hard_check is not None and hard_check():
                             proc.send_signal(signal.SIGTERM)

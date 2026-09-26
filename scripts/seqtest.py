@@ -472,6 +472,13 @@ def _r(x: float, nd: int = 6) -> Optional[float]:
     return round(float(x), nd)
 
 
+def _p(p: Optional[float]) -> Optional[float]:
+    """A p-value kept to 6 significant digits (tiny p-values keep their magnitude for Holm)."""
+    if p is None or (isinstance(p, float) and math.isnan(p)):
+        return None
+    return float(f"{float(p):.6g}")
+
+
 def _load_ablate():
     name = "_ablate_catanatron_for_seqtest"
     if name in sys.modules:
@@ -604,7 +611,7 @@ def _final(design: Design, what: str, reason: str, k: int, st: LookStats, z: flo
     base = lab.split("(")[0]
     label = lab if "(" in lab else (f"{lab}({reason})" if reason else lab)
     return Verdict(status="final", verdict=base, reason=reason, label=label, look=k, pairs=st.ok,
-                   delta=_r(st.delta), se=_r(st.se), z=_r(z), p=_r(p, 8) if p is not None else None,
+                   delta=_r(st.delta), se=_r(st.se), z=_r(z), p=_p(p),
                    design=design.name, flags=list(extra_flags), stats=st.summary())
 
 
@@ -730,7 +737,7 @@ def decide(st: LookStats, design: str, k: int, n_max: int, *, aa: bool = False, 
         if promise is not None and delta + Z95 * se < promise:
             flags.append("promise not met")
         return _final(dz, "SHELVE", f"{tag}; cap", k, st, z, flags, p_stage)
-    v = Verdict(status="continue", look=k, pairs=st.ok, delta=_r(delta), se=_r(se), z=_r(z), p=_r(p_stage, 8),
+    v = Verdict(status="continue", look=k, pairs=st.ok, delta=_r(delta), se=_r(se), z=_r(z), p=_p(p_stage),
                 design=dz.name, stats=st.summary())
     return v
 
@@ -967,6 +974,73 @@ def cv_pool_mismatch(dbar: float, n: int, pool_mean: float, pool_m: int, limit_s
 def cv_information_fractions(vars_k: Sequence[float], var_final: float) -> List[float]:
     """Information fractions of the CV looks: t_k = Var_K / Var_k (capped at 1)."""
     return [min(1.0, var_final / v) if v > 0 else 1.0 for v in vars_k]
+
+
+def _cv_population(D: float, delta: float, p: float) -> Tuple[float, float, float]:
+    """Var(x), Cov(x, d), Var(d) of one pair under the flip model (default wins w.p. p; given the default, the
+    candidate flips so that P(x=+1) = (D + delta)/2, P(x=-1) = (D - delta)/2)."""
+    pp, pm = (D + delta) / 2.0, (D - delta) / 2.0
+    ex = pp - pm
+    vx = pp + pm - ex * ex
+    # x = -1 only when d = 1, x = +1 only when d = 0: E[x d] = -pm
+    cxd = -pm - ex * p
+    vd = p * (1.0 - p)
+    return vx, cxd, vd
+
+
+def cv_design_boundaries(D: float, p: float, n_max: int, m: int, looks: int = K_LOOKS,
+                         alpha: float = ALPHA_ADOPT) -> Tuple[List[float], List[float]]:
+    """Pre-declared CV design: information fractions ``t_k = Var_K / Var_k`` from the row's class (D prior, base
+    rate, pool size) and the Lan-DeMets O'Brien-Fleming boundaries at those fractions."""
+    vx, cxd, vd = _cv_population(D, 0.0, p)
+    resid = vx - cxd * cxd / vd
+    beta = cxd / vd
+    c = beta * beta * p * (1.0 - p) / m
+    ns = look_sizes(n_max, looks)
+    vs = [resid / n + c for n in ns]
+    ts = cv_information_fractions(vs, vs[-1])
+    return ts, boundaries_general(ts, alpha, "obf")
+
+
+def simulate_cv(D: float, delta: float, p: float, m: int, n_max: int = 2000, rows: int = 2000, seed: int = 0,
+                paired: bool = False) -> Dict[str, float]:
+    """ADOPT rate of the sequential CV screen (``paired=True``: the same data with the paired statistic and the
+    fixed table), futility and REJECT left out (they only lower false ADOPT)."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    d = (rng.random((rows, n_max)) < p).astype(np.int8)
+    a = min(1.0, max(0.0, (D + delta) / (2.0 * (1.0 - p))))
+    b = min(1.0, max(0.0, (D - delta) / (2.0 * p)))
+    u = rng.random((rows, n_max))
+    c = np.where(d == 1, (u >= b).astype(np.int8), (u < a).astype(np.int8))
+    x = (c - d).astype(np.float64)
+    df = d.astype(np.float64)
+    pool = rng.binomial(m, p, size=rows) / m
+    ns = look_sizes(n_max)
+    if paired:
+        bounds = list(ADOPT_TABLE)
+    else:
+        _, bounds = cv_design_boundaries(D, p, n_max, m)
+    adopt = np.zeros(rows, dtype=bool)
+    stop = np.full(rows, float(n_max))
+    for j, n in enumerate(ns):
+        xs, ds = x[:, :n], df[:, :n]
+        xb, db = xs.mean(1), ds.mean(1)
+        vx = xs.var(1, ddof=1)
+        vd = ds.var(1, ddof=1)
+        cxd = ((xs - xb[:, None]) * (ds - db[:, None])).sum(1) / (n - 1)
+        if paired:
+            z = xb / np.maximum(np.sqrt(vx / n), 1.0 / n)
+        else:
+            beta = np.where(vd > 0, cxd / np.where(vd > 0, vd, 1.0), 0.0)
+            theta = xb - beta * (db - pool)
+            var = np.maximum(vx - np.where(vd > 0, cxd * cxd / np.where(vd > 0, vd, 1.0), 0.0), 0.0) / n \
+                + beta * beta * pool * (1.0 - pool) / m
+            z = theta / np.sqrt(np.maximum(var, 1e-12))
+        hit = (~adopt) & (stop == n_max) & (z >= bounds[j])
+        adopt |= hit
+        stop[hit] = n
+    return {"adopt": float(adopt.mean()), "rows": rows}
 
 
 # ---------------------------------------------------------------------------
