@@ -77,6 +77,15 @@ agree with catanatron), and catanatron 3.2.1 prompts the *later* discarders
 of a 7 with a hard-coded ``> 7`` regardless of its ``discard_limit``
 (mirrored by :func:`state_to_catanbot`; 3.3 applies the limit to everyone).
 
+Player count: 2 to 4 seats (``play_game`` / ``make_game`` seat whatever players they are
+given; :func:`colors_for` gives the bench's colours for a count).  Nothing in the conversion
+assumes four players: seats follow ``State.colors``, the discard queue is built from the seated
+players (3.3's ``discard_counts`` / 3.2.1's hard-coded rule), a robber victim is mapped by colour
+to its seat and catanbot's engine plays the base rules for any 2-4 players.  Both engines
+play a 2-player game with the unchanged base rules (full board, 7-card discard limit, the
+robber may steal from the only opponent, setup order 0-1-1-0), not the official two-player
+variant.
+
 Both catanatron generations are supported by feature detection (:data:`API_33`):
 the PyPI 3.2.1 wheel (``State.actions``, ``State.playable_actions``,
 ``catanatron.state.apply_action``, one random ``DISCARD``, 3-tuple robber
@@ -145,6 +154,7 @@ __all__ = [
     "DEFAULT_SPEC",
     "COLORS",
     "COLOR_NAMES",
+    "colors_for",
     "API_33",
     "CATANATRON_VERSION",
     "DISCARD_LEGACY",
@@ -199,6 +209,14 @@ DEFAULT_SPEC = "search:depth=1,evaluator=heuristic"
 #: catanatron seat colours in the order the benchmark assigns them.
 COLORS: Tuple[Color, ...] = (Color.RED, Color.BLUE, Color.ORANGE, Color.WHITE)
 COLOR_NAMES: Dict[Color, str] = {Color.RED: "red", Color.BLUE: "blue", Color.ORANGE: "orange", Color.WHITE: "white"}
+
+
+def colors_for(num_players: int = len(COLORS)) -> Tuple[Color, ...]:
+    """The bench's seat colours for a ``num_players`` game (2-4): the first ``num_players`` of
+    :data:`COLORS` (a 1v1 game seats RED and BLUE)."""
+    if not 2 <= int(num_players) <= len(COLORS):
+        raise ValueError(f"catanatron games have 2 to {len(COLORS)} players, got {num_players}")
+    return COLORS[:int(num_players)]
 
 # catanatron resource / dev-card strings <-> catanbot indices
 RESOURCE_TO_CB: Dict[str, int] = {"WOOD": B.WOOD, "BRICK": B.BRICK, "SHEEP": B.SHEEP, "WHEAT": B.WHEAT, "ORE": B.ORE}

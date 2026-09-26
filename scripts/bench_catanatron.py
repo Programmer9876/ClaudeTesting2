@@ -12,6 +12,7 @@ Usage::
     python3 scripts/bench_catanatron.py --probe-trades 200 --opponent value,alphabeta,random
     python3 scripts/bench_catanatron.py --games 24 --info counted [--info-samples 4] [--discards-public]
     python3 scripts/bench_catanatron.py --games 24 --mixed-opponents value,alphabeta,sameturn
+    python3 scripts/bench_catanatron.py --players 2 --opponent alphabeta --game-range 0:40 --log-actions DIR
 
 Every game seats one :class:`catanbot.bench.catanatron_adapter.CatanbotPlayer`
 (built from ``--spec``, see ``catanbot.selfplay.make_bot``) against three
@@ -78,6 +79,17 @@ Strength-proof options (``docs/PROOF_PROTOCOL.md``, ``scripts/run_proof.sh``):
   ``o`` = opponent, in turn order) and ``won`` = the winner is one of ours
   (the null of a 2v2 test is 50 %).  The default ``--our-seats 1`` is the
   1v3 rotation above, unchanged.
+* ``--players 2`` - 1v1 (head-to-head) games: catanbot against ONE copy of
+  the opponent, catanbot in seat ``g % 2`` (so it moves first in the even
+  games), colours RED / BLUE, the same per-game seeds, ``--game-range``
+  chunks, ``--hash-seed``, ``--rerun-crashes``, ``--log-actions``, ``--info``
+  and ``--trades`` machinery; both engines play the base rules with two
+  seats (full board, 7-card discard limit, setup order 0-1-1-0).  Records and
+  the summary carry ``format: "1v1"``, ``players: 2`` and a null of 50 %;
+  action logs are named ``<opponent>_1v1_seed<S>_g<A>-<B>.jsonl.gz`` and
+  replay like the others.  Not with ``--our-seats 2`` or
+  ``--mixed-opponents``.  The default ``--players 4`` leaves every 4-player
+  format above exactly as it was (``docs/BENCH_1V1_PROTOCOL.md``).
 * ``--game-range A:B`` (or ``--game-offset A`` with ``--games N``) plays
   only games ``A .. B-1`` of the run with this ``--seed``: per-game seeds,
   seats and arrangements depend on the game index alone, so chunks that
@@ -151,6 +163,7 @@ from catanbot.bench.catanatron_adapter import (  # noqa: E402
     TRADE_MODES,
     BenchOpponent,
     CatanbotPlayer,
+    colors_for,
     play_game,
     timing_summary,
 )
@@ -376,14 +389,29 @@ ARRANGEMENTS_2V2: Tuple[Tuple[int, int], ...] = tuple(itertools.combinations(ran
 BOT_SEED_STRIDE = 7919
 
 
-def our_seats_for(g: int, our_seats: int = 1) -> Tuple[int, ...]:
+def our_seats_for(g: int, our_seats: int = 1, players: int = len(COLORS)) -> Tuple[int, ...]:
     """Seats (turn-order positions, 0 moves first) catanbot plays in game ``g``: ``(g % 4,)``
-    in 1v3, ``ARRANGEMENTS_2V2[g % 6]`` in 2v2."""
+    in 1v3, ``ARRANGEMENTS_2V2[g % 6]`` in 2v2, ``(g % 2,)`` in 1v1 (``players=2``)."""
+    if players == 2:
+        if our_seats != 1:
+            raise ValueError(f"a 2-player game has one catanbot seat, got our_seats={our_seats}")
+        return (g % 2,)
+    if players != len(COLORS):
+        raise ValueError(f"players must be 2 or {len(COLORS)}, got {players}")
     if our_seats == 1:
         return (g % len(COLORS),)
     if our_seats == 2:
         return ARRANGEMENTS_2V2[g % len(ARRANGEMENTS_2V2)]
     raise ValueError(f"our_seats must be 1 or 2, got {our_seats}")
+
+
+def match_format(our_seats: int = 1, players: int = len(COLORS), mixed: bool = False) -> str:
+    """The format tag of a run / game record: ``1v3``, ``2v2``, ``1v3-mixed`` or ``1v1``."""
+    if players == 2:
+        return "1v1"
+    if mixed:
+        return "1v3-mixed"
+    return "2v2" if our_seats == 2 else "1v3"
 
 
 def seat_pattern(seats: Sequence[int], n: int = len(COLORS)) -> str:
@@ -409,10 +437,11 @@ def game_indices(games: int, offset: int = 0, game_range: Optional[Tuple[int, in
     return range(offset, offset + games)
 
 
-def plan_games(base_seed: int, indices: Sequence[int], our_seats: int = 1) -> List[Tuple[int, int, Tuple[int, ...]]]:
+def plan_games(base_seed: int, indices: Sequence[int], our_seats: int = 1,
+               players: int = len(COLORS)) -> List[Tuple[int, int, Tuple[int, ...]]]:
     """``(game index, catanatron seed, catanbot seats)`` of every game in ``indices`` - a function of
     the index alone, so any split of ``0..N-1`` into ranges plays the same games as one run."""
-    return [(g, game_seed(base_seed, g), our_seats_for(g, our_seats)) for g in indices]
+    return [(g, game_seed(base_seed, g), our_seats_for(g, our_seats, players)) for g in indices]
 
 
 #: The 6 orders of the three ``--mixed-opponents`` presets (game ``g`` uses ``(g // 4) % 6``).
@@ -466,7 +495,7 @@ def info_meta(opts: Optional[Dict[str, object]]) -> Dict[str, object]:
 
 def action_log_path(directory: str, opponent: str, our_seats: int, seed: int, indices: range,
                     fmt: Optional[str] = None) -> str:
-    """``DIR/<opponent>_<1v3|2v2|1v3-mixed>_seed<S>_g<A>-<B>.jsonl.gz`` for ``--log-actions``."""
+    """``DIR/<opponent>_<1v3|2v2|1v3-mixed|1v1>_seed<S>_g<A>-<B>.jsonl.gz`` for ``--log-actions``."""
     tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", opponent)
     fmt = fmt or ("2v2" if our_seats == 2 else "1v3")
     return os.path.join(directory, f"{tag}_{fmt}_seed{seed}_g{indices.start:05d}-{indices.stop:05d}.jsonl.gz")
