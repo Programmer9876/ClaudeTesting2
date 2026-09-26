@@ -92,6 +92,7 @@ input[type=range] { width: 100%; accent-color: var(--ours); }
 .chartbox { padding: 12px 14px 8px; }
 .chartbox h2, .logbox h2 { font-family: var(--display); font-size: 16px; font-weight: 700; margin: 0 0 6px; }
 .chartsvg { width: 100%; height: auto; display: block; }
+.chartnote { margin: 4px 0 2px; font-size: 12.5px; color: var(--muted); }
 
 .logbox { padding: 12px 0 0; }
 .logbox h2 { padding-inline: 14px; }
@@ -154,6 +155,7 @@ kbd { font-family: var(--mono); font-size: 11.5px; border: 1px solid var(--line)
       <section class="card chartbox" aria-label="Victory points over the game">
         <h2>Race to <span id="target">10</span></h2>
         <svg class="chartsvg" id="chart" viewBox="0 0 400 150" role="img" aria-label="Victory points by round"></svg>
+        <p class="chartnote" id="chartnote" hidden>Solid line: true points. Dashed line: the points the other players can see. The gap is hidden Victory Point cards.</p>
       </section>
       <section class="card logbox" aria-label="Game log">
         <h2>Game log</h2>
@@ -181,6 +183,7 @@ const el = (tag, attrs = {}, parent) => {
   return e;
 };
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const hiddenAtEnd = s => { const P = G.steps[N - 1].P[s]; return P[0] - P[1]; };
 const name = s => G.players[s].ours ? `${colors[s]} (catanbot)` : `${colors[s]} (${G.players[s].who})`;
 
 // ---- header ---------------------------------------------------------------
@@ -196,7 +199,9 @@ const name = s => G.players[s].ours ? `${colors[s]} (catanbot)` : `${colors[s]} 
   document.getElementById("sub").textContent =
     `Our bot plays ${colors[ours]}, seat ${ours + 1} of ${G.players.length}` +
     `${ours === G.players.length - 1 ? " (moves last)" : ours === 0 ? " (moves first)" : ""}. ` +
-    `${name(w)} wins after ${m.rolls} turns. Every position below is the engine's own state, rebuilt from the game's action log.`;
+    `${name(w)} wins after ${m.rolls} turns` +
+    (hiddenAtEnd(w) ? ` with ${m.vps[w]} points, ${hiddenAtEnd(w)} of them from hidden Victory Point cards (the table could see ${m.vps[w] - hiddenAtEnd(w)})` : "") +
+    `. Every position below is the engine's own state, rebuilt from the game's action log.`;
   const r = document.getElementById("result");
   const order = m.vps.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]);
   for (const [v, i] of order) {
@@ -321,7 +326,7 @@ function drawPlayers(k) {
     const e = plEls[i];
     e.row.classList.toggle("turn", i === turnSeat);
     e.vp.replaceChildren(document.createTextNode(vp));
-    const sm = h("small", null, vp !== pvp ? `${pvp} public` : "VP"); e.vp.appendChild(sm);
+    const sm = h("small", null, vp !== pvp ? `${pvp} seen · ${vp - pvp} hidden` : "VP"); e.vp.appendChild(sm);
     e.hand.replaceChildren();
     const dl = s && s.dl && s.dl[i];
     hand.forEach((n, j) => {
@@ -350,6 +355,7 @@ const chart = document.getElementById("chart");
 (function drawChart() {
   const W = 400, H = 150, L = 26, R = 8, T = 8, B = 22;
   const maxV = Math.max(G.meta.vps_to_win, ...G.meta.vps);
+  let hasHidden = false;
   const X = i => L + (W - L - R) * i / N, Y = v => T + (H - T - B) * (1 - v / maxV);
   const cs = getComputedStyle(document.documentElement);
   for (let v = 0; v <= maxV; v += 2) {
@@ -371,7 +377,15 @@ const chart = document.getElementById("chart");
     G.steps.forEach((s, i) => { d += ` L${X(i + 1)},${Y(s.P[seat][0])}`; });
     el("path", { d, fill: "none", stroke: "var(--piece-edge)", "stroke-width": p.ours ? 4.2 : 3, "stroke-linejoin": "round", opacity: p.color === "WHITE" ? 0.9 : 0 }, chart);
     el("path", { d, fill: "none", stroke: pcol(p.color), "stroke-width": p.ours ? 2.8 : 1.7, "stroke-linejoin": "round" }, chart);
+    if (G.steps.some(s => s.P[seat][0] !== s.P[seat][1])) {
+      let dp = `M${X(0)},${Y(G.initial.P[seat][1])}`;
+      G.steps.forEach((s, i) => { dp += ` L${X(i + 1)},${Y(s.P[seat][1])}`; });
+      el("path", { d: dp, fill: "none", stroke: pcol(p.color), "stroke-width": 1.6, "stroke-dasharray": "3 3", opacity: 0.9 }, chart);
+      if (p.color === "WHITE") el("path", { d: dp, fill: "none", stroke: "var(--piece-edge)", "stroke-width": 0.6, "stroke-dasharray": "3 3" }, chart);
+      hasHidden = true;
+    }
   });
+  if (hasHidden) document.getElementById("chartnote").hidden = false;
   el("line", { id: "cursor", x1: X(0), x2: X(0), y1: T, y2: H - B, stroke: "var(--ink)", "stroke-width": 1, opacity: 0.6 }, chart);
   chart._X = X;
 })();
@@ -427,7 +441,7 @@ function go(n) {
     now.appendChild(h("span", "who", `${colors[s.a][0] + colors[s.a].slice(1).toLowerCase()}${G.players[s.a].ours ? " (our bot)" : ""}`));
     now.appendChild(document.createTextNode(s.r ? ` · turn ${s.r}` : " · setup"));
   }
-  document.getElementById("lastact").textContent = s ? s.x[0].toUpperCase() + s.x.slice(1) + (k === N ? `. ${G.meta.winner} wins.` : "") : "Press Play to watch the game from the first placement.";
+  document.getElementById("lastact").textContent = s ? s.x[0].toUpperCase() + s.x.slice(1) + (k === N ? `. ${G.meta.winner} wins${hiddenAtEnd(colors.indexOf(G.meta.winner)) ? `, revealing ${hiddenAtEnd(colors.indexOf(G.meta.winner))} Victory Point card${hiddenAtEnd(colors.indexOf(G.meta.winner)) > 1 ? "s" : ""}` : ""}.` : "") : "Press Play to watch the game from the first placement.";
   // dice of the current turn's roll
   const dice = document.getElementById("dice"); dice.replaceChildren();
   for (let i = k - 1; i >= 0; i--) {
