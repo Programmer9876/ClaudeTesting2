@@ -458,6 +458,20 @@ Yes.  `scripts/audit_devdeck.py proof bench_1v1` checks all 8,400 logged games (
   (`apply_action.py`, `yield_resources`), even if only one player is owed.  The official rule, which our
   engine follows (`catanbot/engine.py`, the production step), gives a single owed player whatever is left.
   This is a small engine difference, and it applies to both sides equally.
+- **Piece limits, measured** (`scripts/audit_limits.py`, replaying the 7,000 catanatron 3.3 games, that is the
+  proof without R1-R2 plus the 1v1 benchmark; 26,400 player-games):
+  - no player ever had more than 15 roads, 5 settlements or 4 cities on the board, and both engines refuse
+    the move when the pieces run out (catanatron `ROADS_AVAILABLE` etc.; `catanbot/board.py`, `MAX_ROADS`,
+    `MAX_SETTLEMENTS`, `MAX_CITIES`);
+  - the limits do bind: 20.7 % of player-games used all 5 settlements at some point, 6.5 % all 4 cities and
+    6.2 % all 15 roads.  Upgrading a settlement to a city returns the settlement piece.
+- **Bank shortages, measured:** the bank ran out of a resource in 244 games for wheat, 180 ore, 103 sheep, 68
+  wood and 30 brick.  A shortage cancelled production on 904 of 552,511 rolls (0.16 %, in 709 games; 4,963
+  cards not paid).  In 73 of those the official rule would have paid a single owed player what was left.
+  None of this happened in the 1v1 games.
+- **Road Building:** it gives two free roads, and it cannot be played without a place to build.  If the
+  player runs out of roads or places after the first road, it ends early.  In the 3.3 games it gave 2 roads
+  3,611 times and 1 road 15 times.  Our engine does the same (`catanbot/engine.py`, `free_roads`).
 - **Shuffle:** where the Victory Point cards sit in the 4,600 distinct decks looks exactly like uniform
   shuffling: a chi-square of 18.4, larger in 57 % of simulated uniform shuffles.  (Tests reuse seeds, so the
   8,400 games hold 4,600 distinct decks.)  Draws come off the logged deck in order in every game.
