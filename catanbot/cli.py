@@ -2,7 +2,10 @@
 
     analyze IMAGE      parse a Colonist.io screenshot and recommend a move
     recommend          recommend a move from a JSON state (GameState or parsed-screenshot format)
-    watch              live advisor: capture the screen periodically and print advice
+    watch              live advisor: read the screen (board, player cards, game log) and print advice
+    ocr IMAGE          read the game-log panel of a screenshot with the local log OCR
+    ocr-teach IMAGE    teach the log OCR the look of your screen from one screenshot and its true text
+    ui-profile FILE    create / update the screen-region profile (log panel, ...) of your screen
     play               simulate a game between bots
     eval               tournament between bot specs
     train              self-play training of the value net
@@ -663,12 +666,15 @@ def run_search(state: GameState, me: int, evaluator, cfg, args, model=None, poli
     return results, info
 
 
-def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] = None) -> Dict[str, Any]:
+def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] = None,
+                        tracker=None) -> Dict[str, Any]:
     """Run the search + advice modules; returns a JSON-able report dict.
 
     ``state`` is not modified: the decision context (an incoming offer, "not my turn")
     is set up on a copy, and ``report["state"]`` is the state as given while
-    ``report["decision"]`` says which situation was searched.
+    ``report["decision"]`` says which situation was searched.  ``tracker`` is a card
+    counter kept by the caller (``watch``'s live session); without one, ``--session`` /
+    ``--game-log`` build this call's tracker.
     """
     from .devcards import dev_card_advice
     from .discard import explain_seven_risk
@@ -683,8 +689,9 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
     report["evaluator"] = ev_name
     original = state
     state = state.copy()
-    tracker = None
-    if getattr(args, "session", None) or getattr(args, "game_log", None):
+    if tracker is not None and getattr(tracker, "counter", None) is None:
+        tracker = None                      # a live counter that has not counted yet
+    if tracker is None and (getattr(args, "session", None) or getattr(args, "game_log", None)):
         # card counting from the Colonist log (off by default): updated on the position as shown
         tracker = card_count_tracker(original, me, args, parsed, report)
     model, politics = load_profiles(getattr(args, "profiles", None), state)
@@ -906,6 +913,133 @@ def _emit(state: GameState, me: int, report: Dict[str, Any], args, parse_warning
 
 
 # ---------------------------------------------------------------------------
+# local screen reader: UI profile, log region, log OCR
+# ---------------------------------------------------------------------------
+def _open_rgb(path: str):
+    from PIL import Image
+    with Image.open(path) as im:
+        return im.convert("RGB")
+
+
+def _image_size(path: str) -> Tuple[int, int]:
+    from PIL import Image
+    try:
+        with Image.open(path) as im:
+            return im.size
+    except FileNotFoundError:
+        raise
+    except OSError as ex:
+        raise UsageError(f"could not parse {path}: not an image ({ex})")
+
+
+def _ui_profile(args, size: Optional[Tuple[int, int]]):
+    """``--ui-profile FILE`` (it must exist) with ``--log-region BOX`` set on it in memory (the file is
+    not changed); ``None`` when neither is given.  BOX is ``x,y,w,h`` pixels (``size`` converts
+    them) or ``x0,y0,x1,y1`` screen fractions."""
+    from .vision.profile import ProfileError, UiProfile, parse_box
+    path = getattr(args, "ui_profile", None)
+    region = getattr(args, "log_region", None)
+    if not path and not region:
+        return None
+    try:
+        if path:
+            if not os.path.exists(path):
+                raise UsageError(f"UI profile {path} not found; create it with: ui-profile {path} --detect SCREENSHOT "
+                                 "(or --set log=x,y,w,h)")
+            prof = UiProfile.load(path)
+        else:
+            prof = UiProfile()
+        if region:
+            prof.set_region("log", parse_box(region, size))
+    except ProfileError as ex:
+        raise UsageError(f"{ex}")
+    return prof
+
+
+def _log_region_box(text: str) -> Tuple[float, float, float, float]:
+    """``--log-region`` for the live loop (the screen size is known only at the first frame):
+    screen fractions ``(x0, y0, x1, y1)`` or a pixel box ``(x, y, x + w, y + h)``."""
+    from .vision.profile import ProfileError, parse_box
+    try:
+        vals = [float(v) for v in str(text).replace(" ", "").split(",")]
+    except ValueError:
+        vals = []
+    if len(vals) != 4:
+        raise UsageError(f"bad --log-region '{text}': expected x,y,w,h in pixels or x0,y0,x1,y1 screen fractions")
+    if all(0.0 <= v <= 1.0 for v in vals):
+        try:
+            return parse_box(text)
+        except ProfileError as ex:
+            raise UsageError(f"bad --log-region: {ex}")
+    x, y, w, h = vals
+    if w <= 0 or h <= 0 or x < 0 or y < 0:
+        raise UsageError(f"bad --log-region '{text}': x,y must be >= 0 and w,h > 0 (pixels)")
+    return (x, y, x + w, y + h)
+
+
+def _ocr_call(what: str, fn, *a, **kw):
+    """A call into the log OCR from a one-shot command: its failures become one ``error:`` line."""
+    try:
+        return fn(*a, **kw)
+    except (UsageError, OSError):
+        raise
+    except Exception as ex:
+        raise UsageError(f"{what} failed: {type(ex).__name__}: {ex}")
+
+
+def _need_logocr(what: str):
+    from .vision.live import LOGOCR_MODULE, load_logocr
+    mod = load_logocr()
+    if mod is None:
+        raise UsageError(f"{what} needs the local game-log reader ({LOGOCR_MODULE}), which is not available in this "
+                         "installation; the board / player-card reader (analyze, watch) works without it")
+    return mod
+
+
+def _find_log_for_analyze(args, profile, size: Tuple[int, int], warnings: List[str]):
+    """``(log OCR module, log panel box, RGB image)`` for ``analyze`` with the CV parser: the profile's
+    / ``--log-region`` box, else the panel found on the screenshot; ``(None, None, None)`` with
+    ``--no-log`` or without the log OCR (a warning when the log was asked for)."""
+    if getattr(args, "no_log", False):
+        return None, None, None
+    from .vision.live import load_logocr, logocr_missing_message
+    box = profile.pixel_box("log", size) if profile is not None and profile.region("log") is not None else None
+    mod = load_logocr()
+    if mod is None:
+        if box is not None or getattr(args, "session", None):
+            warnings.append(logocr_missing_message())
+        return None, None, None
+    img = _open_rgb(args.image)
+    if box is None:
+        try:
+            found = mod.find_log_panel(img, profile=profile)
+            box = tuple(int(round(float(v))) for v in found) if found is not None else None
+        except Exception as ex:
+            warnings.append(f"finding the game-log panel failed: {type(ex).__name__}: {ex}")
+            box = None
+        if box is None and getattr(args, "session", None):
+            warnings.append("no game-log panel found on the screenshot, so the card count only reconciles the hand "
+                            "sizes; give the panel with --log-region x,y,w,h or --ui-profile")
+    return mod, box, img
+
+
+def _read_log_for_analyze(mod, img, box, profile, parsed: dict, warnings: List[str]) -> None:
+    """The local log OCR's confident, complete entries -> ``parsed["log"]`` (plain strings: the card
+    counter parses them with the phrase table)."""
+    import numpy as np
+    from .vision.live import confident_texts, name_colours
+    try:
+        colours = [str(p.get("color", "")).lower() for p in parsed.get("players") or [] if isinstance(p, dict)]
+        res = mod.read_log_panel(img, box=box, profile=profile,
+                                 players=name_colours(np.asarray(img), box, colours, profile))
+    except Exception as ex:
+        warnings.append(f"reading the game log failed: {type(ex).__name__}: {ex}")
+        return
+    parsed["log"] = confident_texts(res)
+    warnings.extend(f"log: {w}" for w in getattr(res, "warnings", None) or [])
+
+
+# ---------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------
 def cmd_analyze(args) -> int:
@@ -928,26 +1062,35 @@ def cmd_analyze(args) -> int:
         except RuntimeError as ex:
             print(f"LLM parser unavailable: {ex}\nFalling back to the computer-vision parser.", file=sys.stderr)
             parser_kind = "cv"
+    log_warnings: List[str] = []
     if parser_kind == "cv":
         try:
             from .vision.colonist import parse_image
         except ImportError as ex:
             print(f"computer-vision parser needs opencv-python-headless / pillow: {ex}", file=sys.stderr)
             return 2
+        size = _image_size(args.image)
+        profile = _ui_profile(args, size)
+        log_mod, log_box, img = _find_log_for_analyze(args, profile, size, log_warnings)
+        from .vision.live import layout_for
         try:
-            result = parse_image(args.image, me=args.me, read_ui=not args.no_ui)
+            result = parse_image(args.image, me=args.me, read_ui=not args.no_ui,
+                                 layout=layout_for(profile, log_box, size))
         except FileNotFoundError:
             raise
         except (ValueError, IndexError, OSError) as ex:
             raise UsageError(f"could not parse {args.image}: {ex}. Screenshot the whole game window (board with "
                              "number tokens, player panel, hand bar), try --parser llm, or enter the position "
                              "by hand: recommend --state STATE.json with --fix corrections.")
+        if log_mod is not None and log_box is not None and result.parsed.get("log") is None:
+            _read_log_for_analyze(log_mod, img, log_box, profile, result.parsed, log_warnings)
     parsed = result.parsed
     apply_fixes(parsed, args.fix)
     from .vision.schema import parsed_to_state, validate
     warnings = list(result.warnings)
     if args.fix:
         warnings = [w for w in warnings if not w.startswith("expected")] + validate(parsed)
+    warnings.extend(log_warnings)
     if args.no_ui:
         warnings.append("--no-ui: the player panel and hand bar were not read, so seat order, hands, VP, dev cards, "
                         "dice and whose turn it is are guesses; supply them with --fix 'players=red,blue,...', "
@@ -1191,16 +1334,90 @@ def cmd_calibrate(args) -> int:
     return 0
 
 
+def _watch_capture(args):
+    """A ``grab()`` function for the live screen (mss; one instance for the whole session)."""
+    import mss
+    from PIL import Image
+    region = None
+    if args.region:
+        try:
+            x, y, w, h = [int(v) for v in args.region.replace(" ", "").split(",")]
+        except ValueError:
+            raise UsageError(f"bad --region '{args.region}': expected x,y,w,h in whole pixels")
+        if w <= 0 or h <= 0:
+            raise UsageError(f"bad --region '{args.region}': width and height must be positive")
+        region = {"left": x, "top": y, "width": w, "height": h}
+    holder: Dict[str, Any] = {}
+
+    def grab():
+        sct = holder.get("sct")
+        if sct is None:
+            sct = holder["sct"] = mss.mss()
+        try:
+            mon = region or (sct.monitors[args.monitor] if args.monitor < len(sct.monitors) else sct.monitors[0])
+            shot = sct.grab(mon)
+        except Exception:
+            holder.pop("sct", None)          # a broken capture handle (screen locked, display change): new one next time
+            raise
+        return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+    return grab
+
+
+def _print_update(upd, args, printed: Dict[str, Any]) -> None:
+    """The live output of one frame: new log entries, offer verdicts, the card count when it
+    changed, new warnings (each once)."""
+    from .vision.live import compact_card_count
+    ts = time.strftime("%H:%M:%S", time.localtime(upd.time))
+    for e in upd.new_entries:
+        if e.countable:
+            print(f"[{ts}] {e.text}")
+        else:
+            print(f"[{ts}] ? {e.text}   (unreadable: not counted)")
+    for v in upd.offers:
+        what = "COUNTER-OFFER" if v.kind == "counter" else "OFFER"
+        print(f"[{ts}] {what} from {v.proposer_colour}: {v.summary()}")
+        if v.lines:
+            print("   " + v.lines[0])
+        for w in v.warnings:
+            print("   ! " + w)
+    if upd.card_count is not None:
+        line = compact_card_count(upd.card_count)
+        if line and line != printed.get("cards"):
+            printed["cards"] = line
+            print(f"[{ts}] cards: {line}")
+    for w in upd.warnings:
+        print(f"[{ts}] warning: {w}")
+    if upd.new_game:
+        print(f"[{ts}] new game detected: board, log and card count start over")
+
+
+def _print_recommendation(upd, args, rec_args, session) -> None:
+    ts = time.strftime("%H:%M:%S", time.localtime(upd.time))
+    state, me = upd.state, upd.me
+    if state is None or not state.players or me is None:   # (the session warned once about a missing colour)
+        return
+    report = recommend_for_state(state, me, rec_args, upd.parsed, tracker=session.tracker)
+    top = report["actions"][:3]
+    cur = state.players[state.current].name or state.players[state.current].color
+    print(f"[{ts}] turn of {cur}; you {state.total_vp(me)} VP; hand "
+          + ", ".join(f"{state.players[me].resources[r]} {B.RESOURCE_NAMES[r][:2]}" for r in range(5)
+                      if state.players[me].resources[r]))
+    for k, a in enumerate(top):
+        print(f"   {k + 1}. [{a['value']:.2f}] {a['text']}" + (f" - {a['explanation'][:90]}" if a['explanation'] else ""))
+    for n in report.get("notes", [])[:1]:
+        print("   note: " + n)
+
+
 def cmd_watch(args) -> int:
-    """Live advisor: capture the screen (or read images from a directory) every few seconds,
-    re-analyse when the position changed, print a compact recommendation.  You still make
-    every move yourself - this only automates the screenshot + analysis loop."""
-    import hashlib
-    from .vision.colonist import parse_image
-    from .vision.schema import parsed_to_state
+    """Live advisor: capture the screen (or read images from a directory) every few seconds and
+    read it with the local reader (:mod:`catanbot.vision.live`): new game-log entries and offer
+    verdicts are printed at once, the card count when it changes, and the top-3 recommendation
+    when the board / turn changed.  You still make every move yourself.  A failing frame is
+    reported once and the loop goes on; Ctrl-C stops it with a summary."""
+    from .vision import live as LV
     evaluator, ev_name = load_evaluator(args.model)
-    print(f"watch mode ({ev_name}); every {args.interval}s; Ctrl-C to stop", flush=True)
     frames: List[Any] = []
+    grab = None
     if args.from_dir:
         frames = sorted(os.path.join(args.from_dir, f) for f in os.listdir(args.from_dir)
                         if f.lower().endswith((".png", ".jpg", ".jpeg")))
@@ -1213,70 +1430,240 @@ def cmd_watch(args) -> int:
         except ImportError:
             print("screen capture needs the 'mss' package: pip install mss   (or use --from-dir)")
             return 2
-    last_sig = None
+        grab = _watch_capture(args)
+    profile = _ui_profile(argparse.Namespace(ui_profile=args.ui_profile, log_region=None), None)
+    log_box = _log_region_box(args.log_region) if args.log_region else None
+    fixes = list(args.fix or [])
+    session = LV.LiveSession(me=args.me, profile=profile, session_path=args.session, read_log=not args.no_log,
+                             log_box=log_box, evaluator=evaluator, record_dir=args.record, seed=args.seed or 0,
+                             postprocess=(lambda p: apply_fixes(p, fixes)) if fixes else None)
+    rec_args = argparse.Namespace(**vars(args))
+    if session.read_log:                    # the live session owns the session file and reads the log itself
+        rec_args.session = None
+        rec_args.game_log = None
+    what = "board, player cards" + (", game log" if session.read_log else "")
+    print(f"watch mode ({ev_name}; reading {what}); every {args.interval}s; Ctrl-C to stop", flush=True)
+    printed: Dict[str, Any] = {}
+    errors: Dict[str, int] = {}
     seen = 0
-    model, politics = load_profiles(args.profiles, GameState())  # placeholders until a state exists
-    while True:
-        if args.from_dir:
-            if seen >= len(frames):
-                break
-            img = frames[seen]
-            seen += 1
-        else:
-            import mss
-            from PIL import Image
-            with mss.mss() as sct:
-                mon = sct.monitors[args.monitor] if args.monitor < len(sct.monitors) else sct.monitors[0]
-                if args.region:
-                    x, y, w, h = [int(v) for v in args.region.split(",")]
-                    mon = {"left": x, "top": y, "width": w, "height": h}
-                shot = sct.grab(mon)
-                img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-        try:
-            result = parse_image(img, me=args.me)
-        except Exception as ex:
-            print(f"[{time.strftime('%H:%M:%S')}] parse failed: {ex}")
+
+    def report_error(where: str, ex: BaseException) -> None:
+        msg = f"{where}: {type(ex).__name__}: {ex}"
+        key = re.sub(r"\d+", "#", msg)
+        if key not in errors and len(errors) >= 1000:
+            return                          # an endless variety of failures: stop printing new ones
+        errors[key] = errors.get(key, 0) + 1
+        if errors[key] == 1:
+            print(f"[{time.strftime('%H:%M:%S')}] {msg} (reported once; the watch goes on)", flush=True)
+
+    try:
+        while True:
+            t0 = time.time()
+            if args.from_dir:
+                if seen >= len(frames):
+                    break
+                img: Any = frames[seen]
+                seen += 1
+            else:
+                try:
+                    img = grab()
+                except Exception as ex:
+                    report_error("screen capture failed", ex)
+                    time.sleep(args.interval)
+                    continue
+            try:
+                upd = session.step(img)
+                _print_update(upd, args, printed)
+                if upd.changed_board:
+                    try:
+                        _print_recommendation(upd, args, rec_args, session)
+                    except UsageError as ex:
+                        report_error("no recommendation", ex)
+            except KeyboardInterrupt:
+                raise
+            except Exception as ex:
+                report_error("frame failed", ex)
+            sys.stdout.flush()
             if not args.from_dir:
-                time.sleep(args.interval)
+                time.sleep(max(0.0, args.interval - (time.time() - t0)))
+    except KeyboardInterrupt:
+        print()
+    session.close()
+    s = session.summary()
+    print(f"stopped: {s['frames']} frames ({s['skipped']} unchanged, {s['parses']} board reads, {s['log_reads']} log "
+          f"reads), {s['entries']} log entries, {s['offers']} offers evaluated"
+          + (f", {s['gaps']} log gap(s)" if s["gaps"] else "") + (f", {s['new_games']} new game(s)" if s["new_games"] else ""))
+    return 0
+
+
+def cmd_ocr(args) -> int:
+    """Read the game-log panel of one screenshot with the local log OCR (to check it on your screen)."""
+    mod = _need_logocr("ocr")
+    img = _open_rgb(args.image)
+    profile = _ui_profile(args, img.size)
+    box = profile.pixel_box("log", img.size) if profile is not None and profile.region("log") is not None else None
+    if box is None:
+        found = _ocr_call("finding the log panel", mod.find_log_panel, img, profile=profile)
+        if found is None:
+            raise UsageError(f"no game-log panel found in {args.image}; give its region with --log-region x,y,w,h "
+                             "(pixels) or store it in a profile: ui-profile FILE --set log=x,y,w,h")
+        box = tuple(int(round(float(v))) for v in found)
+    res = _ocr_call("reading the log panel", mod.read_log_panel, img, box=box, profile=profile)
+    lines = list(getattr(res, "lines", None) or [])
+    rbox = tuple(int(round(float(v))) for v in (getattr(res, "box", None) or box))
+    conf = getattr(res, "confidence", None)
+    from .colonist_log import parse_log_line
+    rows = []
+    for ln in lines:
+        text = str(getattr(ln, "text", ""))
+        ev = getattr(ln, "event", None) or (parse_log_line(text) if text.strip() else None)
+        b = getattr(ln, "box", None)
+        rows.append({"text": text, "kind": getattr(ev, "kind", None), "confidence": float(getattr(ln, "confidence", 0) or 0),
+                     "partial": bool(getattr(ln, "partial", False)), "key": str(getattr(ln, "key", "") or ""),
+                     "box": [float(v) for v in b] if b is not None else None})
+    if args.debug:
+        _draw_ocr_debug(img, rbox, rows).save(args.debug)
+        print(f"debug overlay written to {args.debug}", file=sys.stderr)
+    if args.json:
+        print(json.dumps({"image": args.image, "box": list(rbox), "confidence": conf, "lines": rows,
+                          "warnings": list(getattr(res, "warnings", None) or [])}, indent=1, default=float))
+        return 0
+    print(f"log panel {rbox}: {len(rows)} entries" + (f", confidence {float(conf):.2f}" if conf is not None else ""))
+    for r in rows:
+        extra = ", partial" if r["partial"] else ""
+        print(f"[{r['confidence']:.2f}] {r['text']}   ({r['kind'] or 'nothing'}{extra})")
+    for w in getattr(res, "warnings", None) or []:
+        print("WARNING: " + str(w))
+    return 0
+
+
+def _draw_ocr_debug(img, box, rows):
+    """The panel box (magenta), each entry's box (green >= 0.9, yellow >= 0.6, red below, dashed
+    grey when partial) with its index."""
+    from PIL import ImageDraw
+    out = img.copy()
+    d = ImageDraw.Draw(out)
+    d.rectangle(box, outline=(255, 0, 255), width=3)
+    for k, r in enumerate(rows):
+        b = r.get("box")
+        if not b:
             continue
-        parsed = result.parsed
-        try:
-            apply_fixes(parsed, args.fix)
-        except UsageError as ex:
-            print(f"[{time.strftime('%H:%M:%S')}] {ex}")
-        sig = hashlib.md5(json.dumps({k: parsed.get(k) for k in ("hexes", "robber", "players", "dice", "current_player")},
-                                     sort_keys=True, default=str).encode()).hexdigest()
-        if sig == last_sig:
-            if not args.from_dir:
-                time.sleep(args.interval)
+        c = r["confidence"]
+        col = (150, 150, 150) if r["partial"] else (40, 180, 60) if c >= 0.9 else (230, 190, 0) if c >= 0.6 else (230, 40, 40)
+        d.rectangle([b[0], b[1], b[2] - 1, b[3] - 1], outline=col, width=2 if c >= 0.6 else 3)
+        d.text((max(0, b[0] - 22), b[1]), str(k), fill=col)
+    return out
+
+
+def _ocr_accuracy(res, truth: Sequence[str]) -> Tuple[int, int]:
+    """How many of the true entries the read got exactly (texts compared in order, case and spaces
+    ignored)."""
+    import difflib
+    from .vision.live import confident_texts
+
+    def norm(t):
+        return re.sub(r"\s+", " ", str(t).strip().lower()).rstrip(" .!")
+    got = [norm(t) for t in confident_texts(res, 0.0)]
+    want = [norm(t) for t in truth]
+    sm = difflib.SequenceMatcher(a=want, b=got, autojunk=False)
+    return sum(b.size for b in sm.get_matching_blocks()), len(want)
+
+
+def cmd_ocr_teach(args) -> int:
+    """Teach the log OCR your screen: one screenshot plus the true text of its log entries."""
+    from .vision.profile import ProfileError, UiProfile, parse_box
+    mod = _need_logocr("ocr-teach")
+    img = _open_rgb(args.image)
+    with open(args.truth, encoding="utf-8") as f:
+        truth = [l.strip() for l in f if l.strip() and not l.strip().startswith("#")]
+    if not truth:
+        raise UsageError(f"{args.truth} has no entries: write the log panel's entries one per line, oldest first, "
+                         "players as colour words (e.g. 'blue rolled 5 3')")
+    try:
+        profile = UiProfile.open(args.ui_profile)
+        if args.log_region:
+            profile.set_region("log", parse_box(args.log_region, img.size))
+        profile.screen = profile.screen or img.size
+    except ProfileError as ex:
+        raise UsageError(str(ex))
+    box = profile.pixel_box("log", img.size) if profile.region("log") is not None else None
+    if box is None:
+        found = _ocr_call("finding the log panel", mod.find_log_panel, img, profile=profile)
+        if found is None:
+            raise UsageError(f"no game-log panel found in {args.image}; give it with --log-region x,y,w,h")
+        box = tuple(int(round(float(v))) for v in found)
+    before = _ocr_accuracy(_ocr_call("reading the log panel", mod.read_log_panel, img, box=box, profile=profile),
+                           truth)
+    taught, report = _ocr_call("teaching the log reader", mod.teach, img, truth, box=box, profile=profile)
+    taught = taught or profile
+    try:
+        if taught.region("log") is None:
+            w, h = img.size
+            taught.set_region("log", (box[0] / w, box[1] / h, min(1.0, box[2] / w), min(1.0, box[3] / h)))
+        path = taught.save(args.ui_profile)
+    except ProfileError as ex:
+        raise UsageError(str(ex))
+    after = _ocr_accuracy(_ocr_call("reading the log panel", mod.read_log_panel, img, box=box, profile=taught),
+                          truth)
+    print(f"taught the log reader on {args.image} ({len(truth)} true entries); profile saved to {path}")
+    print(f"entries read exactly on this image: before {before[0]}/{before[1]}, after {after[0]}/{after[1]}")
+    for k, v in (report or {}).items():
+        if isinstance(v, (int, float, str, bool)) or v is None:
+            print(f"  {k}: {v}")
+    if after[0] < after[1]:
+        print("some entries still differ: check them with  ocr IMAGE --ui-profile FILE --debug out.png")
+    return 0
+
+
+def cmd_ui_profile(args) -> int:
+    """Create / update a UI profile: regions set by hand (--set NAME=BOX) or the log panel found on a
+    screenshot (--detect IMAGE)."""
+    from .vision.profile import REGION_NAMES, ProfileError, UiProfile, parse_box
+    try:
+        profile = UiProfile.open(args.file)
+    except ProfileError as ex:
+        raise UsageError(str(ex))
+    size = None
+    if args.screen:
+        m = re.fullmatch(r"\s*(\d+)\s*[xX]\s*(\d+)\s*", args.screen)
+        if not m or int(m.group(1)) <= 0 or int(m.group(2)) <= 0:
+            raise UsageError(f"bad --screen '{args.screen}': expected WIDTHxHEIGHT in pixels, e.g. 1920x1080")
+        size = (int(m.group(1)), int(m.group(2)))
+    try:
+        if args.detect:
+            mod = _need_logocr("ui-profile --detect")
+            img = _open_rgb(args.detect)
+            size = size or img.size
+            found = _ocr_call("finding the log panel", mod.find_log_panel, img, profile=None)
+            if found is None:
+                raise UsageError(f"no game-log panel found in {args.detect}; set it by hand with --set log=x,y,w,h "
+                                 "(pixels of the panel on that screenshot)")
+            x0, y0, x1, y1 = (float(v) for v in found)
+            w, h = img.size
+            profile.set_region("log", (max(0.0, x0 / w), max(0.0, y0 / h), min(1.0, x1 / w), min(1.0, y1 / h)))
+            print(f"log panel found at {tuple(int(round(v)) for v in found)} on {w}x{h}")
+        if size is not None:
+            profile.screen = size
+        for item in args.set or []:
+            name, sep, text = item.partition("=")
+            name = name.strip()
+            if not sep or name not in REGION_NAMES:
+                raise UsageError(f"bad --set '{item}': expected NAME=BOX with NAME one of {', '.join(REGION_NAMES)}")
+            profile.set_region(name, parse_box(text, size or profile.screen))
+        path = profile.save(args.file)
+    except ProfileError as ex:
+        raise UsageError(str(ex))
+    print(f"UI profile {path}" + (f" (screen {profile.screen[0]}x{profile.screen[1]})" if profile.screen else ""))
+    if not profile.regions:
+        print("  no regions yet: --detect SCREENSHOT finds the log panel, --set log=x,y,w,h sets it by hand")
+    for name in REGION_NAMES:
+        box = profile.region(name)
+        if box is None:
             continue
-        last_sig = sig
-        state = parsed_to_state(parsed)
-        if parsed.get("dice"):
-            state.phase = PHASE_MAIN
-            state.dice = int(parsed["dice"])
-        try:
-            if not state.players:
-                raise UsageError("no players detected")
-            me = _resolve_color(state, args.me or parsed.get("me") or state.players[0].color, "player (--me)")
-            report = recommend_for_state(state, me, args, parsed)
-        except UsageError as ex:
-            print(f"[{time.strftime('%H:%M:%S')}] {ex}")
-            if not args.from_dir:
-                time.sleep(args.interval)
-            continue
-        top = report["actions"][:3]
-        cur = state.players[state.current].name or state.players[state.current].color
-        print(f"[{time.strftime('%H:%M:%S')}] turn of {cur}; you {state.total_vp(me)} VP; hand "
-              + ", ".join(f"{state.players[me].resources[r]} {B.RESOURCE_NAMES[r][:2]}" for r in range(5) if state.players[me].resources[r]))
-        for k, a in enumerate(top):
-            print(f"   {k + 1}. [{a['value']:.2f}] {a['text']}" + (f" - {a['explanation'][:90]}" if a['explanation'] else ""))
-        for n in report.get("notes", [])[:1]:
-            print("   note: " + n)
-        if result.warnings:
-            print("   parse: " + "; ".join(result.warnings[:2]))
-        if not args.from_dir:
-            time.sleep(args.interval)
+        px = f"  = pixels {profile.pixel_box(name, profile.screen)}" if profile.screen else ""
+        print(f"  {name}: {box[0]:.4f},{box[1]:.4f},{box[2]:.4f},{box[3]:.4f}{px}")
+    if profile.ocr:
+        print(f"  log reader data: {', '.join(sorted(profile.ocr))}")
     return 0
 
 
@@ -1334,6 +1721,15 @@ def _add_recommend_args(p: argparse.ArgumentParser) -> None:
                         "'Win-path races'); the 'Win paths' advice section is shown either way")
 
 
+def _add_screen_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--ui-profile", metavar="FILE",
+                   help="UI profile of your screen (regions of the log panel etc., see the ui-profile command)")
+    p.add_argument("--log-region", metavar="BOX",
+                   help="the game-log panel: x,y,w,h pixels or x0,y0,x1,y1 screen fractions (default: the profile's "
+                        "region, else found on the screen)")
+    p.add_argument("--no-log", action="store_true", help="do not read the game log (board and player cards only)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="catanbot", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1345,6 +1741,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--debug", help="write a debug overlay PNG here (detected elements + vertex / edge ids)")
     a.add_argument("--no-ui", action="store_true",
                    help="skip reading the player panel / hand bar (hands, VP, seat order and dice then need --fix)")
+    _add_screen_args(a)
     _add_recommend_args(a)
     a.set_defaults(func=cmd_analyze)
 
@@ -1387,13 +1784,45 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("file")
     pr.set_defaults(func=cmd_profiles)
 
-    wt = sub.add_parser("watch", help="live advisor: capture the screen periodically and print advice")
-    wt.add_argument("--interval", type=float, default=6.0, help="seconds between captures")
+    wt = sub.add_parser("watch", help="live advisor: read the screen (board, player cards, game log) and print advice")
+    wt.add_argument("--interval", type=_positive_float, default=6.0,
+                    help="seconds between captures (default 6; use 1-2 during live play: an unchanged screen costs "
+                         "a few milliseconds, so short intervals are cheap)")
     wt.add_argument("--monitor", type=int, default=1, help="mss monitor index (0 = all)")
     wt.add_argument("--region", help="capture region x,y,w,h in pixels")
-    wt.add_argument("--from-dir", help="read screenshots from a directory instead of the screen (testing)")
+    wt.add_argument("--from-dir", help="read screenshots from a directory instead of the screen (testing / replay)")
+    _add_screen_args(wt)
+    wt.add_argument("--record", metavar="DIR",
+                    help="record the session: changed frames (DIR/frames/NNNNN.png) and JSON lines of the log entries, "
+                         "board parses and offer verdicts (a dataset of your own games)")
     _add_recommend_args(wt)
     wt.set_defaults(func=cmd_watch)
+
+    lo = sub.add_parser("ocr", help="read the game-log panel of a screenshot with the local log OCR")
+    lo.add_argument("image")
+    lo.add_argument("--ui-profile", metavar="FILE", help="UI profile with the log region and what the reader learned")
+    lo.add_argument("--log-region", metavar="BOX",
+                    help="the log panel: x,y,w,h pixels or x0,y0,x1,y1 screen fractions (default: the profile's, else found)")
+    lo.add_argument("--debug", metavar="OUT.png", help="write an overlay: panel box, entry boxes, low-confidence entries")
+    lo.add_argument("--json", action="store_true", help="machine readable output")
+    lo.set_defaults(func=cmd_ocr)
+
+    ot = sub.add_parser("ocr-teach", help="teach the log OCR your screen from a screenshot and its true log text")
+    ot.add_argument("image")
+    ot.add_argument("--truth", required=True, metavar="FILE",
+                    help="the panel's entries, one per line, oldest first, players as colour words ('blue rolled 5 3')")
+    ot.add_argument("--ui-profile", required=True, metavar="FILE", help="profile to update (created if missing)")
+    ot.add_argument("--log-region", metavar="BOX", help="the log panel: x,y,w,h pixels or x0,y0,x1,y1 fractions")
+    ot.set_defaults(func=cmd_ocr_teach)
+
+    up = sub.add_parser("ui-profile", help="create / update the screen-region profile of your screen")
+    up.add_argument("file")
+    up.add_argument("--set", action="append", metavar="NAME=BOX",
+                    help="set a region (log, player_panel, hand_bar, dice, bank): x,y,w,h pixels (needs --screen or "
+                         "--detect) or x0,y0,x1,y1 fractions")
+    up.add_argument("--screen", metavar="WxH", help="the screen size the pixel boxes refer to, e.g. 1920x1080")
+    up.add_argument("--detect", metavar="IMAGE", help="find the log panel on this screenshot and store its region")
+    up.set_defaults(func=cmd_ui_profile)
 
     oc = sub.add_parser("outcome", help="record the winner of a logged game")
     oc.add_argument("log")

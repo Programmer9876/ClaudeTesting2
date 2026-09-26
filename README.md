@@ -37,8 +37,8 @@ contracts.
 | `opponent_model.py`, `politics.py` | exploitative opponent profiles, political capital, coalitions |
 | `features.py`, `model.py`, `selfplay.py`, `train.py` | 302-dim features, numpy value net, self-play data + training loop |
 | `search.py`, `agents/` | expectimax + beam search, the bots |
-| `vision/` | Colonist.io parsers (`colonist.py` CV, `llm.py` Claude), synthetic renderer, digit classifier, state schema |
-| `cli.py` | `analyze`, `recommend`, `play`, `eval`, `train`, `render`, `profiles` |
+| `vision/` | Colonist.io parsers (`colonist.py` CV, `llm.py` Claude), live screen reader (`live.py`), synthetic renderer, digit classifier, state schema, UI profile |
+| `cli.py` | `analyze`, `recommend`, `watch`, `ocr`, `ocr-teach`, `ui-profile`, `play`, `eval`, `train`, `render`, `profiles` |
 
 ## Screenshot parsing
 
@@ -54,6 +54,21 @@ reported as missing and can be added with `--fix "port 66=3:1"`.  Real
 screenshots use the same pipeline (the token discs anchor the lattice, the
 standard tile / number multisets constrain the classification); anything
 uncertain is flagged and correctable with `--fix`.
+
+## Live local reader (no API)
+
+`watch` reads the Colonist.io screen live on your machine - board, player cards and game log - and
+prints each new log entry, an accept / reject / counter verdict the moment an opponent offers a
+trade, the card count (`--session`) and the top moves when the position changes.  Unchanged frames
+cost a few milliseconds; popups, scrolling and misread frames do not corrupt the board or the count.
+Set it up once per screen (see `docs/USAGE.md`, "Live local reader"):
+
+```bash
+python -m catanbot ui-profile screen.json --detect shot.png              # where the log panel is
+python -m catanbot ocr shot.png --ui-profile screen.json --debug ocr.png  # check the log reading
+python -m catanbot ocr-teach shot.png --truth truth.txt --ui-profile screen.json
+python -m catanbot watch --me red --interval 2 --ui-profile screen.json --session game1.json --record rec1
+```
 
 ## Training and strength
 

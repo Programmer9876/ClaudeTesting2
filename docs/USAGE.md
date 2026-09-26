@@ -293,23 +293,175 @@ minus every played card and your own); played types other than knights are
 only known from the log, so a mid-game session counts only the knights shown
 on screen.  The session does not validate turn order or legality.  Only the
 search uses the count (its determinizations); the Trading, Knight / robber
-and offer-response sections keep their own hand estimates, and `watch`
-prints its compact summary without the Card count section (the session is
-still updated).
+and offer-response sections keep their own hand estimates.  `watch` keeps
+the count itself from the log it reads live (see "Live local reader" below)
+and prints a one-line summary whenever it changes.
 
 ### Live advisor while you play (`watch`)
 
 ```bash
 pip install mss
-python -m catanbot watch --me red --interval 6 --profiles friends.json      # whole primary monitor
+python -m catanbot watch --me red --interval 2 --profiles friends.json      # whole primary monitor
 python -m catanbot watch --me red --region 0,0,1600,1000 --depth 2         # a screen region
 ```
 
-Every few seconds the screen is captured, parsed, and (when the position
-changed) the top three moves with one-line reasons are printed, plus the
-usual notes.  You still make every move yourself: this automates the
-screenshot loop, not the play.  `--from-dir DIR` replays saved screenshots
-instead of capturing (used by the tests).
+The screen is captured every `--interval` seconds (default 6; use 1-2
+during live play - an unchanged screen costs a few milliseconds) and read
+locally: the board, the player cards and the game log.  New log entries and
+offer verdicts are printed at once, and the top three moves with one-line
+reasons whenever the board or the turn changed.  You still make every move
+yourself: this automates the screenshot loop, not the play.  `--from-dir
+DIR` replays saved screenshots instead of capturing (used by the tests).
+The next section explains the setup on a real screen.
+
+### Live local reader (no API)
+
+Everything below runs on your machine: no API key, no paid calls, nothing
+leaves the computer.  Each frame is read by three local readers:
+
+| what | reader | read when |
+| --- | --- | --- |
+| the board: tiles, numbers, ports, robber, roads, settlements, cities | computer-vision parser (`vision/colonist.py`) | the screen outside the log panel changed |
+| the player cards: VP, card and development-card counts, knights, Longest Road / Largest Army, whose turn; your hand; the dice; the bank | the same parser's UI readers | same |
+| the game log: every public action incl. trades, offers and counter-offers | the log OCR (`vision/logocr.py`) | the log panel changed |
+
+What makes it safe to leave running (`vision/live.py`):
+
+* **Change detection** - a small thumbnail of the log panel and of the rest
+  of the screen is compared with the last one read; an unchanged frame is
+  skipped (about 6 ms at 1280x800 and 1920x1080), a frame where only the log
+  moved costs the OCR only, and the board parser (about 1 s) runs only when
+  the rest of the screen changed.
+* **Board memory** - the tiles, numbers and ports are locked once two
+  frames agree, so a popup or trade window over the board cannot change
+  them (a frame that disagrees is reported once).  Pieces never disappear
+  because one frame missed them: a road / settlement / city is kept once
+  seen in 2 of the last 3 reads, and a settlement only ever becomes a city.
+  A new game (another board, or the pieces gone, for 3 frames) resets the
+  board, the log and the card count, and says so.
+* **Stable log** - each new log entry is confirmed once it reads the same
+  in two frames in a row (or with high confidence), in log order, exactly
+  once; an entry already confirmed is never re-read differently (the card
+  counter would count it twice).  A popup over the panel changes nothing;
+  scrolling the panel up is recognised; if the log moved on while the
+  screen was not watched (another window in front), the jump is reported
+  and the card count resynchronises from the hand sizes on screen.
+* **Card count** - with `--session FILE` the counter is fed only the
+  confirmed entries plus the hand sizes / your hand / the bank of the
+  latest frame, once the log has settled, and the session file is saved
+  after every update.
+* **Offers** - a new offer (or a counter-offer to your offer) from an
+  opponent is judged at once: the trade rules give accept / reject (with
+  the counted hands when the session runs), the accept / reject / counter
+  look-ahead over the proposer's turn gives the best answer, and a
+  counter-offer is suggested when it is clearly worth more.  Your own
+  offers are skipped; an offer that was already accepted, cancelled or
+  overtaken by the next roll is not judged.
+* **No spam, no crash** - every warning is printed once per session; a
+  frame that fails is reported once and the loop goes on; Ctrl-C stops with
+  a summary.
+
+**Setup on your screen, step by step.**  The readers were built on
+synthetic Colonist-style screenshots (`vision/synth.py`): the real client's
+fonts, colours and layout differ, so measure your screen once and teach the
+log reader before relying on it.
+
+```bash
+# 1. a screenshot of the game window as you play it (same window size and zoom)
+#    e.g. with your OS's screenshot tool -> shot.png
+
+# 2. where is the log panel?  found automatically ...
+python -m catanbot ui-profile screen.json --detect shot.png
+#    ... or set by hand (x,y,w,h pixels of that screenshot, or x0,y0,x1,y1 fractions)
+python -m catanbot ui-profile screen.json --screen 1920x1080 --set log=1600,160,300,700
+#    other regions the board parser should use: player_panel, hand_bar, dice, bank
+python -m catanbot ui-profile screen.json --screen 1920x1080 --set player_panel=0,0,420,1080
+
+# 3. check the log reading: one line per entry, the panel and entries drawn on an overlay
+python -m catanbot ocr shot.png --ui-profile screen.json --debug ocr.png
+
+# 4. misread entries?  type the true text of the panel (one entry per line, oldest first,
+#    players as colour words: "blue rolled 5 3", "red got 2 wood, 1 ore") and teach it
+python -m catanbot ocr-teach shot.png --truth truth.txt --ui-profile screen.json
+python -m catanbot ocr shot.png --ui-profile screen.json          # read again
+
+# 5. play: live reading, card counting and recording
+python -m catanbot watch --me red --interval 2 --ui-profile screen.json --session game1.json --record rec1
+```
+
+`--log-region BOX` (on `watch`, `analyze`, `ocr`, `ocr-teach`) gives the
+panel without a profile, `--no-log` switches the log off (board and player
+cards only), `--ui-profile` also tells the board parser where the panels
+are.  With the CV parser, `analyze` reads the log panel too when a region is
+known or a panel is found, so `analyze shot.png --session game1.json` counts
+cards without the Claude parser.  `ui-profile FILE` with no option prints
+the profile; `ocr --json` prints the reading as JSON.
+
+**What `watch` prints.**
+
+```
+watch mode (value net models/value_net.npz; reading board, player cards, game log); every 2.0s; Ctrl-C to stop
+[20:14:03] blue rolled 5 3
+[20:14:03] red got 1 wood
+[20:14:05] OFFER from blue: you get 1 wood, you give 1 ore -> ACCEPT: value +0.012 for us (+0.004 for them)
+   Best answer after blue's turn: accept
+[20:14:05] cards: blue 4 = 2 wood, 1 wheat, 1 ore | orange 3 ~ 1 brick, 2 sheep (62%) | green 0
+[20:14:09] turn of blue; you 5 VP; hand 1 wo, 2 wh, 1 or
+   1. [0.41] End turn - ...
+[20:14:09] warning: a frame shows 6 tile(s) different from the locked board (a popup or trade window over the board?); the locked board is kept
+^C
+stopped: 812 frames (640 unchanged, 150 board reads, 95 log reads), 214 log entries, 9 offers evaluated
+```
+
+* `[time] TEXT` - a confirmed log entry (players as colours); `? TEXT
+  (unreadable: not counted)` is an entry that stayed unreadable while the
+  ones after it were read - kept in order, left out of the count.
+* `OFFER from C: you get X, you give Y -> VERDICT: reason` - the verdict
+  (ACCEPT / REJECT / COUNTER: give ... for ...) and the rule or value behind
+  it; the next line is the look-ahead's best answer after the proposer's
+  turn (it may disagree: the reason then says so).  `COUNTER-OFFER from` is
+  an opponent's counter to your offer.  `!` lines are warnings (you cannot
+  pay, they do not hold the cards).
+* `cards:` - the card count when it changes: `=` an exact hand, `~` the
+  most likely hand and its probability.
+* `turn of ...` - the recommendation block, printed when the board or the
+  turn changed.
+* `warning:` - each problem once per session (numbers ignored when
+  comparing).
+
+**Limits.**
+
+* The readers are tuned on synthetic screenshots.  On the real client, run
+  steps 2-4 first; if the board parse is wrong, `analyze shot.png --debug
+  overlay.png --ui-profile screen.json` shows what it saw and `--fix`
+  corrects it (`watch` applies `--fix` to every frame).
+* The log reader (`catanbot/vision/logocr.py`) is a separate module; without
+  it `watch` and `analyze` read the board only (one warning) and `ocr`,
+  `ocr-teach`, `ui-profile --detect` stop with an error.
+* An entry misread with high confidence the first time it is seen is
+  confirmed as read (teach the reader).  A panel left scrolled up past
+  everything read so far for 20 s is taken for a jump of the log.
+* A popup covering the log only delays it; a popup covering the board for a
+  frame only hides new pieces for that frame.  A board change the thumbnail
+  cannot see (a one-digit change smaller than a few pixels) is picked up
+  with the next change.
+
+**Recording a dataset of your own games.**  `--record DIR` writes, next to
+the live output:
+
+| file | contents |
+| --- | --- |
+| `frames/NNNNN.png` | every frame that changed (lossless; frame numbers continue across runs) |
+| `events.jsonl` | one line per confirmed log entry: `time`, `frame`, `index`, `text`, `kind`, `confidence`, `countable`, `gap_before` |
+| `parses.jsonl` | one line per board read: `time`, `frame`, `parsed` (after the board memory), `raw` (the frame's own parse), `confidence`, `warnings` |
+| `ocr.jsonl` | one line per log read: the panel `box` and every line's `text`, `confidence`, `partial`, `key`, `box` |
+| `offers.jsonl` | one line per offer verdict: the entry, proposer, `give` / `get`, `verdict`, `reason`, the look-ahead's `lines` |
+
+Frames plus the log reads are the material for teaching the log reader
+(`ocr-teach` on frames it misread) and for checking the board parser;
+`events.jsonl` with the outcome (`outcome` command) is a record of how
+humans play.  Recording costs disk space (a changed 1080p frame is about
+1-3 MB), so record the games you want to keep.
 
 ### Validating the bot on your own games
 
@@ -406,4 +558,5 @@ and can be supplied with `--fix`.
 
 `0` success; `2` for any input problem (unreadable or wrong-format file, an
 unknown colour, a bad `--fix` / `--offer` / bot spec, an option out of
-range), reported as a single `error: ...` line on stderr.
+range, `ocr` / `ocr-teach` / `ui-profile --detect` without the log reader),
+reported as a single `error: ...` line on stderr.
