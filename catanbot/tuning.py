@@ -47,6 +47,12 @@ Documented monkeypatches (the source files are not edited):
   the default 0.7 reproduces the original function exactly.
 * ``trading.feed_leader_guard`` flag off: ``offer_is_feeding_leader`` (in ``trading`` and
   ``heuristic``) always answers ``(False, "")``.
+* ``danger.steal_factor`` flag off: ``danger.steal_factor`` and ``robber.steal_factor`` become
+  ``lambda wp, our_need=None: 1.0`` (the robber values every victim's card alike instead of by
+  what the victim's hand likely holds and what they / we need).
+* ``danger.rob_break`` flag off: ``danger.rob_break_probability`` and
+  ``robber.rob_break_probability`` become ``lambda wp: 0.0`` (no bonus for a steal that may break
+  a player's winning build).
 * ``trading.accept_margin``: the default of ``should_accept``'s ``margin`` parameter.
 """
 from __future__ import annotations
@@ -261,6 +267,14 @@ def _no_feed_leader_guard(state, giver, receiver, give):
     return False, ""
 
 
+def _flat_steal_factor(wp, our_need=None) -> float:
+    return 1.0
+
+
+def _no_rob_break(wp) -> float:
+    return 0.0
+
+
 def _scaled(default: float, factors: Sequence[float]) -> List[float]:
     return [round(default * f, 6) for f in factors]
 
@@ -292,6 +306,21 @@ def _build_registry() -> Dict[str, Tunable]:
         description="off: robber.target_weight uses the VP threat only (multiplier fixed at 1.0 instead of "
                     "0.4 + 1.6 x danger); implemented by monkeypatching danger.danger_multiplier and the copy "
                     "robber.py imported")
+    add(name="danger.steal_factor", module=danger.__name__, attr="steal_factor", default=True, kind="flag",
+        candidates=[False], parse=_parse_bool,
+        targets=(Target(danger.__name__, "steal_factor"), Target(robber.__name__, "steal_factor")),
+        make=lambda on: KEEP if on else _flat_steal_factor,
+        description="off: the robber values a stolen card the same from every victim (factor 1.0) instead of "
+                    "by what their hand likely holds and what they / we need; monkeypatches "
+                    "danger.steal_factor and the copy robber.py imported")
+    add(name="danger.rob_break", module=danger.__name__, attr="rob_break_probability", default=True, kind="flag",
+        candidates=[False], parse=_parse_bool,
+        targets=(Target(danger.__name__, "rob_break_probability"),
+                 Target(robber.__name__, "rob_break_probability")),
+        make=lambda on: KEEP if on else _no_rob_break,
+        description="off: no robber bonus for a steal that may break a near-winner's build "
+                    "(rob_break_probability fixed at 0); monkeypatches danger.rob_break_probability and the "
+                    "copy robber.py imported")
     # --- static evaluator ------------------------------------------------------------------
     add(name="heuristic.EXPOSURE_WEIGHT", module=heuristic.__name__, attr="EXPOSURE_WEIGHT",
         default=live(heuristic, "EXPOSURE_WEIGHT"), candidates=[0.0, 0.1, 0.4, 0.6],

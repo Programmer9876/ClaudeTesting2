@@ -115,6 +115,31 @@
      "seeds": {"count": 1000, "base": 0},
      "notes": "TIER 2 extra (not in the requested list; the harness pilot flagged it): expand 4 instead of 8, a cheaper search. Set enabled:false to drop. 0.16 h or less."},
 
+    {"name": "t2_steal_factor_off@value", "priority": 42, "interpreter": "py330", "opponent": "value",
+     "tunable": "danger.steal_factor", "flag_off": true,
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2 (user request: 'consider what resources to rob'). Off = the robber values a stolen card the same from every victim instead of by what their hand likely holds and what they / we need (danger.steal_factor, a monkeypatch flag added 2026-09-26). Acts through best_robber_move (heuristic priors, simulated opponents). Default arm reused. Not measured in self-play yet."},
+
+    {"name": "t2_rob_break_off@value", "priority": 43, "interpreter": "py330", "opponent": "value",
+     "tunable": "danger.rob_break", "flag_off": true,
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "TIER 2 (user request: rob the player close to winning to break their build). Off = no robber bonus for a steal that may break a near-winner's build (rob_break_probability fixed at 0). Default arm reused. Not measured in self-play yet."},
+
+    {"name": "t2_counted_info@value", "priority": 44, "interpreter": "py330", "opponent": "value",
+     "cand_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+     "def_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+     "cand_adapter_opts": {"info": "counted"},
+     "seeds": {"count": 1000, "base": 0},
+     "notes": "Cost of Colonist information: the same bot with --info counted (card counting from public events, 4 determinizations) vs the full view, paired on the same seeds. Not a strategy switch but the price of playing blind; T7 (unpaired, other seeds) gives the level. Counted mode is 3.4-4.2x per decision, so the candidate arm is slow."},
+
+    {"name": "paths_main@value", "priority": 60, "interpreter": "py330", "opponent": "value",
+     "tunable": "search.paths", "values": [1], "seeds": {"count": 2000, "base": 0},
+     "notes": "Win-path portfolio with crowding (user request), Stage 3 E1 of docs/ABLATIONS_WINPATHS.md; run Stages 1-2 (calibration, shadow diagnostics, one core, ~7 min) first. Promotion also needs the league gate."},
+
+    {"name": "paths_main@vf", "priority": 61, "interpreter": "py321", "opponent": "vf",
+     "tunable": "search.paths", "values": [1], "seeds": {"count": 2000, "base": 0},
+     "notes": "Win-path portfolio, Stage 3 E2 (vs the 3.2.1 stand-in). Stages 4-6 (sweeps, knock-outs, held-out confirmation) follow docs/ABLATIONS_WINPATHS.md."},
+
     {"name": "t3_search_vs_heur@alphabeta", "priority": 50, "interpreter": "py330", "opponent": "alphabeta",
      "cand_spec": "heuristic:temp=0",
      "def_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",

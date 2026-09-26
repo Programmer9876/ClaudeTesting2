@@ -639,6 +639,59 @@ machine was otherwise idle, load ~1.9 at 2 workers and ~2.6-2.9 at 3):
 3 workers give ~1.45x the 2-worker rate on an idle 4-core machine; with the other benchmark on 2 cores,
 use 2.  The alphabeta row rests on 4-6 games.
 
+## Queue after the strength proof (2026-09-26): every strategy the user asked to test
+
+Everything below runs after T7-T11, one experiment at a time on 3 cores.
+- Rows marked *campaign* are in `scripts/campaign_plan.json`.
+  - Paired games against Catanatron: same seeds and seats, candidate vs
+    default.
+  - Run with `python3 scripts/campaign.py --plan scripts/campaign_plan.json
+    --dir runs/campaign1`.
+  - Tier 3 rows re-test against AlphaBeta only what tier 1 found
+    significant (Holm).
+- *Self-play* rows use `scripts/ablate.py` (2v2 paired self-play).  They
+  test what Catanatron cannot measure: its bots never trade.
+- A strategy becomes the default only after it passes the champion league
+  gate (docs/LEAGUE.md).
+
+| user's request | switch / tunable | where | status |
+|---|---|---|---|
+| is the search worth it at all | `heuristic:temp=0` vs the search bot | campaign t1 / t3 | queued |
+| trade proposals | `search.trade_proposals` 0 | campaign t1 (vs value-rule responders) | queued |
+| opening / setup placement policies | `openings.policy` (4 policies) | campaign t1 (value, vf) / t3 | queued |
+| deeper search (all opponents' turns) | `search.depth` 2 | campaign t1 / t3 | queued |
+| robber blockability in placement (2 buildings on one hex) | `placement.PLACEMENT_BLOCK_WEIGHT` 0 | campaign t1 (value, vf) / t3 | queued |
+| rob the most dangerous player, not only the leader (distance to win) | `danger.danger_multiplier` off, `danger.TURNS_HALF` | campaign t2 | queued |
+| block what they need (ports, holdings) | `danger.BLOCK_NEED` 0 | campaign t2 | queued |
+| which resource to rob | `danger.steal_factor` off (new flag) | campaign t2 | queued |
+| rob to break a near-winner's build | `danger.rob_break` off (new flag) | campaign t2 | queued |
+| don't hold what they want to rob (steal exposure) | `heuristic.EXPOSURE_WEIGHT` 0 | campaign t2 (Python evaluator) | queued |
+| politics: favour slack, coalitions, don't feed the leader | `politics.MAX_SLACK`, `coalitions.SCALE`, `trading.feed_leader_guard` | campaign t2 (vs value-rule responders) | queued |
+| knight value / dev cards | `devcards.KNIGHT_VALUE` | campaign t2 | queued |
+| discard / surplus handling | `search.dump_candidates` 0 | campaign t2 | queued |
+| late-game trade willingness | `opponent_model.stage_late_drop` | campaign t2 | queued |
+| cheaper search (compute worth it?) | `search.beam` 2, `search.expand` 4 | campaign t2 extra | queued |
+| Colonist information (card counting) | `--info counted` vs full | campaign `t2_counted_info` (plus proof T7-T9) | queued |
+| win-path portfolio with crowding | `search.paths` 1 | campaign `paths_main` + Stages 1-6 below | queued |
+| counteroffers | `search.counters` 1 (`--counters` rules) | self-play, 1,200 games | queued |
+| analyse the proposer's turn before answering an offer | `search.respond_lookahead` 1 | self-play, 1,200 games, then the league gate | queued |
+| does the 6/8 rule matter / break the model | boards with adjacent 6/8 vs without | not built yet (needs a board generator switch) | to build |
+
+Self-play commands:
+
+```
+PYTHONPATH=$PWD nice python3 scripts/ablate.py --tunable search.counters --values 1 --counters \
+  --base-spec search:depth=1,beam=4,expand=8,evaluator=heuristic --games 1200 --players 4 --seed 11 --workers 3
+PYTHONPATH=$PWD nice python3 scripts/ablate.py --tunable search.respond_lookahead --values 1 \
+  --base-spec search:depth=1,beam=4,expand=8,evaluator=heuristic --games 1200 --players 4 --seed 12 --workers 3
+```
+
+Earlier self-play sweeps (Sweeps 1-2 above: 120 paired games per candidate)
+found no significant effect for most tier 2 terms.  At that size the
+standard error is about 4.6 points, so small effects cannot be seen.  These
+runs use 1,000-2,000 seeds per row, with a standard error of about 1-1.5
+points.
+
 ## Planned: win-path races with crowding (`search.paths`)
 
 `catanbot/winpaths.py` (docs/STRATEGY.md "Win-path races") replaces static_value's permanent-award credit and flat

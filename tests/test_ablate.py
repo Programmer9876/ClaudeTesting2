@@ -103,6 +103,7 @@ def test_apply_restore_round_trip():
                  "politics.DECAY": 0.5, "politics.BASELINE": 0.3, "opponent_model.DECAY": 0.5,
                  "trading.accept_margin": 0.03, "placement.RESOURCE_DEMAND": [2, 2, 2, 2, 2],
                  "opponent_model.stage_late_drop": 0.0, "danger.danger_multiplier": False,
+                 "danger.steal_factor": False, "danger.rob_break": False,
                  "trading.feed_leader_guard": False, "search.beam": 2}
     demand_obj = placement.RESOURCE_DEMAND
     token = tuning.apply(overrides)
@@ -116,6 +117,8 @@ def test_apply_restore_round_trip():
         assert trading.should_accept.__defaults__[1] == 0.03
         assert placement.RESOURCE_DEMAND == [1.0] * 5 and placement.RESOURCE_DEMAND is demand_obj   # in place, normalised
         assert robber.danger_multiplier(None) == 1.0 and danger.danger_multiplier(None) == 1.0
+        assert robber.steal_factor(None, [1.0] * 5) == 1.0 and danger.steal_factor(None) == 1.0
+        assert robber.rob_break_probability(None) == 0.0 and danger.rob_break_probability(None) == 0.0
         assert trading.offer_is_feeding_leader(None, 0, 1, [1, 0, 0, 0, 0]) == (False, "")
         import catanbot.search as S
         s = new_game(4, rng=random.Random(1))
@@ -126,11 +129,14 @@ def test_apply_restore_round_trip():
     after = {t.name: [tg.get() for tg in t.targets] for t in tuning.TUNABLES.values() if t.kind != "search"}
     assert after == before
     assert robber.danger_multiplier is danger.danger_multiplier
+    assert robber.steal_factor is danger.steal_factor
+    assert robber.rob_break_probability is danger.rob_break_probability
     assert tuning.verify_registry() == []
 
 
 def test_flag_on_and_stage_default_are_noops():
-    assert tuning.apply({"danger.danger_multiplier": True, "trading.feed_leader_guard": True}) == []
+    assert tuning.apply({"danger.danger_multiplier": True, "trading.feed_leader_guard": True,
+                         "danger.steal_factor": True, "danger.rob_break": True}) == []
     s = new_game(4, rng=random.Random(3))
     f = tuning.TUNABLES["opponent_model.stage_late_drop"].make(0.7)
     assert f(s) == pytest.approx(opponent_model.trade_stage_factor(s))
