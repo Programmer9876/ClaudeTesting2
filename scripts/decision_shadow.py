@@ -549,9 +549,14 @@ def robber_gates(rows: Sequence[Dict[str, Any]], label: str, gset: str) -> Dict[
                         (ratio95 is None or ratio95 <= 1.5), "ms ratio <= 1.2 mean, <= 1.5 p95")
         out["fallback_trigger"] = not (g["G1"]["pass"] and g["G4"]["pass"])
         cm = [r for r in g1 if r["cand"][label]["a"] != r["def"]]
+        later = [r for r in g2 if (r["rob"].get("def") or {}).get("kick_any")]
+        rest = [r for r in g2 if not (r["rob"].get("def") or {}).get("kick_any")]
         out["readout"] = {"g1_changed_to_robber_move": sum(1 for r in cm if (r["rob"]["cand"].get(label) or {})),
                           "g1_changed_still_t1": sum(1 for r in cm if (r["rob"]["cand"].get(label) or {})
-                                                     .get("kick_t1"))}
+                                                     .get("kick_t1")),
+                          # G2's set split: the default's hex blocks a would-kick holder kicking after 2+ rolls
+                          # (a smaller restore by design) / no would-kick holder (incl. no robber move at all)
+                          "g2_kick_later": _share(later, label), "g2_no_kick_holder": _share(rest, label)}
     elif gset == "insurance":
         hold = [r for r in rows if r["rob"].get("holder")]
         non = [r for r in rows if not r["rob"].get("holder") and set(r["cls"]) & {"roll", "main"}]
