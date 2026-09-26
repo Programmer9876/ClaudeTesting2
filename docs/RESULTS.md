@@ -4,6 +4,15 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 09:45 UTC - robber step started (user's go-ahead); the unfinished ports code is default-neutral
+
+- **The unfinished ports code leaves the default bot unchanged.**  24 default-arm games vs 3x ValueFunction
+  (seeds 0-23, full information) were played with the epoch-B1 snapshot and with the current tree: all 24 were
+  identical in trace hash, VPs, winner, turns and actions.
+- **Step 5 (robber dynamics, linked to Largest Army) is being built** by a background agent from the design
+  brief.  Everything is off by default and proven unchanged by the same A/A check.  The queue is untouched
+  until the robber code epoch is bumped.
+
 ## 2026-09-26 09:22 UTC - check-in: two trade ideas shelved or stopped; the ports agent was stopped
 
 - **Wider trade offers** (`acq_breadth_bundle`, self-play): +0.2 +- 1.6 points at 960 pairs, too small to
