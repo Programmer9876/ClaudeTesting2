@@ -692,6 +692,47 @@ standard error is about 4.6 points, so small effects cannot be seen.  These
 runs use 1,000-2,000 seeds per row, with a standard error of about 1-1.5
 points.
 
+## After screening: interactions and joint tuning (user's point, 2026-09-26)
+
+The terms are not independent.  Examples:
+- a robber on our hex hurts less while we hold a knight;
+- a leader who trades a little generously to break up a coalition may beat
+  refusing to trade at all.
+
+The one-at-a-time rows above measure each term's value *given everything
+else at its current setting*.  They say nothing about re-tuning the others
+around it.  So the screening is followed by three steps:
+
+1. **Factorial tests for suspected pairs** (2x2 on the same seeds).  They
+   report each main effect and the interaction (AB - A - B + base).  An
+   interaction needs about 4x the games of a main effect.  First pairs:
+
+   | pair | why |
+   |---|---|
+   | `devcards.KNIGHT_VALUE` x `heuristic.EXPOSURE_WEIGHT` | knight as robber insurance |
+   | `danger.danger_multiplier` x `danger.steal_factor` | who to rob x what to take |
+   | `politics.MAX_SLACK` x `coalitions.SCALE` | slack toward a bloc |
+   | `search.trade_proposals` x `trading.feed_leader_guard` | trading as leader |
+
+2. **Joint tuning (SPSA)** of groups of weights at once, in self-play and
+   against Catanatron (`scripts/tune_joint.py`, docs/TUNING.md: being
+   built).  SPSA moves all weights of a group together from paired games,
+   which is how game engines tune their evaluation.  Groups: robber
+   (danger, knight, exposure, placement robber terms) and trade (margins,
+   slack, coalitions, late drop, counter margin).
+3. **Confirmation through the league gate:** a tuned set is a candidate like
+   any other and must beat the current champion.
+
+Interactions the code does not model yet (candidates to build, off by
+default, then test):
+- **Knight as robber insurance.**  A held knight counts a flat 0.7 in the
+  static value.  The search already sees that *playing* it frees a blocked
+  hex, but the value of *holding* one does not rise with the robber damage
+  it can undo.
+- **Trading to split a coalition.**  Coalitions currently steer robber
+  targets and who we expect to accept our offers.  As the leader, we do not
+  yet aim trades at one bloc member to break the bloc.
+
 ## Planned: win-path races with crowding (`search.paths`)
 
 `catanbot/winpaths.py` (docs/STRATEGY.md "Win-path races") replaces static_value's permanent-award credit and flat
