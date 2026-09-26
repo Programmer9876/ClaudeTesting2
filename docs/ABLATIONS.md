@@ -681,6 +681,14 @@ idea.
   it.
 * **2x2 interaction tests and joint tuning** only run within the same
   thousands-of-games budget, and only for the four priority areas.
+* **Cost is measured in CPU time, not wall-clock** (user note: another
+  project shares the workload, so wall-clock speed is not a clean signal).
+  - Queue costs and "is it worth the compute" judgements use CPU seconds
+    per game and positions evaluated per decision.
+  - Hours are rough estimates only.
+  - Win rates do not depend on speed.  Our search is fixed-size, with no
+    time limit.  The one wall-clock limit in play is Catanatron's 20 s
+    AlphaBeta cutoff, and every run reports the slowest opponent decision.
 * **The politics rule below still applies.**
 
 ## Queue after the strength proof (2026-09-26): every strategy the user asked to test
