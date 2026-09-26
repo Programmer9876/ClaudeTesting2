@@ -4,6 +4,21 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 09:30 UTC - check-in: two trade ideas shelved or stopped; the ports agent was stopped
+
+- **Wider trade offers** (`acq_breadth_bundle`, self-play): +0.2 +- 1.6 points at 960 pairs, too small to
+  prove.  SHELVE; the default is unchanged.
+- **Acceptance calibration:**
+  - It failed its behaviour check: against Catanatron's bots, which never accept, it should drop below 10
+    offers a game, and it still made 58.0 (default 59.6).  The check also measured -12.5 +- 5.3 points at 40
+    pairs (a smoke row).
+  - Its self-play screen (`acq_calib`) was therefore switched off by hand, as the plan says.
+  - Next comes the simpler fallback, a rejection-streak rule: a 40-game behaviour check, then the
+    human-testing list.
+- **Ports step 4:** the background agent was stopped by the user.  Its unfinished code is on the branch as
+  "WIP ports step 4" commits and is not reviewed.  The ports queue rows stay blocked (they need a code epoch
+  that is not made).  No new implementation agent starts without the user's word.
+
 ## 2026-09-26 08:50 UTC - 1v1 benchmark: 75.5 % against Catanatron's AlphaBeta (HexMachina comparison)
 
 Pre-registered in `docs/BENCH_1V1_PROTOCOL.md` (commit `35ef224`, before any game) and run from a frozen

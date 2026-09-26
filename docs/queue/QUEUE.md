@@ -1,6 +1,6 @@
 # Test queue report
 
-Plan `scripts/queue_plan.json` (bd8f71f836af), results `/home/user/queue_runs/queue1`, written 2026-09-26 08:44:23.  One line per candidate.  Units: win-rate percentage points of the candidate minus the default (paired); `p` = stage-wise one-sided p (fixed two-sided p for politics / estimate rows), `Holm` = adjusted within the row's tier (provisional `*` until the tier is complete).  Estimates of rows stopped early are biased away from 0 (winner's curse): confirm on fresh seeds.
+Plan `scripts/queue_plan.json` (bd8f71f836af), results `/home/user/queue_runs/queue1`, written 2026-09-26 09:19:32.  One line per candidate.  Units: win-rate percentage points of the candidate minus the default (paired); `p` = stage-wise one-sided p (fixed two-sided p for politics / estimate rows), `Holm` = adjusted within the row's tier (provisional `*` until the tier is complete).  Estimates of rows stopped early are biased away from 0 (winner's curse): confirm on fresh seeds.
 
 | area | row | candidate | polarity | design | label | look | pairs | estimate (pp) +- se | unit | base rate / relative | p | Holm | dVP +- se | discordant / diverged | mechanism (cand - def) | CPU-h | next action |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -16,8 +16,8 @@ Plan `scripts/queue_plan.json` (bd8f71f836af), results `/home/user/queue_runs/qu
 | trades | acq_breadth_bundle | 1 | new | screen | SHELVE(too small to prove; conditional power < 0.1) [stopped early] | 2 | 960 | +0.2 +- 1.6 | pp (per seat, 2v2) | 49.8% / +0% | 0.449 | 0.449* | +0.05 +- 0.07 | 1.00 / 0.00 |  | 2.21 | on ice (default unchanged) |
 | trades | acq_breadth_confirm@value | 1 | new | confirm | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | confirmation waits for tier t1 to complete (Holm family) |
 | trades | acq_breadth_noharm_3p | 1 | measure | estimate | NOT TRIGGERED |  |  |  |  |  |  |  |  |  |  | 0.00 | after acq_breadth_bundle: condition not met |
-| trades | acq_calib_native@value | 1 | measure | estimate | ESTIMATE(fixed N) | 1 | 40 | -12.5 +- 5.3 | pp (1v3 win rate vs value) | 67.5% / -19% | 0.0183 |  | -0.20 +- 0.17 | 0.12 / 1.00 | setup_distinct +0.00+-0.00; first_settle_round -0.71+-0.33; first_city_round -0.16+-0.24; settle_before_city +0.00+-0.04; port_settled +0.00+-0.06; share_4to1 + | 0.08 | measurement recorded |
-| trades | acq_calib | 1 | new | politics | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | politics: one fixed-N screen, queued |
+| trades | acq_calib_native@value | 1 | measure | estimate | ESTIMATE(fixed N) | 1 | 40 | -12.5 +- 5.3 | pp (1v3 win rate vs value) | 67.5% / -19% | 0.0183 |  | -0.20 +- 0.17 | 0.12 / 1.00 | first_city_round -0.16+-0.24; first_settle_round -0.71+-0.33; knights_held_end +0.20+-0.11; knights_played -0.40+-0.21; largest_army -0.07+-0.07; longest_road - | 0.08 | measurement recorded |
+| trades | acq_calib | 1 | new | politics | queued |  |  |  |  |  |  |  |  |  |  | 1.60 | politics: one fixed-N screen, running |
 | trades | acq_reject_streak_native@value | 3 | measure | estimate | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | queued |
 | trades | acq_calib_reject_streak | row |  | human | DEFERRED |  |  |  |  |  |  |  |  |  |  | 0.00 | deferred to human testing (no games) |
 | trades | acq_flow_fit | row |  | gate | PASS |  |  |  |  |  |  |  |  |  |  | 0.00 | pipeline / pairing verified |
@@ -90,7 +90,7 @@ Plan `scripts/queue_plan.json` (bd8f71f836af), results `/home/user/queue_runs/qu
 
 | # | area | row | status | remaining CPU-h | weight | why |
 |---|---|---|---|---|---|---|
-| 1 | trades | acq_calib | ELIGIBLE | 3.60 | 0.1649 |  |
+| 1 | trades | acq_calib | RUNNING | 2.66 | 0.1649 |  |
 | 2 | trades | acq_reject_streak_native@value | ELIGIBLE | 0.07 | 0.1550 |  |
 | 3 | trades | acq_floor_selfplay | ELIGIBLE | 3.53 | 0.1340 |  |
 | 4 | trades | acq_floor_vrule@value | ELIGIBLE | 1.63 | 0.1294 |  |
@@ -122,7 +122,7 @@ Waiting / blocked: acq_breadth_confirm@value (WAITING: confirmation waits for ti
 | area | rows | final | open | ADOPT | on ice (SHELVE/REJECT) | NOOP | FAILED | deferred | CPU-h spent |
 |---|---|---|---|---|---|---|---|---|---|
 | harness | 7 | 7 | 0 | 0 | 2 | 0 | 0 | 0 | 0.92 |
-| trades | 13 | 7 | 4 | 0 | 1 | 0 | 0 | 1 | 4.90 |
+| trades | 13 | 7 | 4 | 0 | 1 | 0 | 0 | 1 | 6.50 |
 | diversification | 10 | 0 | 4 | 0 | 0 | 0 | 0 | 0 | 0.00 |
 | ports | 15 | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0.00 |
 | robber | 12 | 1 | 4 | 0 | 0 | 0 | 0 | 1 | 0.00 |

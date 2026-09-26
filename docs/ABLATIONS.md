@@ -716,6 +716,20 @@ Verdicts are also written as `{"kind": "stop", "source": "queue"}` records into 
 
 They are all off by default outside the queue, and arm keys are unchanged when they are off. The bot is untouched. A tuning.py entry would change the code fingerprint and void default-arm reuse.
 
+### Queue verdicts so far (copied from `docs/queue/ledger.jsonl`; per-game results in `docs/queue/games/`)
+
+| row | area | verdict | evidence |
+|---|---|---|---|
+| `t1_baseline_aa@value`, `t1_baseline_aa@vf`, `crn_aa_dice@vf` | harness | PASS (A/A identical) | identical games in both arms |
+| `smoke_expand4@vf`, `smoke_turns_half2@vf` | harness | SHELVE (smoke rows) | too small to prove at 320 pairs |
+| `crn_pilot_off@vf`, `crn_pilot_dice@vf` | harness | CRN adopted for `crn: auto` rows | discordance 0.33 to 0.20-0.22 |
+| `t1_trades0_vrule@value` | trades | ESTIMATE | player-trade proposals off: -24.1 +- 1.2 pp (2,000 pairs, value-rule responders) |
+| `t2_dump0@value` | trades | KEEP(unproven) | -0.8 +- 0.8 pp at 400 pairs |
+| `acq_flow_fit` | trades | gate PASS | trade-flow port model fit |
+| `acq_breadth_bundle` | trades | SHELVE | +0.2 +- 1.6 pp at 960 self-play pairs; default unchanged.  Its 3-player no-harm check was not triggered |
+| `acq_calib_native@value` | trades | behaviour gate **FAILED** | against bots that never accept, the calibrated bot still made 58.0 offers a game (default 59.6; pass line < 10).  Win rate -12.5 +- 5.3 pp at 40 pairs (smoke tier, outside every Holm family) |
+| `acq_calib` | trades | **stopped by hand** (09:25 UTC) | its gate failed, so the 1,200-game politics screen was switched off after about 1.6 CPU-h.  The simpler fallback (`acq_reject_streak_native@value`, then the human-testing list) runs next.  Why calibration does not cut offers against Catanatron's bots is not yet diagnosed |
+
 ## Queue after the strength proof (2026-09-26): every strategy the user asked to test
 
 Everything below runs after T7-T11, one experiment at a time on 3 cores.
