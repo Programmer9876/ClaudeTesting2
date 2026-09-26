@@ -48,6 +48,7 @@ logged actions).
 from __future__ import annotations
 
 import inspect
+import math
 import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -57,6 +58,7 @@ from catanatron.state import State
 
 from .. import board as B
 from ..counting import CardCounter
+from ..devbelief import DevAgeModel
 from ..public_belief import (  # noqa: F401 - apportion / redact_state re-exported
     PublicBelief,
     _public_pool_estimate,
@@ -119,6 +121,7 @@ class Snapshot:
     bank: List[int]
     deck: int
     my_dev: List[int]
+    vp: Optional[List[int]] = None     # public VP (buildings and awards; development-card VP excluded)
 
 
 def snapshot(st: State, me: int) -> Snapshot:
@@ -128,8 +131,39 @@ def snapshot(st: State, me: int) -> Snapshot:
     dev_count = [sum(int(ps[f"P{i}_{d}_IN_HAND"]) for d in CB_TO_DEV) for i in range(n)]
     played = [[int(ps.get(f"P{i}_PLAYED_{d}", 0)) for d in CB_TO_DEV] for i in range(n)]
     my_dev = [int(ps[f"P{me}_{d}_IN_HAND"]) for d in CB_TO_DEV]
+    vp = [int(ps.get(f"P{i}_VICTORY_POINTS", 0)) for i in range(n)]
     return Snapshot(hands, dev_count, played, [int(x) for x in st.resource_freqdeck],
-                    len(st.development_listdeck), my_dev)
+                    len(st.development_listdeck), my_dev, vp)
+
+
+def _land_scarcity(st: State) -> Dict[int, float]:
+    """``placement.resource_scarcity`` of a catanatron board (mean pips / pips per resource)."""
+    pips = [0] * 5
+    for tile in st.board.map.land_tiles.values():
+        if getattr(tile, "resource", None) is not None and getattr(tile, "number", None):
+            pips[RESOURCE_TO_CB[tile.resource]] += B.PIPS[tile.number]
+    mean = sum(pips) / 5.0
+    return {r: mean / max(p, 1) for r, p in enumerate(pips)}
+
+
+def robber_block_values(st: State, color_to_index: Dict, scarcity: Dict[int, float]) -> List[float]:
+    """Every seat's demand-weighted pips on the robber hex (cities double): ``robber_eval.block_values``
+    of the robber hex computed on the catanatron state (no conversion)."""
+    from ..placement import RESOURCE_DEMAND
+    out = [0.0] * len(color_to_index)
+    board = st.board
+    tile = board.map.land_tiles.get(board.robber_coordinate)
+    if tile is None or getattr(tile, "resource", None) is None or not getattr(tile, "number", None):
+        return out
+    r = RESOURCE_TO_CB[tile.resource]
+    w = B.PIPS[tile.number] * RESOURCE_DEMAND[r] * math.sqrt(scarcity[r])
+    for node in tile.nodes.values():
+        b = board.buildings.get(node)
+        if b is None:
+            continue
+        color, kind = b[0], b[1]
+        out[color_to_index[color]] += (2.0 if str(getattr(kind, "value", kind)).upper().endswith("CITY") else 1.0) * w
+    return out
 
 
 def initial_state_like(st: State) -> State:
@@ -164,6 +198,13 @@ class PublicInfoTracker(PublicBelief):
     ``discards_public`` makes the cards of every discard public (Colonist shows them in some
     modes); ``reveal_hidden`` (diagnostics / tests only) treats every steal, discard and
     development draw as public - the counter must then equal the true hands at every step.
+    ``reveal_devs`` (harness / diagnostics only: the dev-card oracle of ``scripts/belief_shadow.py``)
+    reveals the type of every development card an opponent draws, and nothing else.
+
+    ``dev_age`` (:class:`catanbot.devbelief.DevAgeModel`) keeps the held-age statistics of every
+    player's development cards from the public events (purchases, plays, turn starts and ends, the
+    knight context at a turn start, public VP).  It uses no random numbers and never raises into the
+    tracker; it only matters with ``devbelief.ENABLED`` (the determinizations' dev deal).
 
     The views handed to the bot (:meth:`public_view`, :meth:`canonical_view`, :meth:`determinize`)
     and the belief queries come from :class:`catanbot.public_belief.PublicBelief`, shared with the
@@ -174,10 +215,13 @@ class PublicInfoTracker(PublicBelief):
     new_devs_unplayable = API_33
 
     def __init__(self, me_color, discards_public: bool = False, reveal_hidden: bool = False,
-                 vps_to_win: int = 10, max_hypotheses: int = CardCounter.MAX_HYPOTHESES):
+                 vps_to_win: int = 10, max_hypotheses: int = CardCounter.MAX_HYPOTHESES, reveal_devs: bool = False):
         self.me_color = me_color
         self.discards_public = bool(discards_public)
         self.reveal_hidden = bool(reveal_hidden)
+        self.reveal_devs = bool(reveal_devs)
+        self.dev_age: Optional[DevAgeModel] = None
+        self._scarcity: Optional[Dict[int, float]] = None
         self.vps_to_win = int(vps_to_win)
         self.max_hypotheses = int(max_hypotheses)
         self.me = -1
@@ -212,11 +256,17 @@ class PublicInfoTracker(PublicBelief):
         self.dev_count = list(snap.dev_count)
         self.played = [list(x) for x in snap.played]
         self.bought_this_turn = [0] * self.n
-        self.known_dev = [[0] * 5 if (self.reveal_hidden and j != self.me) else None for j in range(self.n)]
+        self.known_dev = [[0] * 5 if ((self.reveal_hidden or self.reveal_devs) and j != self.me) else None
+                          for j in range(self.n)]
         self.my_dev = list(snap.my_dev)
         self.deck = snap.deck
         self.bank = list(snap.bank)
         self.pending_discards = {}
+        self.dev_age = DevAgeModel(self.n, eligible_same_turn=not self.new_devs_unplayable)
+        try:
+            self._scarcity = _land_scarcity(st)
+        except Exception:  # noqa: BLE001  (the knight context is then never raised)
+            self._scarcity = None
 
     def start(self, st: State) -> None:
         """Start following ``st``'s game: replay its whole log from the initial position."""
@@ -273,6 +323,10 @@ class PublicInfoTracker(PublicBelief):
         c._reset("resync")
         c.observe_hand(self.me, snap.hands[self.me])
         self._public_bookkeeping(snap)
+        if self.dev_age is not None:
+            # the events in between are unknown: every held card's age becomes unknown
+            self.dev_age.forget()
+            self.dev_age.sync_counts(self.dev_count)
         self._shadow = st.copy()
         self._observed = len(action_log(st))
 
@@ -358,7 +412,7 @@ class PublicInfoTracker(PublicBelief):
         if t == ActionType.BUY_DEVELOPMENT_CARD:
             self.bought_this_turn[actor] += 1
             if actor != me:
-                if self.reveal_hidden:
+                if self.reveal_hidden or self.reveal_devs:
                     card = self._revealed_result(entry)
                     if card is not None and self.known_dev[actor] is not None:
                         self.known_dev[actor][DEV_TO_CB[card]] += 1
@@ -369,7 +423,43 @@ class PublicInfoTracker(PublicBelief):
             kd[_PLAY_TYPES[t]] = max(0, kd[_PLAY_TYPES[t]] - 1)
         elif t == ActionType.END_TURN:
             self.bought_this_turn = [0] * n
+        if self.dev_age is not None and actor != me:
+            self._dev_age_events(t, actor, pre, post)
         self._public_bookkeeping(post)
+
+    def _dev_age_events(self, t, actor: int, pre: Snapshot, post: Snapshot) -> None:
+        """Feed the held-age model (no RNG; nothing here may raise into the tracker)."""
+        dm = self.dev_age
+        try:
+            if (t == ActionType.ROLL or t in _PLAY_TYPES) and not dm.is_open(actor):
+                kpv, la = 0.0, False
+                if pre.dev_count[actor] > 0 and self.known_dev[actor] is None:
+                    kpv, la = self._knight_context(actor, pre)
+                dm.on_turn_start(actor, kpv=kpv, la=la, pub=(post.vp or [0] * self.n)[actor])
+            if t == ActionType.BUY_DEVELOPMENT_CARD:
+                dm.on_buy(actor)
+            elif t in _PLAY_TYPES:
+                dm.on_play(actor, _PLAY_TYPES[t])
+            if post.vp is not None:
+                dm.on_public(actor, post.vp[actor])
+            if t == ActionType.END_TURN:
+                dm.on_turn_end(actor)
+        except Exception:  # noqa: BLE001
+            dm.invalid = True
+            dm.stats["errors"] += 1
+
+    def _knight_context(self, j: int, pre: Snapshot):
+        """At ``j``'s turn start: its block value when it is the main robber victim (the robber
+        design's R3 event: blocked at least as much as every other seat), and whether one more knight
+        gives it Largest Army."""
+        k = [p[B.DEV_KNIGHT] for p in pre.played]
+        la = k[j] + 1 >= 3 and all(k[j] + 1 > k[i] for i in range(self.n) if i != j)
+        kpv = 0.0
+        if self._scarcity is not None and self._shadow is not None:
+            pv = robber_block_values(self._shadow, self.color_to_index, self._scarcity)
+            if pv[j] > 0.0 and pv[j] >= max(pv):
+                kpv = pv[j]
+        return kpv, la
 
     def _public_bookkeeping(self, snap: Snapshot) -> None:
         self.dev_count = list(snap.dev_count)

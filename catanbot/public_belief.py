@@ -19,9 +19,11 @@ have won).
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Sequence
+import random
+from typing import Any, Dict, List, Optional, Sequence
 
 from . import board as B
+from . import devbelief as _devbelief
 from .counting import CardCounter
 from .state import PHASE_TRADE_RESPONSE, GameState
 
@@ -115,7 +117,9 @@ class PublicBelief:
     types), ``bought_this_turn``, ``known_dev`` (per player the exact types, or ``None`` when only
     the count is public), ``my_dev`` (our own types), ``deck`` (cards left in the deck),
     ``pending_discards`` (seat -> hidden cards discarded on the 7 being resolved, applied jointly
-    later) and ``vps_to_win``.
+    later) and ``vps_to_win``.  ``dev_age`` (optional, :class:`catanbot.devbelief.DevAgeModel`): the
+    held-age bookkeeping of the development cards; with ``devbelief.ENABLED`` the determinizations
+    deal the opponents' cards from its posterior (RNG-neutral, see :meth:`determinize`).
     ``new_devs_unplayable``: cards bought this turn are dealt as not yet playable to the player
     on turn (the official rule; catanatron 3.2.1 lets them be played).
     """
@@ -133,6 +137,7 @@ class PublicBelief:
     deck: int
     pending_discards: Dict[int, int]
     vps_to_win: int
+    dev_age: Optional[_devbelief.DevAgeModel] = None
 
     # --- development cards ---------------------------------------------------
     def dev_pool(self) -> List[int]:
@@ -152,6 +157,33 @@ class PublicBelief:
 
     def unknown_dev_holders(self) -> List[int]:
         return [j for j in range(self.n) if j != self.me and self.known_dev[j] is None]
+
+    def dev_posterior(self, public: Sequence[int], preset: Optional[_devbelief.Preset] = None
+                      ) -> Optional[Dict[int, Dict[str, Any]]]:
+        """Exact posterior summaries of every unknown holder's hidden development cards
+        (:meth:`catanbot.devbelief.DevAgeModel.posterior`; ``public`` = every seat's public VP)."""
+        dm = self.dev_age
+        holders = self.unknown_dev_holders()
+        if dm is None or not holders:
+            return None
+        return dm.posterior(self.dev_pool(), holders, self.dev_count, public, self.vps_to_win, preset)
+
+    def hidden_vp_distribution(self, j: int, public: Sequence[int],
+                               preset: Optional[_devbelief.Preset] = None) -> Optional[List[float]]:
+        """``P(seat j holds k hidden VP cards)``, conditioned on nobody having won."""
+        post = self.dev_posterior(public, preset)
+        return None if post is None or j not in post else list(post[j]["p_vp"])
+
+    def knight_posterior(self, public: Sequence[int]) -> Dict[int, float]:
+        """``{seat: P(holds at least one knight)}`` for the unknown holders under the bot preset when
+        ``devbelief.ENABLED`` (``robber_eval.knight_hint``'s posterior); ``{}`` otherwise (dealt knights
+        then count as absent, the robber design's rule)."""
+        if not _devbelief.ENABLED:
+            return {}
+        post = self.dev_posterior(public)
+        if post is None:
+            return {}
+        return {j: float(v["p_type"][B.DEV_KNIGHT]) for j, v in post.items()}
 
     def pool_is_consistent(self) -> bool:
         """``sum(pool) == deck size + the opponents' unknown card counts`` (public identity)."""
@@ -232,7 +264,12 @@ class PublicBelief:
         one joint hypothesis of the counter (drawn with its probability), their development cards
         are dealt from the public pool (re-dealt, up to 20 times, while an opponent would already
         hold enough VP cards to have won) and the rest of the pool is the deck.  During a 7's
-        discards an opponent's hidden discard so far is a uniformly random subset of its hand."""
+        discards an opponent's hidden discard so far is a uniformly random subset of its hand.
+
+        With ``devbelief.ENABLED`` and a held-age model (``dev_age``) that knows something (an aged
+        card, a binding win cap), the uniform deal still runs on ``rng`` and the unknown holders'
+        cards and the deck are then overwritten from the posterior, drawn with a side stream copied
+        from ``rng``'s state before the deal: ``rng`` ends exactly where the uniform deal leaves it."""
         s = pub.copy()
         me = self.me
         joint = self.counter.sample(rng)
@@ -242,7 +279,15 @@ class PublicBelief:
                 p.resources = self._discard_pending(list(joint[j]), k, rng) if k else list(joint[j])
                 p.hand_known = True
                 p.hand_size = sum(p.resources)
+        pre_deal = None
+        if _devbelief.ENABLED and self.dev_age is not None:
+            try:
+                pre_deal = rng.getstate()
+            except Exception:  # noqa: BLE001  (an rng without a state: uniform dealing)
+                pre_deal = None
         self._deal_devs(s, rng)
+        if pre_deal is not None:
+            self._deal_devs_posterior(s, pre_deal)
         if s.phase == PHASE_TRADE_RESPONSE and s.pending_trade is not None:
             offer = s.pending_trade
             for i in range(len(s.players)):
@@ -299,6 +344,51 @@ class PublicBelief:
                 rng.shuffle(movable)
                 for t in movable[:n_new]:
                     new[t] += 1
+            p.dev_cards = [cards[t] - new[t] for t in range(5)]
+            p.dev_cards_new = new
+            p.dev_known = True
+            p.dev_count = sum(cards)
+        s.dev_deck = left
+
+    def _deal_devs_posterior(self, s: GameState, pre_deal) -> None:
+        """Overwrite the unknown holders' dealt cards and the deck from the held-age posterior, drawn
+        from a copy of the pre-deal random state (the shared stream is not touched)."""
+        dm = self.dev_age
+        unknown = self.unknown_dev_holders()
+        if dm is None or not unknown:
+            return
+        try:
+            pool = self.dev_pool()
+            side = random.Random()
+            side.setstate(pre_deal)
+            public = [s.public_vp(j) for j in range(self.n)]
+            draw = dm.sample(pool, unknown, self.dev_count, public, self.vps_to_win, side)
+            if draw is None:
+                return
+            left = list(pool)
+            dealt = {}
+            for j in unknown:
+                cards = [0] * 5
+                for t in draw[j]:
+                    cards[t] += 1
+                    left[t] -= 1
+                dealt[j] = cards
+            if min(left) < 0:
+                raise ValueError("posterior deal exceeds the pool")
+        except Exception:  # noqa: BLE001  (error isolation: keep the uniform deal)
+            dm.invalid = True
+            dm.stats["errors"] += 1
+            return
+        for j in unknown:
+            p = s.players[j]
+            cards = dealt[j]
+            new = [0] * 5
+            n_new = self.bought_this_turn[j] if (self.new_devs_unplayable and j == s.current) else 0
+            if n_new:
+                # this turn's purchases are the youngest records: not playable yet (VP cards count anyway)
+                for t in draw[j][max(0, len(draw[j]) - n_new):]:
+                    if t != B.DEV_VP:
+                        new[t] += 1
             p.dev_cards = [cards[t] - new[t] for t in range(5)]
             p.dev_cards_new = new
             p.dev_known = True

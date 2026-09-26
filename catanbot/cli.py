@@ -608,6 +608,9 @@ def card_count_tracker(state: GameState, me: int, args, parsed: Optional[dict], 
     except SessionError as ex:
         raise UsageError(str(ex))
     bank = list(state.bank) if parsed is not None and parsed.get("bank") else None
+    # --log-dev-ages: record every development-card event with its owner's turn index in the session (for
+    # fitting the human hazards of --dev-model human later); off by default, events already logged are kept
+    tracker.dev_age.log_events = bool(getattr(args, "log_dev_ages", False))
     tracker.update(windows, state, bank)
     if session:
         tracker.save(session)
@@ -830,7 +833,7 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
             advice["ports"] = [f"(port advice unavailable: {ex})"]
     if tracker is not None:
         from .inference import is_fully_known
-        cc = tracker.report()
+        cc = tracker.report(dev_model=getattr(args, "dev_model", None) or "uniform")
         how = ("Every hand is known in this position: the search uses them." if is_fully_known(state) else
                f"The search samples the opponents' hands from this count ({sinfo['samples']} determinization(s), "
                "--samples).")
@@ -1353,6 +1356,13 @@ def _add_recommend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--game-log", metavar="FILE",
                    help="card counting from Colonist game-log text (pasted or typed, one entry per line; '-' = stdin); "
                         "see docs/USAGE.md 'Card counting' for the accepted wording")
+    p.add_argument("--dev-model", choices=("uniform", "bot", "human"), default="uniform",
+                   help="card counting: read the opponents' held development cards from how long they kept them "
+                        "(P(VP) / P(Monopoly) per card, hidden VP, a secret-leader alert, the Monopoly threat); "
+                        "bot = the bots' fitted hazards, human = unfitted priors; uniform (default) = no reading")
+    p.add_argument("--log-dev-ages", action="store_true",
+                   help="card counting: log every development-card purchase, play and turn in the --session file "
+                        "(data for fitting the human hazards; off by default)")
     p.add_argument("--paths", type=float, default=0.0, metavar="W",
                    help="search with the win-path race term at weight W (0 = off, the default; see docs/STRATEGY.md "
                         "'Win-path races'); the 'Win paths' advice section is shown either way")

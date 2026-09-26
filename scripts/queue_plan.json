@@ -1663,12 +1663,26 @@
    "kind": "command",
    "area": "counting",
    "priority": 28,
-   "requires": "step 6 (devbelief)",
-   "notes": "Gate (A): offline calibration on T1-T11 logs; 0 games."
+   "interpreter": "py330",
+   "est_cpu_h": 0.2,
+   "cmd": [
+    "{python}",
+    "{snapshot}/scripts/dev_belief_calibrate.py",
+    "--logs",
+    "{root}/proof/T*/logs/*.jsonl.gz",
+    "--json",
+    "{dir}/devbelief_gate.json"
+   ],
+   "verdict_from": {
+    "json": "{dir}/devbelief_gate.json",
+    "key": "pass",
+    "pass_if": true
+   },
+   "requires": "--bump-code --areas counting (step 6 code: scripts/dev_belief_calibrate.py and catanbot/devbelief.py are not in epoch B3; command rows are not tunable-checked)",
+   "notes": "Gate (A): offline calibration on the T1-T11 logs through the real counted tracker and DevAgeModel; 0 games. PASS = hidden-VP MSE >= 30% below uniform in every holder class, log-loss no worse than uniform in every class x age bucket (n >= 30), 0 devbelief errors, fallbacks < 0.1%; readouts: knight log-loss overall and in the knight-context stratum (R3 as devbelief.H_KNIGHT_CTX)."
   },
   {
    "name": "devbelief_smoke@value",
-   "enabled": false,
    "area": "counting",
    "polarity": "measure",
    "tier": "t2",
@@ -1680,7 +1694,8 @@
     1
    ],
    "adapter_opts": {
-    "info": "counted"
+    "info": "counted",
+    "discards_public": true
    },
    "seeds": {
     "count": 100,
@@ -1693,8 +1708,7 @@
      "PASS"
     ]
    },
-   "requires": "step 6",
-   "notes": "Smoke (C): ms ratio <= 1.05, 0 errors, replay --check clean."
+   "notes": "Smoke (C): ms ratio <= 1.05, 0 devbelief_errors (adapter stats), replay --check clean; reports the discordant-seed share (RNG-neutral dealing keeps it low). Enabled in step 6: BLOCKED until an epoch has devbelief.ENABLED (--bump-code --areas counting), then waits for devbelief_gate PASS."
   },
   {
    "name": "shadow_dev_oracle",
@@ -1702,9 +1716,25 @@
    "kind": "command",
    "area": "counting",
    "priority": 30,
+   "interpreter": "py330",
    "est_cpu_h": 1.5,
-   "requires": "step 6",
-   "notes": "Zero-game three-arm shadow on ~2,000 counted positions."
+   "cmd": [
+    "{python}",
+    "{snapshot}/scripts/belief_shadow.py",
+    "--logs",
+    "{root}/proof/T4/logs/*.jsonl.gz",
+    "--max-positions",
+    "2000",
+    "--json",
+    "{dir}/shadow_dev_oracle.json"
+   ],
+   "verdict_from": {
+    "json": "{dir}/shadow_dev_oracle.json",
+    "key": "pass",
+    "pass_if": true
+   },
+   "requires": "--bump-code --areas counting (step 6 code: scripts/belief_shadow.py, reveal_devs and catanbot/devbelief.py are not in epoch B3; command rows are not tunable-checked)",
+   "notes": "shadow.dev_oracle: zero-game three-arm shadow (U uniform / H held-age posterior / O true dev cards via reveal_devs) on ~2,000 counted positions of our seat in the T4 logs (Colonist information: discards public), K=4 per arm with shared det / search seeds, paired value regret against 8 oracle determinizations where a_U != a_H plus a 25% subsample. PASS (gate B) = captured regret > 0 at one-sided p < 0.05 with the A/A and common-random-number checks clean; readouts: change rate (< 1% = advisor only), headroom, implied pp (x3 >= 4 pp opens test D)."
   },
   {
    "name": "devbelief_noninf@value",
@@ -1721,6 +1751,7 @@
    ],
    "adapter_opts": {
     "info": "counted",
+    "discards_public": true,
     "seeded_samples": true
    },
    "seeds": {
@@ -1746,6 +1777,7 @@
    ],
    "adapter_opts": {
     "info": "counted",
+    "discards_public": true,
     "seeded_samples": true
    },
    "seeds": {
@@ -1753,7 +1785,7 @@
     "base": 0
    },
    "design": "estimate",
-   "requires": "step 6 (CatanbotPlayer seeded_samples)",
+   "requires": "--bump-code --areas counting (CatanbotPlayer seeded_samples is step-6 code; its tunable search.expand is in epoch A, so only this switch keeps it off)",
    "notes": "queue.crn (b): 400 seeds x {off, seeded}, counted mode (candidate discards_public in the design)."
   },
   {
@@ -1762,7 +1794,7 @@
    "kind": "command",
    "area": "counting",
    "priority": 34,
-   "requires": "step 6 (--opponent selfbot)",
+   "requires": "harness.selfbot_opponents not built in step 6: its preset and --opponent-spec belong in scripts/bench_catanatron.py, frozen while a registered benchmark runs from it",
    "notes": "A/A plus a 20-game cost pilot; the gated batch waits for shadow.dev_oracle."
   },
   {

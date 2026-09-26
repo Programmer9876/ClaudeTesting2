@@ -43,6 +43,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import actions as A
 from . import board as B
+from . import devbelief as DB
 from .counting import CardCounter, _sub_multisets, hand_prior_weights
 from .public_belief import PublicBelief
 from .state import GameState
@@ -752,6 +753,10 @@ class ColonistLogTracker(PublicBelief):
         self._window_bank: Optional[List[int]] = None
         self._hidden_7: Dict[int, int] = {}          # hidden discards of the 7 being resolved (seat -> cards)
         self._unknown_names: List[str] = []
+        # held-age statistics of the development cards (advisor --dev-model; Colonist follows the official
+        # rule: a card is playable from its owner's next turn); public VP from the last screenshot
+        self.dev_age = DB.DevAgeModel(self.n, eligible_same_turn=False)
+        self.public_vp_seen: Optional[List[int]] = None
 
     # --- identities -------------------------------------------------------------------
     @classmethod
@@ -814,6 +819,7 @@ class ColonistLogTracker(PublicBelief):
             "free_roads": self.free_roads, "pending_play": {str(k): v for k, v in self.pending_play.items()},
             "setup": self.setup, "turn_player": self.turn_player, "entries": self.entries,
             "tail": self.tail[-self.MAX_TAIL:], "reported": self.reported[-1000:], "stats": self.stats,
+            "dev_age": self.dev_age.to_dict(),
         }
 
     @classmethod
@@ -839,6 +845,9 @@ class ColonistLogTracker(PublicBelief):
         tr.tail = [str(x) for x in d.get("tail") or []]
         tr.reported = [str(x) for x in d.get("reported") or []]
         tr.stats.update(d.get("stats") or {})
+        if d.get("dev_age"):
+            # optional (older sessions have none: their cards are padded as of unknown age at reconcile)
+            tr.dev_age = DB.DevAgeModel.from_dict(d["dev_age"])
         return tr
 
     @classmethod
@@ -1282,6 +1291,7 @@ class ColonistLogTracker(PublicBelief):
         if k in ("ignored", "unknown"):
             return
         p = self._seat(ev.player, ev)
+        self._dev_age_event(k, p, ev)
         if k == "roll":
             self.setup = False
             if p is None or p != self.turn_player:
@@ -1352,6 +1362,41 @@ class ColonistLogTracker(PublicBelief):
         elif k == "discard":
             self._discard(p, ev)
         self._refresh_flags()
+
+    def _dev_age_event(self, k: str, p: Optional[int], ev: LogEvent) -> None:
+        """Feed the held-age model (never raises).  A development card played by a player whose turn
+        is not open (a knight before the roll) starts that player's turn: the previous one ends."""
+        dm = self.dev_age
+        try:
+            if k == "turn" and ev.text and "ended" in ev.text.lower():
+                for i in ([p] if p is not None else range(self.n)):
+                    dm.on_turn_end(i)
+                return
+            if p is None:
+                return
+            opens = k in ("roll", "turn") or (k == "play_dev" and ev.item is not None and ev.item != "victory_point")
+            if opens and not dm.is_open(p):
+                dm.on_turn_start(p, la=self._la_context(p), pay=self._payoff(p))
+            if k == "buy_dev":
+                dm.on_buy(p)
+            elif k == "play_dev" and ev.item is not None and ev.item != "victory_point":
+                dm.on_play(p, B.DEV_NAMES.index(ev.item))
+        except Exception:  # noqa: BLE001
+            dm.invalid = True
+            dm.stats["errors"] += 1
+
+    def _la_context(self, j: int) -> bool:
+        """One more knight gives ``j`` Largest Army (the knight context of the held-age model)."""
+        k = [max(self.log_played[i][B.DEV_KNIGHT], self.played[i][B.DEV_KNIGHT]) for i in range(self.n)]
+        return k[j] + 1 >= 3 and all(k[j] + 1 > k[i] for i in range(self.n) if i != j)
+
+    def _payoff(self, j: int) -> float:
+        """The best Monopoly take for ``j`` now: max over resources of the others' expected holdings."""
+        c = self.counter
+        if c is None:
+            return 0.0
+        e = c.expected
+        return max(sum(e[i][r] for i in range(self.n) if i != j) for r in range(5))
 
     def _effect_of(self, p: int, t: int) -> None:
         """A Monopoly / Year of Plenty effect line: the card was played (if its own line is missing)."""
@@ -1671,6 +1716,11 @@ class ColonistLogTracker(PublicBelief):
         for j, p in enumerate(state.players):
             self.played[j][B.DEV_KNIGHT] = max(self.played[j][B.DEV_KNIGHT], int(p.played_knights))
         self.deck = sum(state.dev_deck)
+        self.public_vp_seen = [int(state.public_vp(j)) for j in range(self.n)]
+        dm = self.dev_age
+        dm.sync_counts(self.dev_count, skip=[j for j in range(self.n) if j == me or self.known_dev[j] is not None])
+        for j in range(self.n):
+            dm.on_public(j, self.public_vp_seen[j])
 
     # --- the bot's views ----------------------------------------------------------------
     def determinize(self, pub: GameState, rng) -> GameState:
@@ -1709,8 +1759,10 @@ class ColonistLogTracker(PublicBelief):
                 "uncertain_probs": probs, "most_likely": list(best), "most_likely_p": pbest,
                 "expected": [round(x, 3) for x in exp], "reasons": list(self.reasons[j])}
 
-    def report(self) -> Dict[str, Any]:
-        """The "Card count" section: a status line, one line per opponent, the warnings."""
+    def report(self, dev_model: str = "uniform") -> Dict[str, Any]:
+        """The "Card count" section: a status line, one line per opponent, the warnings.  With
+        ``dev_model`` ``bot`` / ``human`` (``--dev-model``) each opponent holding development cards also
+        gets a reading of them (:meth:`dev_reading`); ``uniform`` (the default) leaves the section as it was."""
         lines: List[str] = []
         c = self.counter
         if self.origin == "start":
@@ -1734,11 +1786,59 @@ class ColonistLogTracker(PublicBelief):
                 "reasons": s["reasons"],
             }
             lines.append("  " + self._summary_line(j, s))
+            if dev_model != "uniform":
+                dev = self.dev_reading(j, dev_model)
+                if dev is not None:
+                    players[self.colors[j]]["dev"] = dev
+                    lines.extend("  " + x for x in dev["lines"])
         for w in self.warnings:
             lines.append("  ! " + w)
         return {"origin": self.origin, "entries": self.entries, "new_entries": self.new_entries,
                 "hypotheses": c.num_hypotheses, "players": players, "warnings": list(self.warnings),
                 "stats": dict(self.stats), "lines": lines}
+
+    def dev_reading(self, j: int, dev_model: str = "bot") -> Optional[Dict[str, Any]]:
+        """``j``'s hidden development cards under the held-age model (``bot``: the bots' fitted hazards;
+        ``human``: unfitted priors - knights kept for the robber / Largest Army, Monopoly waiting for a
+        payoff): per card P(VP) and P(Monopoly); the hidden VP conditioned on nobody having won; a
+        secret-leader alert; the Monopoly threat for its next turn; P(it holds a knight)."""
+        if j == self.me or self.known_dev[j] is not None or self.dev_count[j] <= 0:
+            return None
+        pr = DB.preset(dev_model)
+        pub = list(self.public_vp_seen or [0] * self.n)
+        post = self.dev_posterior(pub, pr)
+        if post is None or j not in post:
+            return None
+        d = post[j]
+        v = self.vps_to_win
+        p_vp = d["p_vp"]
+        p_near = sum(p for k, p in enumerate(p_vp) if pub[j] + k >= v - 1)
+        e_total = pub[j] + d["e_vp"]
+        alert = p_near >= 0.5 or e_total >= 8
+        e = self.counter.expected if self.counter is not None else [[0.0] * 5 for _ in range(self.n)]
+        others = [sum(e[i][r] for i in range(self.n) if i != j) for r in range(5)]
+        need = _missing_for_cheapest_build(e[j])
+        target = max(range(5), key=lambda r: (others[r] * (1 + (1 if r in need else 0)), -r))
+        p_mono = d["p_type"][B.DEV_MONOPOLY]
+        threat = p_mono * DB.monopoly_hazard(pr, max(others))
+        p_knight = d["p_type"][B.DEV_KNIGHT]
+        who = self.label(j)
+        cards = " / ".join(f"VP {r[B.DEV_VP]:.0%}, Monopoly {r[B.DEV_MONOPOLY]:.0%}" for r in d["records"])
+        ages = " / ".join(str(a) for a in d["ages"])
+        head = (f"{who} development cards ({dev_model} model{', unfitted' if dev_model == 'human' else ''}): "
+                f"{self.dev_count[j]} held, no-play turns {ages}: {cards}; hidden VP {d['e_vp']:.1f} expected, "
+                f"P(at least {v - 1} VP) {p_near:.0%} at {pub[j]} public")
+        if alert:
+            head += " - possible SECRET LEADER"
+        tail = (f"  Monopoly next turn {threat:.0%} (likely {B.RESOURCE_NAMES[target]}: others hold "
+                f"{others[target]:.1f}, you {e[self.me][target]:.1f}); holds a knight {p_knight:.0%}"
+                + (" (a robber on them is likely moved within a turn)" if p_knight >= 0.5 else ""))
+        return {"p_vp": [round(x, 4) for x in p_vp], "e_vp": round(d["e_vp"], 4), "p_near_win": round(p_near, 4),
+                "alert": bool(alert), "ages": list(d["ages"]),
+                "cards": [{"vp": round(r[B.DEV_VP], 4), "monopoly": round(r[B.DEV_MONOPOLY], 4)} for r in d["records"]],
+                "p_monopoly": round(p_mono, 4), "monopoly_threat": round(threat, 4),
+                "monopoly_target": B.RESOURCE_NAMES[target], "p_knight": round(p_knight, 4),
+                "lines": [head, tail]}
 
     def _summary_line(self, j: int, s: Dict[str, Any]) -> str:
         who = self.label(j)
@@ -1755,6 +1855,18 @@ class ColonistLogTracker(PublicBelief):
         why = f" from {_reasons_text(s['reasons'])}" if s["reasons"] else ""
         cert = _counts_text(s["certain"]) + " certain" if any(s["certain"]) else "nothing certain"
         return f"{who}: {cert}; {_cards(s['uncertain'])} uncertain{why}: {dist}; {best}"
+
+
+def _missing_for_cheapest_build(hand: Sequence[float]) -> set:
+    """Resources missing (expected hand, rounded) for the build that misses the fewest cards."""
+    h = [int(round(x)) for x in hand]
+    best = None
+    for cost in (B.COST_ROAD, B.COST_SETTLEMENT, B.COST_CITY, B.COST_DEV):
+        miss = {r for r in range(5) if h[r] < cost[r]}
+        n = sum(max(0, cost[r] - h[r]) for r in range(5))
+        if best is None or n < best[0]:
+            best = (n, miss)
+    return best[1] if best else set()
 
 
 def _cards(n: int) -> str:

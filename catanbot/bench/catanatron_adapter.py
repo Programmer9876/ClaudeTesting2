@@ -100,6 +100,8 @@ of ``ActionRecord(action, result)``, ``Game.playable_actions``,
 """
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import math
 import random
 import time
@@ -1093,7 +1095,8 @@ class CatanbotPlayer(Player):
 
     def __init__(self, color: Color, spec: str = DEFAULT_SPEC, bot: Optional[Bot] = None, seed: int = 0,
                  strict: bool = False, suppress_trades: bool = True, observe: bool = True,
-                 info: str = "full", info_samples: int = DEFAULT_INFO_SAMPLES, discards_public: bool = False):
+                 info: str = "full", info_samples: int = DEFAULT_INFO_SAMPLES, discards_public: bool = False,
+                 seeded_samples: bool = False, reveal_devs: bool = False):
         super().__init__(color)
         if info not in INFO_MODES:
             raise ValueError(f"info must be one of {INFO_MODES}, got {info!r}")
@@ -1102,6 +1105,11 @@ class CatanbotPlayer(Player):
         self.info = info
         self.info_samples = int(info_samples)
         self.discards_public = bool(discards_public)
+        # counted mode, off by default: sample k of the j-th counted decision of a game draws from its own
+        # Random(seed, j, k) (queue.crn part b), and the dev-card oracle (harness / diagnostics only)
+        self.seeded_samples = bool(seeded_samples)
+        self.reveal_devs = bool(reveal_devs)
+        self._counted_calls = 0
         self.tracker = None                 # PublicInfoTracker in the counted mode (created per game)
         self.spec = spec
         self.bot: Bot = bot if bot is not None else make_bot(spec)
@@ -1141,7 +1149,8 @@ class CatanbotPlayer(Player):
         if self.info == "counted":
             self.stats.update({"info_samples": 0, "info_uncertain": 0, "info_errors": 0, "info_resets": 0,
                                "info_max_hypotheses": 0, "hidden_steals": 0, "hidden_discards": 0,
-                               "hidden_dev_draws": 0})
+                               "hidden_dev_draws": 0, "devbelief_errors": 0, "devbelief_fallbacks": 0,
+                               "devbelief_dealt": 0})
         self.times = []
         self.choice_times = []
 
@@ -1159,6 +1168,7 @@ class CatanbotPlayer(Player):
         self._discard_run = None
         self.last_explanation = None
         self.tracker = None
+        self._counted_calls = 0
 
     def _begin(self, game: Game) -> None:
         self.bot.reset()
@@ -1171,12 +1181,15 @@ class CatanbotPlayer(Player):
         self._knight_state = None
         self._discard_run = None
         self.tracker = None
+        self._counted_calls = 0
         if self.info == "counted":
             from .public_info import PublicInfoTracker
             self._tracker_totals = {"hidden_steals": 0, "hidden_discards": 0, "hidden_dev_draws": 0,
-                                    "info_resets": 0}
+                                    "info_resets": 0, "devbelief_errors": 0, "devbelief_fallbacks": 0,
+                                    "devbelief_dealt": 0}
             self.tracker = PublicInfoTracker(self.color, discards_public=self.discards_public,
-                                             vps_to_win=int(getattr(game, "vps_to_win", 10)))
+                                             vps_to_win=int(getattr(game, "vps_to_win", 10)),
+                                             reveal_devs=self.reveal_devs)
             self.tracker.start(game.state)   # replays the log so far from the initial position
 
     def _follow_tracker(self, st: State) -> None:
@@ -1190,15 +1203,23 @@ class CatanbotPlayer(Player):
                 raise
             self.stats["info_errors"] += 1
             tr.resync(st)
-        # per-game tracker counts, accumulated into the player's stats across games
+        self._tracker_stats()
+        self.stats["info_max_hypotheses"] = max(self.stats["info_max_hypotheses"],
+                                                int(tr.counter.stats["max_hypotheses"]))
+
+    def _tracker_stats(self) -> None:
+        """Per-game tracker counts, accumulated into the player's stats across games."""
+        tr = self.tracker
         tot = self._tracker_totals
         cur = {"hidden_steals": tr.stats["hidden_steals"], "hidden_discards": tr.stats["hidden_discards"],
                "hidden_dev_draws": tr.stats["hidden_dev_draws"], "info_resets": int(tr.counter.stats["resets"])}
+        dm = tr.dev_age
+        if dm is not None:
+            cur.update({"devbelief_errors": dm.stats["errors"], "devbelief_fallbacks": dm.stats["fallbacks"],
+                        "devbelief_dealt": dm.stats["dealt"]})
         for k, v in cur.items():
             self.stats[k] += v - tot[k]
             tot[k] = v
-        self.stats["info_max_hypotheses"] = max(self.stats["info_max_hypotheses"],
-                                                int(tr.counter.stats["max_hypotheses"]))
 
     # -- observation ------------------------------------------------------
     def _catch_up(self, st: State) -> None:
@@ -1502,14 +1523,28 @@ class CatanbotPlayer(Player):
         tr = self.tracker
         if not all(tr.is_exact(j) for j in range(len(pub.players)) if j != tr.me):
             self.stats["info_uncertain"] += 1
-        for _ in range(k_samples):
-            det = self.tracker.determinize(pub, self.rng)
-            d = self.bot.decide(det, list(legal), self.rng)
+        from ..robber_eval import knight_hint
+        # seats whose dev cards the determinizations deal: the robber terms (robber_corr / kick) count their
+        # knights only through P(knight) from the held-age posterior (devbelief.ENABLED), else as absent
+        dealt = tr.unknown_dev_holders()
+        p_knight = None
+        call = self._counted_calls
+        self._counted_calls += 1
+        for k in range(k_samples):
+            rng = self._sample_rng(call, k) if self.seeded_samples else self.rng
+            with self._belief_scope():
+                # the candidate's belief tunables (devbelief.*) reach the determinization
+                det = self.tracker.determinize(pub, rng)
+                if p_knight is None:
+                    p_knight = tr.knight_posterior([pub.public_vp(j) for j in range(len(pub.players))])
+            with knight_hint(dealt=dealt, p_knight=p_knight):
+                d = self.bot.decide(det, list(legal), rng)
             votes[d] = votes.get(d, 0) + 1
             for r in (getattr(self.bot, "last_results", None) or []):
                 values.setdefault(r.action, []).append(float(r.value))
                 expl.setdefault(r.action, r.explanation)
             self.stats["info_samples"] += 1
+        self._tracker_stats()
         if not values:
             ranked = sorted(votes, key=lambda a: -votes[a])
             return ranked[0], ranked
@@ -1519,6 +1554,18 @@ class CatanbotPlayer(Player):
         if "last_results" in vars(owner):
             owner.last_results = [ScoredAction(a, sum(values[a]) / len(values[a]), expl.get(a, "")) for a in ranked]
         return ranked[0], ranked
+
+    def _belief_scope(self):
+        """The ParamBot's ``devbelief.*`` overrides (a candidate arm's belief tunables), else nothing."""
+        from ..agents.param_bot import ParamBot
+        if isinstance(self.bot, ParamBot):
+            return self.bot.scope(prefixes=("devbelief.",))
+        return contextlib.nullcontext()
+
+    def _sample_rng(self, call: int, k: int) -> random.Random:
+        """``seeded_samples``: sample ``k`` of the ``call``-th counted decision of this game."""
+        h = hashlib.sha256(f"{self.seed}:{call}:{k}".encode()).digest()
+        return random.Random(int.from_bytes(h[:8], "big"))
 
     def _answer_trade(self, playable: List[CAction]) -> CAction:
         """3.3 domestic-trade prompts: decline (``REJECT_TRADE`` as a responder, ``CANCEL_TRADE`` as offerer)."""

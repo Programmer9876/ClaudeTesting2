@@ -22,8 +22,9 @@ Catanatron benchmark as an ordinary spec; a spec without the key builds exactly 
 """
 from __future__ import annotations
 
+import contextlib
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 from .. import tuning
 from ..actions import Action
@@ -57,6 +58,31 @@ class ParamBot(Bot):
             tuning.restore_bot(bot_token)
         finally:
             tuning.restore(token)
+
+    @contextlib.contextmanager
+    def scope(self, prefixes: Optional[Sequence[str]] = None) -> Iterator[None]:
+        """The overrides installed for the block (restored in ``finally``), for work done on the bot's
+        behalf outside its hooks - the counted adapter's determinizations.  ``prefixes`` restricts
+        them to the tunables whose name starts with one of them (``("devbelief.",)``); with no
+        matching override nothing is applied at all."""
+        if prefixes is None:
+            tokens = self._enter()
+        else:
+            sub = {k: v for k, v in self.overrides.items() if tuning.find(k).name.startswith(tuple(prefixes))}
+            if not sub:
+                yield
+                return
+            token = tuning.apply(sub)
+            try:
+                bot_token = tuning.apply_to_bot(self.inner, sub)
+            except BaseException:
+                tuning.restore(token)
+                raise
+            tokens = (token, bot_token)
+        try:
+            yield
+        finally:
+            self._exit(tokens)
 
     def _call(self, fn, *args):
         tokens = self._enter()
