@@ -175,18 +175,47 @@ def test_offer_value_formula_on_hand_built_outcomes(mains):
         assert val([(0.3, acc), (0.7, rej)], float("-inf")) == pytest.approx(0.53 - 0.004)
 
 
-def test_pricing_never_raises_a_root_value_and_offers_beat_their_cost(mains):
+def test_pricing_never_raises_an_offer_above_its_expectation_minus_the_cost(mains, monkeypatch):
+    calls = []
+    orig = Searcher._offer_value
+
+    def spy(self, state, action, kids, ev, base, me):
+        v = orig(self, state, action, kids, ev, base, me)
+        calls.append((v, ev, self._offer_q.offer_cost(state, me, action[1], action[2])))
+        return v
+
+    monkeypatch.setattr(Searcher, "_offer_value", spy)
     changed = 0
     for s, me in mains:
-        plain = {r.action: r.value for r in search(s, me)}
-        priced = search(s, me, over={"acquisition.OFFER_COST": 0.003})
-        assert set(plain) == {r.action for r in priced}
-        for r in priced:
-            assert r.value <= plain[r.action] + 1e-12
-            if r.action[0] == A.PROPOSE_TRADE:
-                assert r.value <= plain[r.action] - 0.003 + 1e-12 or r.value == 0.0
-        changed += priced[0].action != max(plain, key=plain.get)
+        plain = search(s, me)
+        priced = search(s, me, over={"acquisition.OFFER_COST": 0.003, "acquisition.OFFER_LEAK": 0.001})
+        assert {r.action for r in plain} == {r.action for r in priced}     # the same candidates at the root
+        changed += priced[0].action != plain[0].action
+    assert calls and all(v <= ev - c + 1e-12 and c >= 0.004 - 1e-12 for v, ev, c in calls)
     assert changed > 0
+
+
+def test_beam_ignores_rejected_outcomes_with_the_cost_on(mains, monkeypatch):
+    """P(accept) = 0: a proposal's only outcome is the rejection (the parent again).  The old beam lets such nodes
+    crowd out the real alternatives (some get expanded); with the cost on they never rank a group."""
+    monkeypatch.setattr(OpponentModel, "predict_accept", lambda self, *a, **k: 0.0)
+    seen = []
+    orig = Searcher._backup
+
+    def spy(self, node, me):
+        if not node.line and node.children:
+            seen.append([kids[0][1].children != [] for a, kids in node.children if a[0] == A.PROPOSE_TRADE])
+        return orig(self, node, me)
+
+    monkeypatch.setattr(Searcher, "_backup", spy)
+    expanded = {}
+    for key, over in (("off", {}), ("on", {"acquisition.OFFER_COST": 0.001})):
+        seen.clear()
+        for s, me in mains:
+            search(s, me, over=over)
+        expanded[key] = sum(sum(x) for x in seen)
+        assert sum(len(x) for x in seen) > 0
+    assert expanded["off"] > 0 and expanded["on"] == 0
 
 
 def test_proposal_on_top_only_when_its_own_gain_beats_the_cost(mains, monkeypatch):

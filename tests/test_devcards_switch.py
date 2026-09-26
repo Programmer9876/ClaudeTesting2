@@ -165,3 +165,47 @@ def test_pinned_default_games_are_unchanged():
 
 def test_off_changes_the_game():
     assert game_hash(["heuristic:temp=0.15,tune=devcards.buy:off"] * 4, 31, 400) != PINNED_HEURISTIC[31]
+
+
+# ---------------------------------------------------------------------------
+# the catanatron adapter's prior fallback (both engines)
+# ---------------------------------------------------------------------------
+def test_adapter_prior_fallback_respects_the_switch(monkeypatch):
+    """When no action the bot ranked is playable the adapter falls back to the priors over the mapped legal
+    actions; for a devcards.buy-off candidate (a ParamBot) BUY_DEV is not among them, for the default it is."""
+    pytest.importorskip("catanatron")
+    from catanatron.models.actions import generate_playable_actions
+    from catanatron.models.enums import ActionPrompt, ActionType
+    from catanatron.players.search import VictoryPointPlayer
+    from catanbot.agents.base import Bot
+    from catanbot.bench import catanatron_adapter as AD
+
+    class Unmappable(Bot):
+        name = "unmappable"
+        last_results = []
+
+        def decide(self, state, legal, rng):
+            return ("no_such_action",)
+
+    rank = {A.BUY_DEV: 1e9, A.END_TURN: 1e6}      # the fallback's priors: BUY_DEV whenever it is legal
+    monkeypatch.setattr(AD, "action_priors", lambda state, legal, player: [rank.get(a[0], 1.0) for a in legal])
+    chosen = {}
+    for label, overrides in (("off", OFF), ("default", {})):
+        me = AD.CatanbotPlayer(AD.COLORS[0], bot=ParamBot(Unmappable(), overrides), seed=3)
+        game = AD.make_game([me] + [VictoryPointPlayer(c) for c in AD.COLORS[1:]], seed=3)
+        st = game.state
+        for _ in range(5000):
+            if (st.current_color() == AD.COLORS[0] and st.current_prompt == ActionPrompt.PLAY_TURN
+                    and st.player_state["P0_HAS_ROLLED"]):
+                break
+            game.play_tick()
+        assert game.winning_color() is None and st.current_color() == AD.COLORS[0]
+        for res in ("SHEEP", "WHEAT", "ORE"):       # our seat can now afford a development card
+            st.player_state[f"P0_{res}_IN_HAND"] += 1
+        st.playable_actions = generate_playable_actions(st)
+        assert any(a.action_type == ActionType.BUY_DEVELOPMENT_CARD for a in st.playable_actions)
+        before = me.stats["fallback"]
+        chosen[label] = me.decide(game, st.playable_actions).action_type
+        assert me.stats["fallback"] == before + 1
+    assert chosen["default"] == ActionType.BUY_DEVELOPMENT_CARD
+    assert chosen["off"] != ActionType.BUY_DEVELOPMENT_CARD

@@ -359,6 +359,7 @@ class Searcher:
                 break
             force_end = level >= cfg.max_actions_per_turn
             new_nodes: List[_Node] = []
+            offer_rej = set()       # offer cost on: ids of our proposals' rejected outcomes (see the beam below)
             for node in frontier:
                 cands = self._candidates(node.state, me, force_end, node.line)
                 for a in cands:
@@ -373,6 +374,9 @@ class Searcher:
                         child.finished = out_of_turn or self._is_finished(s2, me)
                         kids.append((p, child))
                         new_nodes.append(child)
+                        if (self._offer_q is not None and a[0] == A.PROPOSE_TRADE
+                                and s2.players[me].resources == node.state.players[me].resources):
+                            offer_rej.add(id(child))
                     if kids:
                         node.children.append((a, kids))
             if not new_nodes:
@@ -389,7 +393,10 @@ class Searcher:
             unfinished.sort(key=lambda n: -n.static)
             # Beam by node, but never split a chance node: every outcome of a kept
             # action stays in the frontier so its expectation is over real continuations.
-            keep_groups = {n.group for n in unfinished[:cfg.beam]}
+            # Offer cost on: a proposal's rejected outcome (the parent again, one offer fewer left) does not rank its
+            # group - the parent's continuations are its siblings' own groups - so offers no longer crowd them out.
+            ranked = [n for n in unfinished if id(n) not in offer_rej] if offer_rej else unfinished
+            keep_groups = {n.group for n in ranked[:cfg.beam]}
             frontier = [n for n in unfinished if n.group in keep_groups]
         # Future values for the end-of-turn nodes (all of them by default: a candidate valued at the
         # lookahead horizon next to siblings valued statically is preferred or avoided by that alone).

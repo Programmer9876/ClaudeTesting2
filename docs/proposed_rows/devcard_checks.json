@@ -1,0 +1,464 @@
+[
+ {
+  "name": "devcheck_nodev@alphabeta",
+  "area": "other",
+  "polarity": "measure",
+  "tier": "smoke",
+  "priority": 60,
+  "interpreter": "py330",
+  "opponent": "alphabeta",
+  "tunable": "devcards.buy",
+  "flag_off": true,
+  "seeds": {
+   "count": 1000,
+   "base": 400000
+  },
+  "design": "estimate",
+  "crn": "auto",
+  "exclusive": true,
+  "game_timeout": 1800,
+  "mechanism": {
+   "metric": "dev_bought",
+   "direction": "-"
+  },
+  "requires": "an epoch whose snapshot has the devcards.buy tunable (run_queue.py --bump-code --areas other); until then the queue shows the row BLOCKED",
+  "notes": "docs/SCRUTINY.md Q22, check 1 (due diligence; a measurement reported next to the registered results, it never changes them): our default bot with development-card purchases OFF (devcards.buy=off: BUY_DEV removed from our bot's own choices; opponent model unchanged) vs 3x Catanatron's AlphaBeta, paired seed by seed against the default arm (same spec, same seeds), 1,000 seeds on a fresh block (ablate seeds 400000-400999). Reading: ESTIMATE delta +- 1.96 se = the part of our 1v3 win rate vs AlphaBeta that comes from buying development cards (negative = the purchases help us); report the default arm's win rate next to proof T2 (54.5 %, 218/400). Tier smoke = outside every Holm family. Sanity readout: mech dev_bought must be 0.0 for the candidate (default ~6 a game; proof: 6.2). crn auto = --crn dice once the CRN pilot passed. Cost ~2,000 AlphaBeta games (~12.8 CPU-h at the queue's 23 s prior); exclusive like the other AlphaBeta rows."
+ },
+ {
+  "name": "devcheck_fixvp_t2_g000-040",
+  "kind": "command",
+  "area": "other",
+  "priority": 61.0,
+  "interpreter": "py330",
+  "exclusive": true,
+  "est_cpu_h": 0.3,
+  "cmd": [
+   "{python}",
+   "{snapshot}/scripts/bench_catanatron.py",
+   "--opponent",
+   "alphabeta_fixvp",
+   "--spec",
+   "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+   "--our-seats",
+   "1",
+   "--seed",
+   "900001",
+   "--game-range",
+   "0:40",
+   "--workers",
+   "2",
+   "--trades",
+   "off",
+   "--hash-seed",
+   "0",
+   "--rerun-crashes",
+   "--log-actions",
+   "{dir}/devcheck_fixvp_t2_logs",
+   "--json",
+   "{dir}/devcheck_fixvp_t2_g00000-00040.json"
+  ],
+  "requires": "an epoch whose snapshot has the alphabeta_fixvp preset (scripts/bench_catanatron.py PRESETS, catanbot/bench/patched_alphabeta.py; --bump-code)",
+  "notes": "docs/SCRUTINY.md Q22, check 2 (due diligence, reported next to proof T2 = 54.5 %, never changing it): our default bot vs 3x alphabeta_fixvp = OUR patch of Catanatron's AlphaBetaPlayer (not Catanatron's player: it counts its own hidden VP cards with ACTUAL_VICTORY_POINTS and scores a won / lost finished game +/- 1e16; otherwise catanatron's defaults: depth 2, base weights, no pruning). Exactly T2's protocol (scripts/run_proof.sh: bench 1v3, seat g % 4, spec search:depth=1,beam=4,expand=8,evaluator=heuristic, --seed 900001, games 0-399, trades off, hash seed 0, --rerun-crashes) with the opponent swapped, so each game is paired by seed with T2's game of the same index. Chunk 1 of 10 (games 0-39, T2's chunk size 40), about 0.3 CPU-h."
+ },
+ {
+  "name": "devcheck_fixvp_t2_g040-080",
+  "kind": "command",
+  "area": "other",
+  "priority": 61.01,
+  "interpreter": "py330",
+  "exclusive": true,
+  "est_cpu_h": 0.3,
+  "cmd": [
+   "{python}",
+   "{snapshot}/scripts/bench_catanatron.py",
+   "--opponent",
+   "alphabeta_fixvp",
+   "--spec",
+   "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+   "--our-seats",
+   "1",
+   "--seed",
+   "900001",
+   "--game-range",
+   "40:80",
+   "--workers",
+   "2",
+   "--trades",
+   "off",
+   "--hash-seed",
+   "0",
+   "--rerun-crashes",
+   "--log-actions",
+   "{dir}/devcheck_fixvp_t2_logs",
+   "--json",
+   "{dir}/devcheck_fixvp_t2_g00040-00080.json"
+  ],
+  "requires": "an epoch whose snapshot has the alphabeta_fixvp preset (scripts/bench_catanatron.py PRESETS, catanbot/bench/patched_alphabeta.py; --bump-code)",
+  "notes": "Q22 check 2, chunk 2 of 10: games 40-79 (see devcheck_fixvp_t2_g000-040)."
+ },
+ {
+  "name": "devcheck_fixvp_t2_g080-120",
+  "kind": "command",
+  "area": "other",
+  "priority": 61.02,
+  "interpreter": "py330",
+  "exclusive": true,
+  "est_cpu_h": 0.3,
+  "cmd": [
+   "{python}",
+   "{snapshot}/scripts/bench_catanatron.py",
+   "--opponent",
+   "alphabeta_fixvp",
+   "--spec",
+   "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+   "--our-seats",
+   "1",
+   "--seed",
+   "900001",
+   "--game-range",
+   "80:120",
+   "--workers",
+   "2",
+   "--trades",
+   "off",
+   "--hash-seed",
+   "0",
+   "--rerun-crashes",
+   "--log-actions",
+   "{dir}/devcheck_fixvp_t2_logs",
+   "--json",
+   "{dir}/devcheck_fixvp_t2_g00080-00120.json"
+  ],
+  "requires": "an epoch whose snapshot has the alphabeta_fixvp preset (scripts/bench_catanatron.py PRESETS, catanbot/bench/patched_alphabeta.py; --bump-code)",
+  "notes": "Q22 check 2, chunk 3 of 10: games 80-119 (see devcheck_fixvp_t2_g000-040)."
+ },
+ {
+  "name": "devcheck_fixvp_t2_g120-160",
+  "kind": "command",
+  "area": "other",
+  "priority": 61.03,
+  "interpreter": "py330",
+  "exclusive": true,
+  "est_cpu_h": 0.3,
+  "cmd": [
+   "{python}",
+   "{snapshot}/scripts/bench_catanatron.py",
+   "--opponent",
+   "alphabeta_fixvp",
+   "--spec",
+   "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+   "--our-seats",
+   "1",
+   "--seed",
+   "900001",
+   "--game-range",
+   "120:160",
+   "--workers",
+   "2",
+   "--trades",
+   "off",
+   "--hash-seed",
+   "0",
+   "--rerun-crashes",
+   "--log-actions",
+   "{dir}/devcheck_fixvp_t2_logs",
+   "--json",
+   "{dir}/devcheck_fixvp_t2_g00120-00160.json"
+  ],
+  "requires": "an epoch whose snapshot has the alphabeta_fixvp preset (scripts/bench_catanatron.py PRESETS, catanbot/bench/patched_alphabeta.py; --bump-code)",
+  "notes": "Q22 check 2, chunk 4 of 10: games 120-159 (see devcheck_fixvp_t2_g000-040)."
+ },
+ {
+  "name": "devcheck_fixvp_t2_g160-200",
+  "kind": "command",
+  "area": "other",
+  "priority": 61.04,
+  "interpreter": "py330",
+  "exclusive": true,
+  "est_cpu_h": 0.3,
+  "cmd": [
+   "{python}",
+   "{snapshot}/scripts/bench_catanatron.py",
+   "--opponent",
+   "alphabeta_fixvp",
+   "--spec",
+   "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+   "--our-seats",
+   "1",
+   "--seed",
+   "900001",
+   "--game-range",
+   "160:200",
+   "--workers",
+   "2",
+   "--trades",
+   "off",
+   "--hash-seed",
+   "0",
+   "--rerun-crashes",
+   "--log-actions",
+   "{dir}/devcheck_fixvp_t2_logs",
+   "--json",
+   "{dir}/devcheck_fixvp_t2_g00160-00200.json"
+  ],
+  "requires": "an epoch whose snapshot has the alphabeta_fixvp preset (scripts/bench_catanatron.py PRESETS, catanbot/bench/patched_alphabeta.py; --bump-code)",
+  "notes": "Q22 check 2, chunk 5 of 10: games 160-199 (see devcheck_fixvp_t2_g000-040)."
+ },
+ {
+  "name": "devcheck_fixvp_t2_g200-240",
+  "kind": "command",
+  "area": "other",
+  "priority": 61.05,
+  "interpreter": "py330",
+  "exclusive": true,
+  "est_cpu_h": 0.3,
+  "cmd": [
+   "{python}",
+   "{snapshot}/scripts/bench_catanatron.py",
+   "--opponent",
+   "alphabeta_fixvp",
+   "--spec",
+   "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+   "--our-seats",
+   "1",
+   "--seed",
+   "900001",
+   "--game-range",
+   "200:240",
+   "--workers",
+   "2",
+   "--trades",
+   "off",
+   "--hash-seed",
+   "0",
+   "--rerun-crashes",
+   "--log-actions",
+   "{dir}/devcheck_fixvp_t2_logs",
+   "--json",
+   "{dir}/devcheck_fixvp_t2_g00200-00240.json"
+  ],
+  "requires": "an epoch whose snapshot has the alphabeta_fixvp preset (scripts/bench_catanatron.py PRESETS, catanbot/bench/patched_alphabeta.py; --bump-code)",
+  "notes": "Q22 check 2, chunk 6 of 10: games 200-239 (see devcheck_fixvp_t2_g000-040)."
+ },
+ {
+  "name": "devcheck_fixvp_t2_g240-280",
+  "kind": "command",
+  "area": "other",
+  "priority": 61.06,
+  "interpreter": "py330",
+  "exclusive": true,
+  "est_cpu_h": 0.3,
+  "cmd": [
+   "{python}",
+   "{snapshot}/scripts/bench_catanatron.py",
+   "--opponent",
+   "alphabeta_fixvp",
+   "--spec",
+   "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+   "--our-seats",
+   "1",
+   "--seed",
+   "900001",
+   "--game-range",
+   "240:280",
+   "--workers",
+   "2",
+   "--trades",
+   "off",
+   "--hash-seed",
+   "0",
+   "--rerun-crashes",
+   "--log-actions",
+   "{dir}/devcheck_fixvp_t2_logs",
+   "--json",
+   "{dir}/devcheck_fixvp_t2_g00240-00280.json"
+  ],
+  "requires": "an epoch whose snapshot has the alphabeta_fixvp preset (scripts/bench_catanatron.py PRESETS, catanbot/bench/patched_alphabeta.py; --bump-code)",
+  "notes": "Q22 check 2, chunk 7 of 10: games 240-279 (see devcheck_fixvp_t2_g000-040)."
+ },
+ {
+  "name": "devcheck_fixvp_t2_g280-320",
+  "kind": "command",
+  "area": "other",
+  "priority": 61.07,
+  "interpreter": "py330",
+  "exclusive": true,
+  "est_cpu_h": 0.3,
+  "cmd": [
+   "{python}",
+   "{snapshot}/scripts/bench_catanatron.py",
+   "--opponent",
+   "alphabeta_fixvp",
+   "--spec",
+   "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+   "--our-seats",
+   "1",
+   "--seed",
+   "900001",
+   "--game-range",
+   "280:320",
+   "--workers",
+   "2",
+   "--trades",
+   "off",
+   "--hash-seed",
+   "0",
+   "--rerun-crashes",
+   "--log-actions",
+   "{dir}/devcheck_fixvp_t2_logs",
+   "--json",
+   "{dir}/devcheck_fixvp_t2_g00280-00320.json"
+  ],
+  "requires": "an epoch whose snapshot has the alphabeta_fixvp preset (scripts/bench_catanatron.py PRESETS, catanbot/bench/patched_alphabeta.py; --bump-code)",
+  "notes": "Q22 check 2, chunk 8 of 10: games 280-319 (see devcheck_fixvp_t2_g000-040)."
+ },
+ {
+  "name": "devcheck_fixvp_t2_g320-360",
+  "kind": "command",
+  "area": "other",
+  "priority": 61.08,
+  "interpreter": "py330",
+  "exclusive": true,
+  "est_cpu_h": 0.3,
+  "cmd": [
+   "{python}",
+   "{snapshot}/scripts/bench_catanatron.py",
+   "--opponent",
+   "alphabeta_fixvp",
+   "--spec",
+   "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+   "--our-seats",
+   "1",
+   "--seed",
+   "900001",
+   "--game-range",
+   "320:360",
+   "--workers",
+   "2",
+   "--trades",
+   "off",
+   "--hash-seed",
+   "0",
+   "--rerun-crashes",
+   "--log-actions",
+   "{dir}/devcheck_fixvp_t2_logs",
+   "--json",
+   "{dir}/devcheck_fixvp_t2_g00320-00360.json"
+  ],
+  "requires": "an epoch whose snapshot has the alphabeta_fixvp preset (scripts/bench_catanatron.py PRESETS, catanbot/bench/patched_alphabeta.py; --bump-code)",
+  "notes": "Q22 check 2, chunk 9 of 10: games 320-359 (see devcheck_fixvp_t2_g000-040)."
+ },
+ {
+  "name": "devcheck_fixvp_t2_g360-400",
+  "kind": "command",
+  "area": "other",
+  "priority": 61.09,
+  "interpreter": "py330",
+  "exclusive": true,
+  "est_cpu_h": 0.3,
+  "cmd": [
+   "{python}",
+   "{snapshot}/scripts/bench_catanatron.py",
+   "--opponent",
+   "alphabeta_fixvp",
+   "--spec",
+   "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+   "--our-seats",
+   "1",
+   "--seed",
+   "900001",
+   "--game-range",
+   "360:400",
+   "--workers",
+   "2",
+   "--trades",
+   "off",
+   "--hash-seed",
+   "0",
+   "--rerun-crashes",
+   "--log-actions",
+   "{dir}/devcheck_fixvp_t2_logs",
+   "--json",
+   "{dir}/devcheck_fixvp_t2_g00360-00400.json"
+  ],
+  "requires": "an epoch whose snapshot has the alphabeta_fixvp preset (scripts/bench_catanatron.py PRESETS, catanbot/bench/patched_alphabeta.py; --bump-code)",
+  "notes": "Q22 check 2, chunk 10 of 10: games 360-399 (see devcheck_fixvp_t2_g000-040)."
+ },
+ {
+  "name": "devcheck_fixvp_t2_replay",
+  "kind": "command",
+  "area": "other",
+  "priority": 62,
+  "interpreter": "py330",
+  "est_cpu_h": 0.05,
+  "after": [
+   {
+    "row": "devcheck_fixvp_t2_g000-040",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   {
+    "row": "devcheck_fixvp_t2_g040-080",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   {
+    "row": "devcheck_fixvp_t2_g080-120",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   {
+    "row": "devcheck_fixvp_t2_g120-160",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   {
+    "row": "devcheck_fixvp_t2_g160-200",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   {
+    "row": "devcheck_fixvp_t2_g200-240",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   {
+    "row": "devcheck_fixvp_t2_g240-280",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   {
+    "row": "devcheck_fixvp_t2_g280-320",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   {
+    "row": "devcheck_fixvp_t2_g320-360",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   {
+    "row": "devcheck_fixvp_t2_g360-400",
+    "verdicts": [
+     "PASS"
+    ]
+   }
+  ],
+  "cmd": [
+   "{python}",
+   "{snapshot}/scripts/replay_catanatron.py",
+   "{dir}/devcheck_fixvp_t2_logs",
+   "--check"
+  ],
+  "notes": "Q22 check 2, closing step: replay --check of all 400 logged games (exit 0 = PASS). The result is read by hand from the ten chunk JSONs: win rate = wins / 400 with its Wilson 95 % interval, next to T2's 54.5 % (218/400), plus the paired comparison with T2 by game index (discordant games, exact McNemar), and the patched AlphaBeta's development cards bought per game (T2: 0.15 per AlphaBeta). Caveat: T2 was played by the proof's code; if the default bot has changed since the proof, a stock alphabeta control on the same 400 seeds separates the patch's effect from our own changes."
+ }
+]
