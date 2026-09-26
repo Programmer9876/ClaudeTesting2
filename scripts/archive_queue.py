@@ -54,8 +54,18 @@ def git(*args: str) -> str:
     return subprocess.run(["git", "-C", ROOT, *args], check=True, capture_output=True, text=True).stdout
 
 
+def _tree(commit: str, files: List[str]) -> Dict[str, str]:
+    tree = {}
+    for line in git("ls-tree", "-r", commit, "--", *files).splitlines():
+        meta, name = line.split("\t", 1)
+        tree[name] = meta.split()[2]
+    return tree
+
+
 def epoch_commit(path: str, max_commits: int = 300) -> Dict[str, Any]:
-    """The newest commit whose tracked files equal the snapshot's (compiled and cache files aside)."""
+    """The commit that introduced the snapshot's code: going back from HEAD, the oldest commit of the first run
+    of commits whose tracked files equal the snapshot's (compiled and cache files aside).  Later commits that
+    leave these files alone do not move it."""
     files = []
     for base, dirs, names in os.walk(path):
         dirs[:] = [d for d in dirs if d != "__pycache__"]
@@ -63,18 +73,16 @@ def epoch_commit(path: str, max_commits: int = 300) -> Dict[str, Any]:
                   if not n.endswith((".so", ".pyc"))]
     files.sort()
     blobs = dict(zip(files, git("hash-object", *[os.path.join(path, f) for f in files]).split()))
-    for commit in git("rev-list", "-n", str(max_commits), "HEAD").split():
-        tree = {}
-        for line in git("ls-tree", "-r", commit, "--", *files).splitlines():
-            meta, name = line.split("\t", 1)
-            tree[name] = meta.split()[2]
+    found = None
+    for commit in git("rev-list", "--first-parent", "-n", str(max_commits), "HEAD").split():
+        tree = _tree(commit, files)
         if all(tree.get(f) == b for f, b in blobs.items()):
-            return {"commit": commit, "files": len(files)}
-    newest = git("rev-list", "-n", "1", "HEAD").strip()
-    tree = {}
-    for line in git("ls-tree", "-r", newest, "--", *files).splitlines():
-        meta, name = line.split("\t", 1)
-        tree[name] = meta.split()[2]
+            found = commit
+        elif found:
+            break
+    if found:
+        return {"commit": found, "files": len(files)}
+    tree = _tree(git("rev-list", "-n", "1", "HEAD").strip(), files)
     return {"commit": None, "files": len(files),
             "differs_from_head": sorted(f for f, b in blobs.items() if tree.get(f) != b)}
 

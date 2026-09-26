@@ -1,6 +1,6 @@
 # Test queue report
 
-Plan `scripts/queue_plan.json` (806c3d3a0efc), results `/home/user/queue_runs/queue1`, written 2026-09-26 07:51:13.  One line per candidate.  Units: win-rate percentage points of the candidate minus the default (paired); `p` = stage-wise one-sided p (fixed two-sided p for politics / estimate rows), `Holm` = adjusted within the row's tier (provisional `*` until the tier is complete).  Estimates of rows stopped early are biased away from 0 (winner's curse): confirm on fresh seeds.
+Plan `scripts/queue_plan.json` (806c3d3a0efc), results `/home/user/queue_runs/queue1`, written 2026-09-26 08:14:45.  One line per candidate.  Units: win-rate percentage points of the candidate minus the default (paired); `p` = stage-wise one-sided p (fixed two-sided p for politics / estimate rows), `Holm` = adjusted within the row's tier (provisional `*` until the tier is complete).  Estimates of rows stopped early are biased away from 0 (winner's curse): confirm on fresh seeds.
 
 | area | row | candidate | polarity | design | label | look | pairs | estimate (pp) +- se | unit | base rate / relative | p | Holm | dVP +- se | discordant / diverged | mechanism (cand - def) | CPU-h | next action |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -13,7 +13,7 @@ Plan `scripts/queue_plan.json` (806c3d3a0efc), results `/home/user/queue_runs/qu
 | harness | crn_aa_dice@vf | cand | measure | estimate | PASS(A/A identical) | 1 | 400 | +0.0 +- 0.2 | pp (1v3 win rate vs vf) | 29.2% / +0% |  |  | +0.00 +- 0.00 | 0.00 / 0.00 | first_city_round +0.00+-0.00; first_settle_round +0.00+-0.00; knights_held_end +0.00+-0.00; knights_played +0.00+-0.00; largest_army +0.00+-0.00; longest_road + | 0.09 | pipeline / pairing verified |
 | trades | t1_trades0_vrule@value | 0 | measure | estimate | ESTIMATE(fixed N) | 1 | 2000 | -24.1 +- 1.2 | pp (1v3 win rate vs value, vs value-rule responders) | 84.3% / -29% | 6.14e-83 | 6.14e-83* | -1.04 +- 0.05 | 0.37 / 1.00 | first_city_round +1.54+-0.17; first_settle_round +3.58+-0.17; knights_held_end -0.01+-0.02; knights_played -0.63+-0.05; largest_army -0.13+-0.01; longest_road - | 2.49 | measurement recorded (headroom for its area) |
 | trades | t2_dump0@value | 0 | knockout | knockout | KEEP(unproven) [stopped early] | 2 | 400 | -0.8 +- 0.8 | pp (1v3 win rate vs value) | 65.8% / -1% | 0.817 | 0.817* | -0.03 +- 0.03 | 0.03 / 0.35 | first_city_round -0.03+-0.02; first_settle_round -0.03+-0.04; knights_held_end +0.00+-0.01; knights_played -0.04+-0.02; largest_army -0.01+-0.01; longest_road - | 0.13 | keep the term (default unchanged) |
-| trades | acq_breadth_bundle | 1 | new | screen | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | queued |
+| trades | acq_breadth_bundle | 1 | new | screen | open | 1 | 480 | -2.9 +- 2.3 | pp (per seat, 2v2) | 52.9% / -6% | 0.9 |  | -0.06 +- 0.10 | 1.00 / 0.00 |  | 1.10 | running |
 | trades | acq_breadth_confirm@value | 1 | new | confirm | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | confirmation waits for tier t1 to complete (Holm family) |
 | trades | acq_breadth_noharm_3p | 1 | measure | estimate | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after acq_breadth_bundle |
 | trades | acq_calib_native@value | 1 | measure | estimate | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | queued |
@@ -76,11 +76,11 @@ Plan `scripts/queue_plan.json` (806c3d3a0efc), results `/home/user/queue_runs/qu
 
 | # | area | row | status | remaining CPU-h | weight | why |
 |---|---|---|---|---|---|---|
-| 1 | trades | acq_breadth_bundle | ELIGIBLE | 3.53 | 0.2031 |  |
+| 1 | trades | acq_breadth_bundle | RUNNING | 1.10 | 0.2031 |  |
 | 2 | trades | acq_calib_native@value | ELIGIBLE | 0.07 | 0.1672 |  |
 | 3 | trades | acq_floor_selfplay | ELIGIBLE | 3.53 | 0.1340 |  |
 | 4 | trades | acq_floor_vrule@value | ELIGIBLE | 1.63 | 0.1294 |  |
-| 5 | diversification | t1_openings@value | RUNNING | 2.06 | 0.0625 |  |
+| 5 | diversification | t1_openings@value | RUNNING | 2.05 | 0.0625 |  |
 | 6 | diversification | t1_openings@vf | ELIGIBLE | 1.57 | 0.0625 |  |
 | 7 | diversification | demand_flat_pyeval@vf | ELIGIBLE | 1.80 | 0.0583 |  |
 | 8 | diversification | div_lr_bundle | ELIGIBLE | 0.96 | 0.0526 |  |
@@ -108,7 +108,7 @@ Waiting / blocked: acq_breadth_confirm@value (WAITING: confirmation waits for ti
 | area | rows | final | open | ADOPT | on ice (SHELVE/REJECT) | NOOP | FAILED | deferred | CPU-h spent |
 |---|---|---|---|---|---|---|---|---|---|
 | harness | 7 | 7 | 0 | 0 | 2 | 0 | 0 | 0 | 0.92 |
-| trades | 13 | 4 | 4 | 0 | 0 | 0 | 0 | 1 | 2.62 |
+| trades | 13 | 4 | 4 | 0 | 0 | 0 | 0 | 1 | 3.72 |
 | diversification | 10 | 0 | 4 | 0 | 0 | 0 | 0 | 0 | 0.00 |
 | ports | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0.00 |
 | robber | 12 | 1 | 4 | 0 | 0 | 0 | 0 | 1 | 0.00 |

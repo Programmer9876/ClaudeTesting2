@@ -8,7 +8,7 @@ last record is `stop`.  Rows still running are copied when they finish, or with 
 |---|---|
 | `<row>.jsonl.gz` | the row's file, unchanged, gzip with no timestamp |
 | `index.json` | per row: finished or partial, games, runs, code fingerprints, sha256 of the uncompressed file |
-| `epochs.json` | per code epoch: the git commit whose files match the snapshot the games ran on |
+| `epochs.json` | per code epoch: the commit that introduced the code the games ran on (the snapshot's files equal it) |
 | `MANIFEST.sha256` | `sha256sum -c MANIFEST.sha256`, run from this directory |
 
 A row file holds three kinds of record:
