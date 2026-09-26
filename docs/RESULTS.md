@@ -4,6 +4,48 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 01:00 UTC - advisor counts cards from Colonist's game log (off by default)
+
+The advisor used to read one screenshot at a time, so it knew opponents'
+hand *sizes* but not their cards.  Now, with `--session FILE`, it keeps a
+running card count across calls from Colonist's public log.
+- **How the log gets in:** the Claude-vision parser can read the log panel,
+  or you can paste the log with `--game-log FILE|-`.
+- **What it counts:** rolls and production, builds, bank and port trades,
+  player trades, offers, Monopoly, Year of Plenty, and steals and discards
+  as counts.  Overlapping screenshot windows are lined up so no entry
+  counts twice.
+- **Checks:** after each update the count is checked against your hand,
+  every hand size and the bank (when visible).  A mismatch is reported and
+  resynchronised.
+- **Where it is used:** the search samples opponents' hands from the count,
+  using the same code as the proof's Colonist-information mode.
+- **New output:** a "Card count" section.  Example: `orange (Carol): 1 wood,
+  2 ore certain; 1 card uncertain from hidden steals with green, blue:
+  wood 88% / sheep 12%`.
+
+**Evidence:**
+- 94 new tests.  In simulated games rendered as Colonist-style log text and
+  fed in overlapping windows, the true hands were always among the counted
+  possibilities.  They were exact whenever no hidden steal or discard was
+  pending, over 30 seeds with the bank visible.
+- Without the new options the advisor output is unchanged.
+- Tests pass on both Python environments.
+
+**Must be checked against a real Colonist game:** the log wording.  It is
+written from memory, since Colonist can't be reached from here.  The list
+of phrasings to verify is in docs/USAGE.md ("Card counting from the game
+log").
+
+**Known limits:**
+- With no visible bank, several big hidden discards on one 7 can overflow
+  the 4,096-hypothesis cap; this happened in 2 of 6 test seeds.  A visible
+  bank fixes it.
+- A missed log line is caught by the hand-size check, but repaired with a
+  production-weighted guess.
+- Only the search uses the count so far; the trading, robber and
+  offer-response sections still use their own estimates.
+
 ## 2026-09-26 00:40 UTC - strength proof: claims 1 and 2 PASS
 
 The pre-registered proof (docs/PROOF_PROTOCOL.md) finished T1-T6 and R1-R2:
