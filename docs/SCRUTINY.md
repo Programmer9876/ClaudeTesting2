@@ -427,8 +427,10 @@ identical to the run's own.
 - **T1-T6 and T10 are full-information games.**  T7-T9 and T11 are the
   Colonist-information results: our bot sees only public information, while
   Catanatron's bots still see everything.
-- **Catanatron's AlphaBeta ignores development cards** (Q22).  Part of our
-  edge is buying them, and humans will not leave that edge alone.
+- **Catanatron's bots are far from complete players** (Q22, and docs/BENCHMARKS.md, "What Catanatron's bots
+  are, and what they are not").  Development cards are nearly worthless to them and Victory Point cards
+  invisible; they model one enemy, look two moves ahead, never trade and play no politics.  Part of our edge
+  exploits these gaps, and humans will not leave them open.
 - **Catanatron's bots are the only outside opponents.**  The stand-ins in
   R1-R2 are our own stronger versions of them, not independent programs.
 - **The screenshot parser** has only been validated on synthetic renders.

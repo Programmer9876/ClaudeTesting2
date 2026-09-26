@@ -731,6 +731,33 @@ cannot pay).
    observation with the state before the first card, where it is a legal
    half-hand discard (tested on both versions).
 
+## What Catanatron's bots are, and what they are not (read before quoting any result)
+
+Catanatron is the standard open-source Catan benchmark; HexMachina (Belle et al.) also measured against its
+AlphaBeta player, which is why we use it.  But its bots are far from complete players.  Every gap below was
+checked in its source (GitHub checkout `ecf9311`, catanatron 3.3.0) and, where possible, measured in our logs.
+
+| gap | where in Catanatron | what we see in our games |
+|---|---|---|
+| **Development cards are almost worthless to it.**  A card in hand scores 10 and a Knight played 10.1, against 100,000,000 for production. | `players/value.py`: `DEFAULT_WEIGHTS` (`hand_devs`, `army_size`) and `base_fn` | each AlphaBeta buys about 0.15 cards a game (our bot 6.2); when it does buy, it mostly holds them (T2 game 62: five of six cards never played) |
+| **Victory Point cards are invisible to it.**  Its score counts only public points; a VP card raises only the hidden total, even for its own cards, and a won game gets no extra credit in its search. | `players/value.py` (`VICTORY_POINTS`); `state_functions.py:267`; `players/minimax.py`, `alphabeta` | it never suspects hidden points: in 168 of our 218 T2 wins, hidden VP cards were part of the winning total |
+| **It models one enemy.**  Its production term counts only the next player in turn order; the other two opponents' production is ignored. | `players/value.py`, `base_fn` (the `P1` features; `features.py`, `iter_players`); the `ValueFunctionPlayer` docstring: "only considers 1 enemy player" | its robber and blocking choices focus on one neighbour, not on the leader |
+| **It looks two moves ahead.** | `players/minimax.py:13`, `ALPHABETA_DEFAULT_DEPTH = 2` (20 s deadline, never reached in our runs) | no plans that pay off later: Largest Army, Monopoly, holding for a city |
+| **No trading between players.**  Its bots never offer.  `ValueFunctionPlayer` rejects every offer; AlphaBeta, SameTurnAlphaBeta and MCTS crash on one. | `tree_search_utils.execute_spectrum` has no trade case (section "How catanatron's players answer an offer" above) | the strength proof and the 1v1 benchmark were played with trading off |
+| **No table politics.**  No leader targeting and no coalitions; in its search every other player plays against it. | `players/minimax.py` (every other seat minimises) | it neither gangs up on a runaway leader nor spares a weak player |
+| **Hand-set weights with no documented rationale.**  The alternative "contender" weights, which look machine-tuned, barely change the development-card weights (10.7 and 12.9). | `players/value.py`, `CONTENDER_WEIGHTS` | - |
+| **It sees everything,** in every test we ran: all hands, all development cards. | Catanatron exposes the full state to its players | an advantage *to them*; in our Colonist-information tests our bot sees only public information and still wins |
+
+**What this means for our numbers**
+- **The results show that our bot beats an open-source baseline with these gaps.**  They are not evidence of
+  strength against good human players.
+- **Part of the edge exploits the gaps**, above all development cards, hidden Victory Point cards and an
+  uncontested Largest Army.  Two proposed checks would measure how much (docs/SCRUTINY.md Q22): our bot with
+  development-card purchases off, and an AlphaBeta patched to count its own hidden points.  They are not run
+  yet.
+- **Human testing through the advisor is the real test.**  The strength proof only claims readiness for it
+  (docs/PROOF.md, claim 2).
+
 ## Limitations and rule differences
 
 1. **Player trading is off by default and one-sided when on.**  catanatron

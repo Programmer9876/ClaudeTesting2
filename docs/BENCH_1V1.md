@@ -54,6 +54,9 @@ jobs could not have changed a game.
 - **1v1 is outside our bot's tuning.**  It was tuned for 3-4 players, and its politics and coalition logic
   have nothing to act on with one opponent.  Catanatron's AlphaBeta, on the other hand, is built for exactly
   one enemy.  Despite both, the head-to-head rate is high.
+- **Catanatron's AlphaBeta is far from a complete player.**  It ignores development cards, cannot see Victory
+  Point cards, looks two moves ahead and never trades (docs/BENCHMARKS.md, "What Catanatron's bots are, and
+  what they are not").  Part of this margin exploits those gaps, so it says nothing about human opponents.
 - **Remaining caveats** (all in the protocol):
   - The rules are Catanatron's base rules with two seats, not an official two-player variant.
   - Both sides see the full state, as in proof test T2.

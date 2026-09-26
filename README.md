@@ -55,6 +55,23 @@ screenshots use the same pipeline (the token discs anchor the lattice, the
 standard tile / number multisets constrain the classification); anything
 uncertain is flagged and correctable with `--fix`.
 
+## Strength against Catanatron, and what it does not show
+
+Pre-registered results, with every game archived and replayable:
+- 4-player, our bot against three Catanatron bots (docs/PROOF.md): 62.8 % against ValueFunction and 54.5 %
+  against AlphaBeta, where chance is 25 %; 58.5 % against AlphaBeta when our bot sees only what a Colonist
+  player sees.
+- 1v1 against AlphaBeta: 75.5 % (docs/BENCH_1V1.md).
+
+**Read this first.**  Catanatron is the standard open-source benchmark, but its bots are far from complete
+players:
+- development cards are nearly worthless to them, and Victory Point cards invisible;
+- they model one enemy and look two moves ahead;
+- they never trade with other players and play no politics.
+Part of our edge exploits exactly these gaps, so these results say nothing yet about strength against good
+humans.  Human testing with the advisor is the real test.  Details, with the lines in Catanatron's source:
+docs/BENCHMARKS.md, "What Catanatron's bots are, and what they are not".
+
 ## Training and strength
 
 `python -m catanbot train` runs the self-play loop (see `docs/USAGE.md`).
