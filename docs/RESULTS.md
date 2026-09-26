@@ -4,6 +4,33 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 12:00 UTC - robber step 5 built (off by default); two gate readings amended before the queue shadow
+
+- **Built**, all off by default:
+  - R1a persistence (`search.robber_corr`);
+  - R1b knight insurance (`robber_eval.INSURANCE_W`, an SPSA knob);
+  - R1c block duration (`robber_eval.BLOCK_DUR_W`);
+  - knight_kick (`search.kick`);
+  - the observation-only RobberCounters and the shadow's would-kick-holder classifier with gates G1-G5.
+- **Checks rerun by the coordinator:** default play is unchanged (24/24 games identical to epoch B1), and 99
+  robber, shadow, queue and self-play tests pass on both catanatron versions.  The agent's full suites: 1,094
+  passed on 3.3.0 and 1,067 on 3.2.1, with no failures.
+- **Small shadows** (6 games, not the decision; the queue's 40-game shadow decides):
+  - R1a passed its gates, and R1c changed 8.9 % of decisions;
+  - knight_kick failed G1 (it is only the fallback if R1a fails);
+  - R1b failed G4 out of sample (its offset calibration is noisy between games; it stays an SPSA knob only).
+- **Gate amendments, recorded before the 40-game queue shadow runs:**
+  - R1a's G2 counts only robber and knight decisions that block no would-kick holder (the critique's
+    reading).  Changes on holders who kick after 2 or more rolls are what R1a is for, so they are reported but
+    not gated.
+  - R1b's G2 counts knight-play flips that follow exposure.  The design's literal count is still reported.
+  - Both readings only decide whether a screen is spent.  The screens themselves keep their own error
+    control, so a looser gate can waste CPU but cannot produce a false ADOPT.
+- **Open items for other owners:**
+  - SPSA groups: add INSURANCE_W and BLOCK_DUR_W.
+  - `ablate.py` does not pass observers, so self-play mechanism readouts cannot run yet.
+  - Step 6 must wire the knight hint into the counted adapter.
+
 ## 2026-09-26 09:45 UTC - robber step started (user's go-ahead); the unfinished ports code is default-neutral
 
 - **The unfinished ports code leaves the default bot unchanged.**  24 default-arm games vs 3x ValueFunction
