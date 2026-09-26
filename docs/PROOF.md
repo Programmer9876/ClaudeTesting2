@@ -69,6 +69,14 @@ Those tests started at 00:25 UTC and are reported below when they finish.
   threshold it is 4.87 sigma; a strict one-sided 5 sigma is 2.87e-7.  Every
   test also clears that stricter line by far: the largest Holm-adjusted
   p-value is 1.85e-32.
+- **Why 400 games against the search bots and 1,000 against
+  ValueFunction.**  The sizes were fixed in the protocol before any game.
+  - Cost: an AlphaBeta opponent thinks about 36x longer per game (8.4 s vs
+    0.23 s per seat), and a game takes 26-33 s instead of 1.7 s.
+  - 400 games is enough: the 99 % interval is about +-6.4 points.
+  - The smaller size makes passing harder, not easier.  The effect-size
+    floor needs 41.5 % wins at 400 games, against 39 % at 1,000.  Details
+    in docs/SCRUTINY.md Q17.
 - **T2 and T3** are different opponents that happen to have equal totals
   (docs/SCRUTINY.md Q1).  0 of 400 game pairs are identical; the chance of
   equal totals is 2.8 %.

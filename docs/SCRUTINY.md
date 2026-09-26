@@ -310,11 +310,50 @@ No.
 No.  A 2v2 game is one outcome: did either of our two seats win?  The null
 is 50 %, because the two opponent seats have the same combined chance.
 
+### Q17. Why only 400 games against AlphaBeta and SameTurnAlphaBeta, but 1,000 against ValueFunction?
+
+Because the search bots are far more expensive to play against, and 400
+games is still more than enough.
+
+- **Fixed in advance:** the sizes were set in the protocol before any game
+  (docs/PROOF_PROTOCOL.md, commit `704849b`).  Every test with AlphaBeta or
+  SameTurnAlphaBeta seats has 400 games: T2, T3, T5, T6, T8, T9, and the
+  mixed tables T10 and T11.  R2, against our AlphaBeta stand-in, also has 400.
+  The ValueFunction tests have 1,000.
+- **Cost:** AlphaBeta searches two plies ahead at every decision (up to its
+  20 s cutoff).  ValueFunction looks one move ahead.  From the proof's result
+  files:
+
+  | test | opponent | wall time per game | each opponent seat, s thinking per game | our bot, s per game |
+  |---|---|---|---|---|
+  | T1 | ValueFunction | 1.7 s | 0.23 | 0.95 |
+  | T2 | AlphaBeta | 26.0 s | 8.4 | 0.90 |
+  | T3 | SameTurnAlphaBeta | 33.3 s | 10.7 | 1.18 |
+
+  So an AlphaBeta opponent thinks about 36x longer per game than a
+  ValueFunction one, and a game takes 15-20x longer.  1,000 AlphaBeta games
+  per test would have cost about 7 hours per test instead of about 3.
+- **Statistically, 400 is plenty for these claims.**  In a 1v3 test, 400
+  games give a 99 % interval of about +-6.4 points at a 50 % win rate (1,000
+  games: +-4.1).
+- **The smaller size raises the bar rather than lowering it:**
+
+  | games | to pass the strictest significance step | to pass the effect-size floor (lower end of the 99 % CI >= 35 %) |
+  |---|---|---|
+  | 400 | at least 148 wins (37 %) | at least 166 wins (41.5 %) |
+  | 1,000 | at least 324 wins (32.4 %) | at least 390 wins (39 %) |
+
+  - Significance: Holm alpha 5.7e-7 / 6, one-sided exact test against 25 %.
+  - The 2v2 tests likewise need about a 62-63 % share at 400 games,
+    against about 58-59 % at 1,000.
+  - With fewer games the bot has to *win more often* to pass.
+  - T2 and T3 passed at 54.5 %, with a lower 99 % bound of 0.479.
+
 ---
 
 ## D. Can someone else reproduce it?
 
-### Q17. Can I replay a specific game?
+### Q18. Can I replay a specific game?
 
 Yes.
 - **What each log holds:** the board, the dev-deck order, every action with
@@ -329,7 +368,7 @@ Yes.
   a different game in a different process unless `PYTHONHASHSEED` is fixed.
   The proof pins it to 0.
 
-### Q18. Where are the logs and result files?
+### Q19. Where are the logs and result files?
 
 In this repository, under `proof/` (layout and commands in
 proof/README.md):
@@ -342,7 +381,7 @@ All 5,000 archived games were replay-checked before the commit.  The
 registered analysis re-run on the archived copy prints output identical to
 the run's own.  T7-T11 will be added the same way when they finish.
 
-### Q19. Exactly which code played?
+### Q20. Exactly which code played?
 
 - **T1-T6 and R1-R2:** commit `9984181`, from the frozen worktree
   `/home/user/proof_snapshot`.
