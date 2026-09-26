@@ -50,6 +50,24 @@ against people who race for spots it may leak.
 Each is read both by win rate against Catanatron and by the mechanism:
 diversity, round of the first settlement, 4:1 share, ports.
 
+**Does the robber punish the city-first style?**  Not measurably.  At turns
+40, 60 and 80 of 200 T1 games:
+
+| | our bot | Catanatron's bots |
+|---|---|---|
+| best single hex, share of income | 28.4 % | 29.2 % |
+| hexes worked | 6.3 | 6.7 |
+| income under the robber at that moment | 7.3 % | 9.2 % |
+
+The robber blocks one *hex*, not one *resource*.  Our cities stand on
+separate hexes, so income is spread about as widely as Catanatron's.  The
+blockability penalty charges only for stacking our own buildings on the same
+hex, and here it works: we are not more blockable.
+
+What the style lacks is resource *types* (3.85 vs 4.67), which the robber
+does not act on.  Type diversity is set by the resource weights and by the
+one-turn horizon, which are what the queued expansion tests change.
+
 ## 2026-09-26 04:30 UTC - strength proof complete: all four claims PASS, ready for supervised human testing
 
 T7-T11 finished at 04:10 UTC.  With T1-T6 and R1-R2 that is 7,600 games,
