@@ -293,6 +293,7 @@ class Searcher:
         self._corr = None            # corrections.CorrectionHub of the current search (a hub provider switched on)
         self._counter_rank: Dict[Action, int] = {}     # counters kept by _counter_filter (config.counters = 1)
         self._offer_q = None         # catanbot.acquisition while its offer cost is on (_offer_pricing), else None
+        self._offer_run = 0.0        # with the cost on: our offers in a row that nobody took (OpponentModel.offer_run)
         # Native lookahead (C++): the evaluator's twin handle, or None -> the Python _future_values below.
         self._native_ev = None
         self._native_key = None
@@ -326,6 +327,9 @@ class Searcher:
         self._corr = None
         self._counter_rank = {}
         self._offer_q = _offer_pricing()      # offer cost (off by default: None, the old valuation)
+        self._offer_run = 0.0
+        if self._offer_q is not None and self.model is not None and cfg.use_opponent_model:
+            self._offer_run = self.model.offer_run(state, me)
         if self._native_ev is not None and _accel.evaluator_key(self.evaluator) != self._native_key:
             # The net's arrays were replaced (set_params / load): rebuild the native twin.
             self._native_ev = _accel.native_evaluator(self.evaluator)
@@ -515,13 +519,14 @@ class Searcher:
 
     def _offer_value(self, state: GameState, action: Action, kids, ev: float, base: float, me: int) -> float:
         """Our proposal ``action`` (outcomes ``kids`` from ``_trade_outcomes``, plain expectation ``ev``) net of its
-        price ``acquisition.offer_cost``: ``min(ev, base + P x (V_acc - V_rej)) - cost``.  ``base`` is the best
+        price ``acquisition.offer_cost`` (escalated by our run of offers nobody took, read once per search):
+        ``min(ev, base + P x (V_acc - V_rej)) - cost``.  ``base`` is the best
         sibling that is not a proposal (not offering); the accepted outcome is the one in which our hand changed.
         So the offer is worth making only when its own expected gain ``P x (V_acc - V_rej)`` (both branches searched
         to the same depth) beats the cost: a trade we value at or below nothing, or a rejected branch that merely
         searched deeper than the siblings, no longer carries it; and the price never raises an offer's value.  A
         missing branch (P(accept) about 0 or 1) takes ``base`` in its place; no non-proposal sibling: ``ev - cost``."""
-        cost = self._offer_q.offer_cost(state, me, action[1], action[2])
+        cost = self._offer_q.offer_cost(state, me, action[1], action[2], self._offer_run)
         if base == -math.inf:
             return ev - cost
         mine = state.players[me].resources

@@ -68,18 +68,28 @@ the bot never calls it.
 rule): :class:`AcceptCalibrator`, an online recalibration of ``OpponentModel.predict_accept`` per opponent from every
 observed answer, and the rejection-streak rule.
 
-``offer cost`` (:data:`OFFER_COST`, :data:`OFFER_LEAK`; docs/PRIORITY_PLAN.md "Backlog", the trade-offer spam): at a
-real table every offer is public (it tells the table what we need and what we hold) and a rejected one used to cost
-the search nothing, so any offer with a positive expectation beat not offering however low P(accept) fell.  With a
-cost on, ``Searcher._offer_value`` values each of our proposals at ``min(E, V_no + P x (V_acc - V_rej)) - cost``: ``E``
-the plain accept / reject expectation, ``V_no`` the best sibling that is not a proposal, ``V_acc`` / ``V_rej`` the
-accepted and rejected branches (both searched to the same depth) and ``cost`` :func:`offer_cost` = ``OFFER_COST +
-OFFER_LEAK x`` :func:`offer_reveal`.  An offer is therefore made only when its own expected gain ``P x (V_acc -
-V_rej)`` beats its cost (a trade we value at or below nothing is never proposed, and a rejected branch that merely
-searched deeper no longer carries it), and the pricing never raises an offer's value.  The acceptance calibration and
-the rejection streak supply the ``P``: against seats that never accept it falls to (about) 0 and the bot stops
-offering.  Our answers to other players' offers and counter-offers (``search.counter_margin``) are not priced.  Off
-by default (both 0): the search is then exactly the old one and never imports this module.
+``offer cost`` (:data:`OFFER_COST`, :data:`OFFER_LEAK`, :data:`OFFER_REPEAT`; docs/PRIORITY_PLAN.md "Backlog", the
+trade-offer spam): at a real table every offer is public (it tells the table what we need and what we hold, and
+repeated offers annoy) and a rejected one used to cost the search nothing, so any offer with a positive expectation
+beat not offering however low P(accept) fell.  With a cost on, ``Searcher._offer_value`` values each of our proposals
+at ``min(E, V_no + P x (V_acc - V_rej)) - cost``: ``E`` the plain accept / reject expectation, ``V_no`` the best
+sibling that is not a proposal, ``V_acc`` / ``V_rej`` the accepted and rejected branches (both searched to the same
+depth) and ``cost`` :func:`offer_cost` = ``(OFFER_COST + OFFER_LEAK x`` :func:`offer_reveal` ``) x (1 + OFFER_REPEAT)
+** run``, ``run`` = our offers in a row that nobody took (``OpponentModel.offer_run``, reset by an acceptance).  An
+offer is therefore made only when its own expected gain ``P x (V_acc - V_rej)`` beats its price (a trade we value at or
+below nothing is never proposed, and a rejected branch that merely searched deeper no longer carries it), and the
+pricing never raises an offer's value.  With the cost on, a proposal's rejected outcome (the parent state again, one
+offer fewer left) also stops ranking its group in the search beam: in the old search those copies took about two of
+the three groups kept at a main-phase root, pruning real alternatives.
+
+How it combines with the ``P`` sources: against seats that never accept, the base model and the acceptance
+calibration still predict P ~ 0.3 for the generous offers the search picks (the calibration moves slowly at low P and
+is optimistic on exactly the offers it is asked about), so a fixed price alone only halves the offers; the escalation
+is what stops them, and it is not absorbing (a valuable enough offer still goes out; an acceptance resets it).  The
+rejection streak (``opponent_model.REJECT_STREAK``) sets P = 0, so with any price its seats are never offered to
+again and can never accept to lift it: absorbing, do not stack the two.  Our answers to other players' offers and
+counter-offers (``search.counter_margin``) are not priced.  Off by default (``OFFER_COST = OFFER_LEAK = 0``): the
+search is then exactly the old one, the model keeps no run and the default bot never imports this module.
 
 Tunables register through :func:`register_tunables` (one import line at the end of catanbot/tuning.py).
 """
@@ -107,6 +117,8 @@ W_PREMIUM = 1.0          # acq_floor: premium per unit of the partner's win-prob
 FLOOR_WINDOW = 3         # acq_floor: proposals checked beyond the node's proposal slots (the rest are not tried)
 OFFER_COST = 0.0         # offer cost: win probability charged per player-trade proposal we make (0 = off) ...
 OFFER_LEAK = 0.0         # ... plus this per unit of offer_reveal (cards asked for, +1 if it completes a build; 0 = off)
+OFFER_REPEAT = 0.0       # ... times (1 + this) per offer of ours in a row that nobody took (0 = no escalation)
+OFFER_RUN_CAP = 40.0     # the escalation's exponent is capped here (no overflow; the price is prohibitive long before)
 
 
 
@@ -541,11 +553,16 @@ def offer_reveal(state: GameState, i: int, give: Sequence[int], get: Sequence[in
     return n
 
 
-def offer_cost(state: GameState, i: int, give: Sequence[int], get: Sequence[int]) -> float:
-    """``OFFER_COST + OFFER_LEAK x offer_reveal`` (win probability) of seat ``i`` proposing ``give`` for ``get``."""
+def offer_cost(state: GameState, i: int, give: Sequence[int], get: Sequence[int], run: float = 0.0) -> float:
+    """``(OFFER_COST + OFFER_LEAK x offer_reveal) x (1 + OFFER_REPEAT) ** run`` (win probability) of seat ``i``
+    proposing ``give`` for ``get``, ``run`` = its offers in a row that nobody took (``OpponentModel.offer_run``).
+    The escalation is what makes "they never accept" stop the offers whatever P(accept) the model still predicts,
+    and it is not absorbing: a valuable enough offer still goes out, and an acceptance resets the run."""
     c = float(OFFER_COST)
     if OFFER_LEAK:
         c += float(OFFER_LEAK) * offer_reveal(state, i, give, get)
+    if OFFER_REPEAT and run > 0.0:
+        c *= (1.0 + float(OFFER_REPEAT)) ** min(float(run), OFFER_RUN_CAP)
     return c
 
 
@@ -777,10 +794,15 @@ def register_tunables(registry: Dict[str, object]) -> None:
             ("OFFER_COST", OFFER_COST, [0.002, 0.005, 0.01],
              "offer cost: win probability charged per player-trade proposal we make; with a cost on, a proposal is "
              "valued min(expectation, not offering + P(accept) x (accepted - rejected branch)) - cost, so it is made "
-             "only when its own expected gain beats its cost (0 = off, with OFFER_LEAK 0: the old search)"),
+             "only when its own expected gain beats its cost, and its rejected outcome no longer ranks it in the "
+             "beam (0 = off, with OFFER_LEAK 0: the old search)"),
             ("OFFER_LEAK", OFFER_LEAK, [0.001, 0.003],
              "offer cost, information-leak part: win probability per card the proposal asks for, +1 unit when the "
-             "trade would complete a settlement or city (acquisition.offer_reveal); 0 = off")):
+             "trade would complete a settlement or city (acquisition.offer_reveal); 0 = off"),
+            ("OFFER_REPEAT", OFFER_REPEAT, [0.5, 1.0],
+             "offer cost, repetition part: the price is multiplied by (1 + this) per offer of ours in a row that "
+             "nobody took (reset by an acceptance; OpponentModel.offer_run); 0 = no escalation; only with "
+             "OFFER_COST or OFFER_LEAK > 0")):
         t = Tunable(name=f"acquisition.{attr}", module=__name__, attr=attr, default=default, kind="weight",
                     candidates=list(cands), requires_search=True, needs_python_evaluator=False, clear_caches=False,
                     parse=tuning._parse_float, description=desc + " (the search bot's proposals)")

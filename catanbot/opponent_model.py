@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import actions as A
@@ -43,6 +44,12 @@ SURPRISE_DECAY = 0.85
 CALIB_RATE = 0.0     # online recalibration rate of predict_accept from observed answers (0 = off)
 CALIB_PRIOR = 0.0    # starting shared intercept of the calibration (read only with CALIB_RATE > 0)
 REJECT_STREAK = 0    # fallback rule: after this many rejections in a row a seat's P(accept) is 0 until it accepts
+
+
+def _offer_cost_on() -> bool:
+    """``acquisition``'s offer cost is on (read through ``sys.modules``: the default bot never imports the module)."""
+    q = sys.modules.get("catanbot.acquisition")
+    return q is not None and q.offer_cost_on()
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +356,7 @@ class OpponentModel:
         self.profiles: Dict[str, OpponentProfile] = {}
         self.track_surprise = track_surprise
         self.calibrator = None       # acquisition.AcceptCalibrator, created only with CALIB_RATE / REJECT_STREAK on
+        self.offer_runs = None       # offer cost: per proposer, their offers in a row nobody took (only with the cost on)
         if state is not None:
             self.attach(state)
 
@@ -388,6 +396,8 @@ class OpponentModel:
             if offer is not None:
                 if (CALIB_RATE or REJECT_STREAK) and offer.origin is None:    # acq.calib: before note_accept
                     self._calibrate(state_before, player, offer, kind == A.ACCEPT_TRADE, belief, politics)
+                if offer.origin is None and _offer_cost_on():                 # offer cost (off by default)
+                    self._note_offer_answer(state_before, offer.proposer, kind == A.ACCEPT_TRADE)
                 prof.note_accept(offer.give, offer.get, kind == A.ACCEPT_TRADE)
                 if offer.origin is not None:          # the current player answered a counter-offer
                     prof.note_counter_answer(kind == A.ACCEPT_TRADE)
@@ -586,6 +596,24 @@ class OpponentModel:
                 pvp = state.public_vp(proposer) + expected_hidden_vp(state, proposer)
                 logit -= 0.6 * max(0.0, pvp - 5.0)
         return logit, can_pay
+
+    # --- offer cost (catanbot/acquisition.py OFFER_REPEAT; runs only with the offer cost on) ----------------------
+    def _note_offer_answer(self, state: GameState, proposer: int, accepted: bool) -> None:
+        """One answer to an original offer of ``proposer``: an acceptance resets their run of offers nobody took, a
+        rejection adds ``1 / (players - 1)`` (a whole offer once every other seat has rejected it)."""
+        if self.offer_runs is None:
+            self.offer_runs = {}
+        name = _pname(state, proposer)
+        if accepted:
+            self.offer_runs[name] = 0.0
+        else:
+            self.offer_runs[name] = self.offer_runs.get(name, 0.0) + 1.0 / max(1, state.num_players - 1)
+
+    def offer_run(self, state: GameState, i: int) -> float:
+        """Seat ``i``'s offers in a row that nobody took, in whole offers (0.0 when nothing is tracked)."""
+        if not self.offer_runs:
+            return 0.0
+        return self.offer_runs.get(_pname(state, i), 0.0)
 
     # --- acq.calib (catanbot/acquisition.py; runs only with CALIB_RATE / REJECT_STREAK on) -----------------------
     def _calibrator(self):
