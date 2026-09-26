@@ -4,6 +4,30 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 09:20 UTC - first queue results: player trading is worth about 24 points
+
+- **Trading headroom** (`t1_trades0_vrule@value`, 2,000 paired seeds, vs 3x
+  Catanatron ValueFunction whose seats answer our offers with a value rule:
+  accept if their own value rises):
+  - our bot wins **84.3 %** with its trade proposals on;
+  - switching proposals off costs **-24.1 +- 1.2 points** (p = 6e-83);
+  - without trading, our first extra settlement comes 3.6 rounds later and
+    our first city 1.5 rounds later.
+
+  So trading is the biggest lever measured so far.  Caveat: value-rule
+  responders accept any deal that helps them.  Humans are warier, so the
+  size of this edge against people is unknown; the direction is not in
+  doubt.
+- **Surplus dumping knockout** (`t2_dump0`): removing it changes -0.8 +- 0.8
+  points at 400 pairs.  KEEP (unproven either way; the default is unchanged).
+- **Common random numbers** (the same dice for both arms of a pair) cut
+  discordance from 0.33 to 0.20-0.22, so rows marked `crn: auto` now use
+  them.
+- **Both A/A checks PASS** (identical games).
+
+The trading step's rows (player-trade premium, wider offers, calibration)
+run in code epoch B1 from 09:10 UTC.
+
 ## 2026-09-26 09:00 UTC - trading (step 3) built; the hand-value idea failed its pre-registered check
 
 All switches are off by default, and the default bot's pinned game digests
