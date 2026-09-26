@@ -213,6 +213,9 @@ def make_bot(spec: str) -> Bot:
             counter_aggr=float(kw.get("counter_aggr", 1.0)),
             counter_margin=float(kw.get("counter_margin", 0.002)),
             respond_lookahead=int(float(kw.get("resp_la", 0))),
+            # robber area (catanbot/robber_eval.py, catanbot/knightkick.py): off unless robber_corr=1 / kick=0.95
+            robber_corr=int(float(kw.get("robber_corr", 0))),
+            kick=float(kw.get("kick", 0.0)),
         )
         ev = load_evaluator(kw.get("model") or kw.get("evaluator"),
                             float(kw["blend"]) if "blend" in kw else None)
