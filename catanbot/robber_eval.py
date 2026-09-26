@@ -330,6 +330,18 @@ class RobberContext:
             q = 0.0
         return 1.0 / 6.0 + (5.0 / 6.0) * q * self.knight_off
 
+    def exposure(self, state: GameState, i: int) -> Tuple[float, float]:
+        """``(P_hit_i, D_i)``: seat ``i``'s chance to be robbed within a round and what a hit denies (R1b's model;
+        also the shadow's knight-holder readout)."""
+        n = self.n
+        bp = self.blockable(state, self.pv_table(state))
+        thr = [threat(state, x) for x in range(n)]
+        p_safe = 1.0
+        for j in range(n):
+            if j != i:
+                p_safe *= 1.0 - self.p_rob(state, j) * self.p_target(state, j, bp, thr)[i]
+        return 1.0 - p_safe, self.hit_share * bp[i]
+
     def insured(self, state: GameState, i: int, in_kick_set: bool) -> float:
         """Weight in [0, 1] that seat ``i`` holds a knight to spare: known cards need a knight beyond the one it
         will spend kicking the current block; a dealt / unknown seat counts only through a posterior (and never
