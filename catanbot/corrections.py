@@ -128,9 +128,23 @@ class CorrectionHub:
             from .portvalue import PortFlowContext
             providers.append(PortFlowContext(root, me))
             owner = "flow"
-        hub = cls(base, providers)
+        chance: List[Any] = []
+        if getattr(cfg, "robber_corr", 0):          # robber area (docs/PRIORITY_PLAN.md step 5): R1a / R1b / R1c
+            from .robber_eval import RobberContext
+            providers.append(RobberContext.for_search(root, me, cfg))
+        if getattr(cfg, "kick_active", False):      # search.knight_kick: a leaf-chance provider (depth 1 only)
+            from .knightkick import KickChance
+            chance.append(KickChance.for_search(root, me, cfg))
+        hub = cls(base, providers, chance)
         hub.port_owner = owner
         return hub
+
+    def bind_model(self, model) -> None:
+        """Hand the searcher's opponent model (or None) to the providers that read it (``bind_model``)."""
+        for p in self.providers + self.chance:
+            hook = getattr(p, "bind_model", None)
+            if hook is not None:
+                hook(model)
 
     # --- corrections --------------------------------------------------------------------------
     def corrections(self, state: GameState) -> Optional[List[float]]:

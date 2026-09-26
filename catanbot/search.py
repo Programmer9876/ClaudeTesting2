@@ -121,6 +121,17 @@ class SearchConfig:
     counter_margin: float = 0.002   # a counter must beat the plain answers by this (win probability): it stands for
     #                                 what the model does not price (the proposer's patience, what the counter reveals)
     respond_lookahead: int = 0      # 1 = value accept / reject / counter after the rest of the proposer's turn
+    # Robber area (docs/PRIORITY_PLAN.md step 5).  Off by default: with robber_corr = 0 and kick = 0 no robber hub
+    # provider is built and no robber_eval / knightkick code runs.  Budgeted for depth 1; neither reaches C++.
+    robber_corr: int = 0            # 1 = robber leaf corrections (catanbot/robber_eval.py: R1a persistence, and R1b
+    #                                 insurance / R1c block duration through their robber_eval.* weights)
+    kick: float = 0.0               # > 0 = knight-kick leaf chance node (catanbot/knightkick.py), depth 1 only; the
+    #                                 alternative to robber_corr (the plan never stacks the two in one arm)
+
+    @property
+    def kick_active(self) -> bool:
+        """The knight-kick chance node applies: ``kick > 0`` at depth 1 (at depth >= 2 it is off)."""
+        return self.kick > 0.0 and self.depth == 1
 
 
 @dataclass
@@ -156,7 +167,7 @@ _ROLL_ORDER = sorted(B.ROLL_PROB.items(), key=lambda kv: -kv[1])
 # builds their providers).  paths is not one of them: paths = 1 alone keeps winpaths.PathsEvaluator, and it joins
 # the hub as a provider only next to one of these.  The ports flow provider is switched by a module weight instead
 # (ports.FLOW_KAPPA, catanbot/portvalue.py; see _hub_needed).
-_HUB_FIELDS = ("conv", "acq")
+_HUB_FIELDS = ("conv", "acq", "robber_corr", "kick_active")   # kick_active: a SearchConfig property (depth 1)
 
 
 def _hub_needed(cfg: "SearchConfig") -> bool:
@@ -207,7 +218,7 @@ def reduced_config(cfg: SearchConfig, depth: int, budget: int) -> SearchConfig:
                         acq_shapes=1 if (cfg.acq_shapes or cfg.acq_breadth) else 0, acq_floor=cfg.acq_floor,
                         counters=cfg.counters, counter_candidates=cfg.counter_candidates,
                         counter_aggr=cfg.counter_aggr, counter_margin=cfg.counter_margin,
-                        respond_lookahead=cfg.respond_lookahead)
+                        respond_lookahead=cfg.respond_lookahead, robber_corr=cfg.robber_corr, kick=cfg.kick)
 
 
 def lookahead_weight(cfg: SearchConfig) -> float:
@@ -321,6 +332,9 @@ class Searcher:
             elif cfg.paths:
                 from . import winpaths   # lazy: nothing of it is imported or run with paths = 0
                 self._paths = winpaths.PathsEvaluator.for_search(self.evaluator, state, me, cfg)
+            if self._corr is not None and cfg.robber_corr:
+                # robber_eval's insurance / retaliation target model reads the opponent model's robber habits
+                self._corr.bind_model(self.model if cfg.use_opponent_model else None)
         root = _Node(state, 1.0, [])
         finished: List[_Node] = []
         frontier = [root]
@@ -1373,8 +1387,18 @@ def search_determinized(state: GameState, me: int, evaluator, config: Optional[S
     agg: Dict[Action, List[float]] = {}
     expl: Dict[Action, str] = {}
     lines: Dict[Action, List[Action]] = {}
+    dealt = None
+    rc = config or SearchConfig()
+    if rc.robber_corr or rc.kick_active:
+        # the robber terms must not trust knights the samples dealt (robber_eval.knight_hint: no posterior -> q = 0)
+        from .robber_eval import knight_hint
+        dealt = [j for j, p in enumerate(state.players) if j != me and not p.dev_known]
     for s in states:
-        res = Searcher(evaluator, config, model, belief, politics).search(s, me, rng)
+        if dealt is not None:
+            with knight_hint(dealt=dealt):
+                res = Searcher(evaluator, config, model, belief, politics).search(s, me, rng)
+        else:
+            res = Searcher(evaluator, config, model, belief, politics).search(s, me, rng)
         for r in res:
             agg.setdefault(r.action, []).append(r.value)
             expl.setdefault(r.action, r.explanation)
