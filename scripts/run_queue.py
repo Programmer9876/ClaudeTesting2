@@ -16,7 +16,8 @@ What it does, one slice at a time:
    effect, headroom gates) and evaluates every look whose seed prefix is complete (scripts/seqtest.py);
    verdicts go to ``<dir>/ledger.jsonl`` and, as ``{kind: stop, source: queue}`` records, into the row's own
    JSONL, so campaign.py / ablate_catanatron.py never play a stopped candidate again;
-2. picks the row to run: area first (harness, trades, ports, robber, counting, politics, other), headroom rows
+2. picks the row to run: area first (harness, trades, diversification, ports, robber, counting, politics, other),
+   headroom rows
    first within an area, then plan priority, then plan order.  A higher-ranked newcomer (a plan edit, a fallback,
    a confirmation) preempts the running row at the slice boundary only when
    ``w_q C_r > (1 + h) w_r (C_q + S)`` with remaining costs C in CPU-hours (getrusage of the chunks);
@@ -68,7 +69,7 @@ AB = CAMP.AB
 SEQ = _load("_seqtest_for_queue", os.path.join(SCRIPTS, "seqtest.py"))
 MECH = _load("_mechanics_for_queue", os.path.join(SCRIPTS, "mechanics.py"))
 
-AREAS = ("harness", "trades", "ports", "robber", "counting", "politics", "other")
+AREAS = ("harness", "trades", "diversification", "ports", "robber", "counting", "politics", "other")
 AREA_RANK = {a: i for i, a in enumerate(AREAS)}
 POLARITIES = ("new", "knockout", "measure")
 KINDS = ("catanatron", "selfplay", "command", "pool", "human")
@@ -196,8 +197,120 @@ def load_plan(path: str) -> Plan:
         e["seeds"] = {"count": int(seeds.get("count", e.get("games") or 100)), "base": int(seeds.get("base", 0))}
         e["_order"] = i
         rows.append(e)
+    rows = expand_bundles(rows)
     settings = {k: raw.get(k) for k in ("crn_pilot", "headroom", "removed", "notes") if raw.get(k) is not None}
     return Plan(path, rows, settings, interps, hashlib.sha1(text.encode()).hexdigest()[:12])
+
+
+# ---------------------------------------------------------------------------
+# Bundle-first rows (docs/ABLATIONS.md "Regrouping": test linked pieces together, then knock out)
+# ---------------------------------------------------------------------------
+KNOCKOUT_BLOCK = 5 * SEED_BLOCK            # bundle knockouts play on fresh seed blocks: base + 5e6 + i x 1e6
+
+
+def _spec_with(base: str, keys: Dict[str, str]) -> str:
+    name, _, rest = base.partition(":")
+    kv: Dict[str, str] = {}
+    for part in rest.split(","):
+        if part.strip():
+            k, _, v = part.partition("=")
+            kv[k.strip()] = v.strip()
+    kv.update(keys)
+    return name + ":" + ",".join(f"{k}={v}" for k, v in kv.items())
+
+
+def _spec_keys(spec: str) -> Dict[str, str]:
+    _, _, rest = str(spec or "").partition(":")
+    return {k.strip(): v.strip() for k, _, v in (p.partition("=") for p in rest.split(",") if p.strip())}
+
+
+def _pieces(item: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """A bundle member: ``KEY=VALUE`` (a bot-spec key), ``NAME=VALUE`` (a dotted registry tunable) or the name of a
+    plan row that tests the piece alone (its tunable value, or the spec keys its candidate adds)."""
+    text = str(item).strip()
+    row = next((r for r in rows if r["name"] == text), None)
+    if row is not None:
+        if row.get("tunable") and len(row.get("values") or []) == 1:
+            v = row["values"][0]
+            return [{"kind": "tunable", "key": row["tunable"], "value": v, "label": row["tunable"].split(".")[-1],
+                     "text": f"{row['tunable']}={value_text(v)}", "row": text}]
+        add = {k: v for k, v in _spec_keys(row.get("cand_spec")).items()
+               if _spec_keys(row.get("def_spec")).get(k) != v}
+        if not add:
+            raise PlanError(f"plan error: bundle member row {text!r} is neither one tunable value nor spec keys")
+        return [{"kind": "spec", "key": k, "value": v, "label": k, "text": f"{k}={v}", "row": text}
+                for k, v in add.items()]
+    if "=" not in text:
+        raise PlanError(f"plan error: bundle member {text!r} is not KEY=VALUE nor a row name")
+    k, _, v = (x.strip() for x in text.partition("="))
+    if "." in k:
+        try:
+            val = json.loads(v)
+        except ValueError:
+            val = v
+        return [{"kind": "tunable", "key": k, "value": val, "label": k.split(".")[-1], "text": text}]
+    return [{"kind": "spec", "key": k, "value": v, "label": k, "text": text}]
+
+
+def _tunable_default(name: str) -> Any:
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from catanbot import tuning
+    t = tuning.find(name)
+    return t.default
+
+
+def expand_bundles(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """A row with ``bundle: [pieces]`` plays every piece on against the default (its candidate spec / overrides are
+    built from the pieces unless given).  With ``knockouts: true`` it gets one generated knockout row per piece,
+    ``<bundle>-no-<piece>``: the full bundle is the default arm, the bundle minus that piece the candidate
+    (knockout design: REMOVE = the piece hurts inside the bundle, KEEP(proven) = it carries gain), eligible only
+    after the bundle ADOPTs, on a fresh seed block.  Member rows named in ``bundle`` wait for the bundle and are
+    shelved with it (bundle first; no 2x2)."""
+    out: List[Dict[str, Any]] = []
+    for e in rows:
+        out.append(e)
+        if not e.get("bundle"):
+            continue
+        pieces = [p for item in e["bundle"] for p in _pieces(item, rows)]
+        if len(pieces) < 2:
+            raise PlanError(f"plan error: {e['name']}: a bundle needs at least two pieces")
+        base = e.get("base_spec") or DEFAULT_SEARCH_SPEC
+        spec_on = {p["key"]: p["value"] for p in pieces if p["kind"] == "spec"}
+        tun_on = {p["key"]: p["value"] for p in pieces if p["kind"] == "tunable"}
+        if not e.get("cand_spec") and not e.get("tunable"):
+            e["cand_spec"] = _spec_with(base, spec_on)
+            e["def_spec"] = base
+            if tun_on:
+                e["cand_set"] = dict(e.get("cand_set") or {}, **tun_on)
+        e["_members"] = sorted({p["row"] for p in pieces if p.get("row")})
+        e["_pieces"] = [p["text"] for p in pieces]
+        if not e.get("knockouts"):
+            continue
+        for i, p in enumerate(pieces):
+            k = {kk: copy.deepcopy(vv) for kk, vv in e.items()
+                 if kk not in ("bundle", "knockouts", "promise_pp", "cand_set", "set", "bundle_of", "notes", "_members",
+                               "_pieces", "mechanism", "d_prior")}
+            k["name"] = f"{e['name']}-no-{p['label']}"
+            k["polarity"] = "knockout"
+            k["design"] = "knockout"
+            keep = {kk: vv for kk, vv in spec_on.items() if not (p["kind"] == "spec" and kk == p["key"])}
+            k["def_spec"] = _spec_with(base, spec_on)
+            k["cand_spec"] = _spec_with(base, keep)
+            common = dict(e.get("set") or {}, **tun_on)
+            if common:
+                k["set"] = common
+            if p["kind"] == "tunable":
+                k["cand_set"] = {p["key"]: _tunable_default(p["key"])}
+            k["after"] = {"row": e["name"], "verdicts": ["ADOPT"]}
+            k["seeds"] = {"count": e["seeds"]["count"], "base": e["seeds"]["base"] + KNOCKOUT_BLOCK + i * SEED_BLOCK}
+            k["_order"] = e["_order"] + 0.001 * (i + 1)
+            k["_knockout_of"] = e["name"]
+            k["notes"] = (f"bundle knockout (generated): {e['name']} without {p['text']}; the default arm is the full "
+                          f"bundle. REMOVE = the piece hurts inside the bundle; KEEP(proven) = it carries the gain. "
+                          f"Eligible only after the bundle ADOPTs.")
+            out.append(k)
+    return out
 
 
 def row_names(e: Dict[str, Any]) -> List[str]:
@@ -818,7 +931,7 @@ class RowState:
         return self.status in ("ELIGIBLE", "RUNNING")
 
     def sort_key(self) -> Tuple:
-        return (AREA_RANK.get(self.area, 6), 0 if self.e.get("headroom") else 1, self.e["priority"], self.e["_order"])
+        return (AREA_RANK.get(self.area, len(AREAS) - 1), 0 if self.e.get("headroom") else 1, self.e["priority"], self.e["_order"])
 
 
 def looks_for(e: Dict[str, Any], design: str, n_max: int) -> List[int]:
@@ -1112,6 +1225,18 @@ class Queue:
     def _gates(self, rs: RowState) -> Optional[Tuple[str, str]]:
         """``(status, reason)`` when the row may not run now (WAITING / BLOCKED / NOT TRIGGERED), else None."""
         e = rs.e
+        # a member of an enabled bundle: bundle first; shelved with it, superseded by its knockouts after an ADOPT
+        for b in self.plan.rows:
+            if b["enabled"] and e["name"] in (b.get("_members") or []):
+                bs = self.rows.get(b["name"])
+                if bs is None or not bs.final:
+                    return "WAITING", f"bundle first: {b['name']}"
+                if any((c.verdict or {}).get("verdict") == "ADOPT" for c in bs.cands):
+                    self._final_all(rs, "NOT TRIGGERED", f"superseded by the knockouts of bundle {b['name']}",
+                                    persist=False)
+                    return "NOT TRIGGERED", f"superseded by the knockouts of bundle {b['name']}"
+                self._final_all(rs, "SHELVE", f"with bundle {b['name']}", label="SHELVE(with bundle)", persist=False)
+                return "SHELVED", f"shelved with bundle {b['name']}"
         # after: other rows' verdicts
         afters = e.get("after") or []
         if isinstance(afters, dict):
@@ -1686,7 +1811,7 @@ class Queue:
     def weight(self, rs: RowState) -> float:
         area_rows = [r for r in self.rows.values() if r.area == rs.area]
         p_min = min(float(r.e["priority"]) for r in area_rows) if area_rows else float(rs.e["priority"])
-        w = 4.0 ** (-AREA_RANK.get(rs.area, 6)) * 2.0 ** (-(float(rs.e["priority"]) - p_min) / 10.0)
+        w = 4.0 ** (-AREA_RANK.get(rs.area, len(AREAS) - 1)) * 2.0 ** (-(float(rs.e["priority"]) - p_min) / 10.0)
         return w * float(rs.e.get("weight") or 1.0)
 
     def order(self) -> List[RowState]:
@@ -1696,7 +1821,7 @@ class Queue:
                 p = 0.5
                 if r.e.get("polarity") == "new" and r.intake.power is not None:
                     p = r.intake.power
-                return (AREA_RANK.get(r.area, 6), -(self.weight(r) * p / max(r.cost_h, 1e-3)), r.e["_order"])
+                return (AREA_RANK.get(r.area, len(AREAS) - 1), -(self.weight(r) * p / max(r.cost_h, 1e-3)), r.e["_order"])
             return sorted(rows, key=idx_key)
         return self._ordered(rows)
 
@@ -2023,6 +2148,11 @@ class Queue:
             if lab == "INCONCLUSIVE":
                 return f"INCONCLUSIVE{tail}: no more games, default unchanged, deferred to human testing"
             return f"SIGNIFICANT{tail}: may continue to factorial / joint tuning"
+        kos = [r for r in self.rows.values() if r.e.get("_knockout_of") == rs.name]
+        if rs.e.get("bundle") and verdict in ("SHELVE", "REJECT", "NOOP"):
+            return f"on ice with its pieces ({', '.join(rs.e.get('_pieces') or [])}): bundle first, no 2x2"
+        if verdict == "ADOPT" and kos:
+            return "knockouts now eligible: " + ", ".join(k.name for k in kos) + "; then the league gate"
         if verdict == "ADOPT":
             gate = "league gate (--formats 4p2v2,3p1v2; power 0.38 at a 0.53 share, 0.86 at 0.55; ~4 h)"
             if area == "counting":
@@ -2204,7 +2334,7 @@ class Queue:
         shown = os.path.relpath(self.plan.path, ROOT) if os.path.abspath(self.plan.path).startswith(ROOT) \
             else self.plan.path
         L = [f"Queue plan {shown} ({self.plan.sha}): {len(self.plan.rows)} rows; order = area (harness, "
-             "trades, ports, robber, counting, politics, other), headroom first, priority, plan order.",
+             "trades, diversification, ports, robber, counting, politics, other), headroom first, priority, plan order.",
              "CPU-s per game and arm from the design's priors (value 1.77, value+pyeval 5.5, trades 3.0, vf 1.15, "
              "vf+pyeval 3.3, alphabeta 23, counted 7.2 / 3.9, depth 2 x2.4, self-play 10.8 per game); default arms "
              "shared within a default class and epoch.  'null' = expected pairs when the candidate has no effect "

@@ -117,16 +117,26 @@ def test_every_current_plan_row_gets_area_polarity_tier(tmp_path):
         assert q.rows[n].design == "politics" and q.plan.row(n)["tier"] == "politics"
     assert RQ.looks_for(q.plan.row("counters_selfplay"), "politics", 1200) == [1200]
     op = q.plan.row("t1_openings@value")
-    assert op["area"] == "ports" and op["values"] == ["pips_diversity", "standin_book", "setup_pick"]
+    assert op["area"] == "diversification" and op["values"] == ["pips_diversity", "standin_book", "setup_pick"]
+    for n in ("t1_openings@vf", "demand_flat_pyeval@vf", "demand_mild_pyeval@vf", "expansion_reach_credit@value",
+              "ports_conversion_cost@value", "div_lr_bundle", "t3_openings@alphabeta"):
+        assert q.plan.row(n)["area"] == "diversification", n
+    assert all(r["area"] != "ports" or r["name"].startswith(("ports_", "t3_")) for r in q.plan.rows if r["enabled"])
+    # disabled bundles with their generated knockouts
+    b = q.plan.row("div_lr_bundle")
+    assert b["_pieces"] == ["conv=1", "paths=1"] and b["_members"] == ["ports_conversion_cost@value"]
+    assert {r["name"] for r in q.plan.rows if r.get("_knockout_of") == "robber_la_bundle"} == \
+        {"robber_la_bundle-no-robber_corr", "robber_la_bundle-no-paths"}
+    assert not any(r["enabled"] for r in q.plan.rows if "bundle" in r["name"] and r["name"] != "acq_breadth_bundle")
     assert q.plan.row("demand_flat_pyeval@vf")["values"] == [[1, 1, 1, 1, 1]]
     child = q.plan.row("demand_mild_pyeval@vf")
     assert child["parent"] == "demand_flat_pyeval@vf" and child["fallback"] == "milder"
     assert q.plan.row("expansion_reach_credit@value")["enabled"] is False
-    assert q.plan.row("expansion_reach_credit@value")["area"] == "ports"
     # area order: the ports rows run before every robber row, harness rows first
     order = [rs.name for rs in q.order()]
     assert order[0] == "t1_baseline_aa@value"
     assert order.index("t1_trades0_vrule@value") < order.index("t2_dump0@value") < order.index("t1_openings@value")
+    assert RQ.AREAS.index("diversification") == RQ.AREAS.index("trades") + 1 < RQ.AREAS.index("ports")
     assert order.index("demand_flat_pyeval@vf") < order.index("shadow_robber") < order.index("t1_depth2@value")
 
 
@@ -961,8 +971,9 @@ def test_queue_end_to_end_fake_games(tmp_path):
 
 
 def test_cv_rows_use_the_pool_and_pool_mismatch_fails_row(tmp_path):
+    # the pool row is disabled: its games are a ledger record here (a real pool would play 8,000 games)
     pool = {"name": "pool", "kind": "pool", "area": "harness", "priority": 9, "interpreter": "py321", "opponent": "vf",
-            "cand_spec": SPEC, "def_spec": SPEC, "seeds": {"count": 8000, "base": 10 ** 7}}
+            "cand_spec": SPEC, "def_spec": SPEC, "seeds": {"count": 8000, "base": 10 ** 7}, "enabled": False}
     cvrow = _row("cv", estimator="cv", seeds={"count": 400, "base": 0}, d_prior=0.4,
                  extra_args=["--fake-games", "0.2", "--fake-discordance", "0.3"])
     q = _q(tmp_path, [cvrow, pool], no_intake=True, slice_minutes=5)
@@ -996,3 +1007,43 @@ def test_default_only_flag_plays_no_candidate_games(tmp_path):
     games = [r for r in AB.read_jsonl(str(out))[0] if r.get("kind") == "game"]
     assert len(games) == 12 and all(g["arm"] == "def" for g in games)
     assert "0 seed(s) still need games" in proc.stdout
+
+
+def test_bundle_first_knockouts_and_members(tmp_path):
+    member = _row("piece_alone", tunable="danger.BLOCK_NEED", values=[0], priority=1)
+    bundle = _row("bund", tunable=None, values=None, priority=2, bundle=["piece_alone", "expand=4",
+                                                                      "danger.TURNS_HALF=2"], knockouts=True)
+    q = _q(tmp_path, [member, bundle], no_intake=True)
+    q.refresh()
+    b = q.plan.row("bund")
+    assert b["cand_spec"] == SPEC.replace("expand=8", "expand=4") and b["def_spec"] == SPEC
+    assert b["cand_set"] == {"danger.BLOCK_NEED": 0, "danger.TURNS_HALF": 2}
+    kos = {r["name"]: r for r in q.plan.rows if r.get("_knockout_of") == "bund"}
+    assert set(kos) == {"bund-no-BLOCK_NEED", "bund-no-expand", "bund-no-TURNS_HALF"}
+    ke = kos["bund-no-expand"]
+    assert ke["def_spec"] == b["cand_spec"] and ke["cand_spec"] == SPEC and ke["polarity"] == "knockout"
+    assert ke["set"] == {"danger.BLOCK_NEED": 0, "danger.TURNS_HALF": 2}
+    kt = kos["bund-no-TURNS_HALF"]
+    assert kt["cand_set"] == {"danger.TURNS_HALF": 3.0}                 # back to the registry default
+    assert len({r["seeds"]["base"] for r in kos.values()}) == 3 and min(r["seeds"]["base"] for r in kos.values()) \
+        == 5 * 10 ** 6
+    assert q.rows["piece_alone"].status == "WAITING" and "bundle first" in q.rows["piece_alone"].reason
+    assert all(q.rows[n].status == "WAITING" for n in kos)
+    assert [r.name for r in q.order()] == ["bund"]
+    # the bundle is unclear at the cap: its pieces are shelved with it, no knockouts
+    _verdict(q, "bund", "cand", "SHELVE", label="SHELVE(too small to prove; cap)", reason="too small to prove; cap")
+    q.refresh()
+    assert q.rows["piece_alone"].status == "SHELVED" and "with bundle" in q.rows["piece_alone"].reason
+    assert all(q.rows[n].status == "NOT TRIGGERED" for n in kos)
+    assert "on ice with its pieces" in q.report_markdown(when="x")
+    # the bundle is clearly good: knock out one piece at a time; the lone-piece row is superseded
+    shutil.rmtree(tmp_path / "run")
+    q = _q(tmp_path, [member, bundle], no_intake=True)
+    _verdict(q, "bund", "cand", "ADOPT", delta=0.05, se=0.01, p=1e-4)
+    q.refresh()
+    assert all(q.rows[n].status == "ELIGIBLE" for n in kos)
+    assert q.rows["piece_alone"].status == "NOT TRIGGERED"
+    assert "knockouts now eligible" in q.report_markdown(when="x")
+    cmd, _, _, _ = q.chunk_command(q.rows["bund-no-expand"], 5)
+    assert cmd[cmd.index("--def-spec") + 1] == b["cand_spec"] and cmd[cmd.index("--cand-spec") + 1] == SPEC
+    assert "--set" in cmd and cmd[cmd.index("--seed-base") + 1] == str(6 * 10 ** 6)

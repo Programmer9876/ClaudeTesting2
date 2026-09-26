@@ -4,6 +4,54 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 06:30 UTC - budgeted test queue built (step 1 of docs/PRIORITY_PLAN.md)
+
+`scripts/run_queue.py` runs the user's testing policy (docs/QUEUE.md).
+- **Verdict engine** (`scripts/seqtest.py`): sequential verdicts at 5 looks:
+  - ADOPT (then the league gate);
+  - REJECT (clearly bad, or clearly too small);
+  - SHELVE (unclear at the cap);
+  - for knockouts, REMOVE or KEEP;
+  - NOOP when the feature never fired.
+- **Scheduler:** in area order (trading > diversification > ports > robber
+  > card counting > politics > other).  A higher row preempts the running
+  one only when that is worth the switching cost.  Costs are counted in CPU
+  seconds.
+- **Fallbacks and bundles:** fallback rows open when their parent is
+  shelved or rejected.  Bundle rows are tested first, and their knockouts
+  open only after an ADOPT.
+- **Snapshots:** every row is pinned to a frozen copy of the code (an
+  "epoch").
+- **Measurements:** per-arm behaviour metrics (`scripts/mechanics.py`), and
+  a zero-game decision comparison (`scripts/decision_shadow.py`) that gates
+  rows unlikely to change any decision.
+
+Error rates verified by simulation:
+
+| design | case | outcome |
+|---|---|---|
+| screen | null | false ADOPT 2.1 %, about 980 of 2,000 pairs used |
+| screen | +4 points | ADOPT about 73 % |
+| knockout | null | false REMOVE 2.1 % |
+| control-variate estimator | +3 points | power 0.56 -> 0.74 |
+
+The behaviour metrics reproduce the known gaps on 400 proof games:
+
+| | ours | Catanatron's |
+|---|---|---|
+| resource types | 3.85 | 4.67 |
+| share settling before the first city | 0.36 | 0.63 |
+| 4:1 share of bank trades | 0.76 | 0.54 |
+| port settlements | 0.59 | 0.71 |
+| income under the robber | 0.06 | 0.09 |
+
+155 tests pass on both Python environments.  About 31.7 CPU-hours (about
+10.5 h on 3 cores) if every effect is zero.
+
+It starts once the corrections hub and the conversion-cost term have landed
+and passed their "default bot unchanged" tests.  Epoch A is copied from the
+repository at the first game, so it must not include half-finished code.
+
 ## 2026-09-26 05:00 UTC - why our bot goes city-first (and the 4:1 habit)
 
 The user asked why the bot builds cities first, while strong humans expand

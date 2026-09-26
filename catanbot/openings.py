@@ -48,9 +48,10 @@ heuristic bot's temperature means the same thing as with the current scorer):
   opening, so a ``denial`` result can be read against it.
 * ``conversion`` - ``placement.setup_pick`` minus ``CONV_WEIGHT`` x the change of our conversion cost
   (catanbot/conversion.py: missing resources bought at 4:1 / 3:1 / 2:1 over the rolls left, in static
-  points) if we settle the spot, the spot's port included; road = ``setup_road_pick``'s per-edge score
-  with the same term on the spot two edges away.  The setup counterpart of ``search.conv`` (the hub
-  passes setup leaves through).  ``conversion:W`` sets the weight.
+  points) if we settle the spot, the spot's port included; with ``conversion.PORT_LEDGER`` (default) the
+  spot score's own port bonus is cancelled, so a port spot gains exactly its trade savings; road =
+  ``setup_road_pick``'s per-edge score with the same terms on the spot two edges away.  The setup
+  counterpart of ``search.conv`` (the hub passes setup leaves through).  ``conversion:W`` sets the weight.
 
 The tunable is registered by ``catanbot/tuning.py`` (``register_tunables``): a weight-kind
 tunable whose single target ``openings.CONTROL.policy`` is a property - reading it returns the
@@ -448,16 +449,37 @@ def conversion_points(state: GameState, player: int, vertices: Sequence[int]) ->
     return {v: scale * (C.cost_per_roll(state, sorted(s0 + [v]), cs, shares) - base) for v in vertices}
 
 
+def spot_port_bonus(state: GameState, player: int, v: int, own_prod: Optional[Sequence[float]] = None) -> float:
+    """The port part of ``placement.score_settlement_spot`` for ``v`` (0 without a port): what the conversion
+    policy cancels under ``conversion.PORT_LEDGER``, so that a port spot gains exactly its trade savings."""
+    port = state.ports.get(v)
+    if port is None:
+        return 0.0
+    if port == B.PORT_GENERIC:
+        return 1.0
+    own = P.player_production(state, player, ignore_robber=True) if own_prod is None else own_prod
+    return 0.5 + 6.0 * (own[port] + P.vertex_production(state, v, ignore_robber=True)[port])
+
+
+def _ledger() -> bool:
+    from . import conversion as C
+    return bool(C.PORT_LEDGER)
+
+
 def conversion_pick(state: GameState, player: int, k: int = 5, weight: Optional[float] = None) -> List[Tuple[int, float]]:
     w = CONV_WEIGHT if weight is None else weight
     base = _SETUP_PICK(state, player, k=B.NUM_VERTICES)
     pts = conversion_points(state, player, [v for v, _ in base])
-    return _ranked([(v, s - w * pts[v]) for v, s in base], k)
+    own = P.player_production(state, player, ignore_robber=True)
+    led = _ledger()
+    return _ranked([(v, s - w * pts[v] - (spot_port_bonus(state, player, v, own) if led else 0.0))
+                    for v, s in base], k)
 
 
 def conversion_road_scores(state: GameState, player: int, settlement: int,
                            weight: Optional[float] = None) -> Dict[int, float]:
-    """``current_road_scores`` with each spot two edges away scored ``spot score - w x conversion points``."""
+    """``current_road_scores`` with each spot two edges away scored ``spot score - w x conversion points`` (minus
+    the spot's port bonus under ``conversion.PORT_LEDGER``)."""
     w = CONV_WEIGHT if weight is None else weight
     settlement = _settlement_of(state, player, settlement)
     occ = state.occupied_vertices()
@@ -482,12 +504,14 @@ def conversion_road_scores(state: GameState, player: int, settlement: int,
             if P.is_free_vertex(occ, x) and x != settlement:
                 spots[e].append(x)
     pts = conversion_points(state, player, sorted({x for xs in spots.values() for x in xs}))
+    led = _ledger()
     out: Dict[int, float] = {}
     for e, xs in spots.items():
         s = 0.0
         for x in xs:
             s = max(s, P.score_settlement_spot(state, player, x, occ=occ, own_prod=own_prod, scarcity=scarcity,
-                                               block_ctx=bctx) - w * pts[x])
+                                               block_ctx=bctx) - w * pts[x]
+                    - (spot_port_bonus(state, player, x, own_prod) if led else 0.0))
         out[e] = s
     return out
 

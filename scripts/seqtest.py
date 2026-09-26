@@ -1012,7 +1012,7 @@ def decide_cv(st: "LookStats", x: Sequence[float], d: Sequence[float], pool_mean
         return base
     dz = design_of(design)
     r = cv_stat(x, d, pool_mean, pool_m)
-    se = math.sqrt(max(r["var"], 1e-12))
+    se = max(math.sqrt(max(r["var"], 0.0)), 1.0 / max(len(x), 1))      # the paired engine's se floor
     theta = r["theta"]
     z = theta / se
     ts, bounds = cv_design_boundaries(d_prior, pool_mean, n_max, pool_m, dz.looks)

@@ -493,8 +493,12 @@ def test_decide_cv_uses_pool_and_predeclared_boundaries():
     # FAILED / NOOP pass through from the paired engine
     bad = _look(n, plus=10, minus=10, codes=("a", "b"))
     assert SEQ.decide_cv(bad, x, d, 0.30, 8000, "screen", 2, 2000, 0.40).label == "FAILED(code-mixed)"
-    # no effect: continue at look 1
-    x0 = [0.0] * 400
-    d0 = [1.0 if i % 3 == 0 else 0.0 for i in range(400)]
-    st0 = _look(400, known=400, diverged=40)
-    assert SEQ.decide_cv(st0, x0, d0, 0.33, 8000, "screen", 1, 2000, 0.40).status == "continue"
+    # no effect (discordant share 0.4, symmetric): continue at look 1
+    d0, x0 = [], []
+    for _ in range(400):
+        di = 1.0 if rng.random() < 0.3 else 0.0
+        u = rng.random()
+        d0.append(di)
+        x0.append((-1.0 if u < 0.4 / 0.6 else 0.0) if di else (1.0 if u < 0.4 / 1.4 else 0.0))
+    st0 = _look(400, plus=sum(1 for v in x0 if v > 0), minus=sum(1 for v in x0 if v < 0))
+    assert SEQ.decide_cv(st0, x0, d0, 0.30, 8000, "screen", 1, 2000, 0.40).status == "continue"

@@ -704,7 +704,7 @@ In short:
   - politics: a fixed-N screen, then SIGNIFICANT / INCONCLUSIVE by Holm within the row's tier;
   - confirm.
 - A null row stops at about half its cap. False ADOPT is about 2% per row.
-- Rows are ordered by area (harness, trades, ports, robber, counting, politics, other), then priority. Preemption is decided in CPU seconds (getrusage).
+- Rows are ordered by area (harness, trades, diversification, ports, robber, counting, politics, other), then priority. Preemption is decided in CPU seconds (getrusage).
 - Chunks run from pinned code snapshots, one epoch per area batch.
 - A shelved idea unlocks its declared fallback row.
 

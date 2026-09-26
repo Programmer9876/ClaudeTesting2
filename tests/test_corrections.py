@@ -215,11 +215,11 @@ def test_paths_alone_keeps_the_paths_evaluator():
 
 
 def test_zero_weight_hub_search_is_an_exact_aa():
-    """conv=1 with KAPPA_CONV = 0: the hub is built but every correction is zero, so every search result is the
-    default's bit for bit (fast path; the conversion context adds no prior hook)."""
+    """conv=1 with KAPPA_CONV = 0 and no port ledger: the hub is built but every correction is zero, so every
+    search result is the default's bit for bit (fast path; the conversion context adds no prior hook)."""
     pos = positions(k=12)
     base = search_hash(SearchConfig(depth=1, beam=4, expand=8), pos)
-    with tuning.overridden({"conversion.KAPPA_CONV": 0.0}):
+    with tuning.overridden({"conversion.KAPPA_CONV": 0.0, "conversion.PORT_LEDGER": 0}):
         assert search_hash(SearchConfig(depth=1, beam=4, expand=8, conv=1), pos) == base
 
 
@@ -359,7 +359,7 @@ def test_leaf_chance_in_the_search_depth_one_only(monkeypatch):
         return hub
 
     monkeypatch.setattr(H.CorrectionHub, "for_search", classmethod(with_chance))
-    with tuning.overridden({"conversion.KAPPA_CONV": 0.0}):
+    with tuning.overridden({"conversion.KAPPA_CONV": 0.0, "conversion.PORT_LEDGER": 0}):
         sr = Searcher(HeuristicEvaluator(), SearchConfig(depth=1, beam=4, expand=8, conv=1))
         res = sr.search(s, me, random.Random(1))
         assert res and chance.calls > 0 and sr._corr.stats["chance_leaves"] > 0

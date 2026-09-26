@@ -18,7 +18,11 @@ and returns what the user's areas are supposed to change:
 * bank trades: counts at 4:1 / 3:1 / 2:1, ``share_4to1``, cards given;
 * player trades (3.3 domestic trading): offers made / received, trades done, cards gained;
 * robber: moves by us, moves onto the VP leader's hexes (``robber_on_leader``) and the leader's pips blocked,
-  rolls with the robber on our hexes, production cards we lost to the robber (``cards_lost_block``);
+  rolls with the robber on our hexes, production cards we lost to the robber (``cards_lost_block``) and our
+  income share under the robber (``robber_income_share`` = cards lost to blocks / (cards produced + lost));
+* expansion / roads: roads and settlements built after setup, ``distinct_produced`` (resource types our rolls
+  paid during the game), Longest Road held at the end;
+* knights: played, still held at the end (``knights_held_end``), Largest Army held at the end;
 * steals, discards, Monopoly haul, Year of Plenty plays, dev cards bought / held for 10+ player-turns, knights;
 * titles at game end (Longest Road / Largest Army; from ``final`` when given).
 
@@ -61,7 +65,8 @@ HEX_NODES: Dict[Tuple[int, int, int], Tuple[int, ...]] = {
 MEDIAN_METRICS = ("first_settle_round", "first_city_round", "port_round")
 #: the expansion / diversity / port readout (the coordinator's list) shown first in reports
 KEY_METRICS = ("setup_distinct", "first_settle_round", "first_city_round", "settle_before_city", "port_settled",
-               "share_4to1")
+               "share_4to1", "roads_built", "longest_road", "knights_played", "knights_held_end", "largest_army",
+               "robber_income_share")
 
 
 class Board:
@@ -199,7 +204,9 @@ def game_mechanics(items: Sequence[Sequence[Any]], board: Dict[str, Any], our_co
         "bank_4to1", "bank_3to1", "bank_2to1", "bank_trades", "bank_cards_given", "offers_made", "offers_received",
         "trades_done", "trade_cards_gained", "robber_moves", "robber_on_leader", "robber_leader_pips",
         "robber_on_us_rolls", "cards_lost_block", "stolen_by_us", "stolen_from_us", "discarded",
-        "monopoly_plays", "monopoly_haul", "yop_plays", "dev_bought", "dev_held10", "knights_played")}
+        "monopoly_plays", "monopoly_haul", "yop_plays", "dev_bought", "dev_held10", "knights_played",
+        "roads_built", "settlements_built", "cards_produced")}
+    produced_types = set()
     my_rolls = 0
     first_settle = first_city = None      # (round, action index)
     port_round: Optional[int] = None
@@ -233,6 +240,9 @@ def game_mechanics(items: Sequence[Sequence[Any]], board: Dict[str, Any], our_co
                     for i, x in enumerate(vec):
                         if x:
                             tr.give(cc, i, x)
+                            if cc == me:
+                                m["cards_produced"] += x
+                                produced_types.add(i)
                 m["cards_lost_block"] += sum(blocked.get(me, [0] * 5))
         elif t == "BUILD_SETTLEMENT":
             node = int(v)
@@ -246,6 +256,8 @@ def game_mechanics(items: Sequence[Sequence[Any]], board: Dict[str, Any], our_co
                             tr.give(c, RI[r])
             else:
                 tr.pay(c, COST["settlement"])
+                if c == me:
+                    m["settlements_built"] += 1
                 if c == me and first_settle is None:
                     first_settle = (my_rolls, idx)
             if c == me and port_round is None and node in b.port_of:
@@ -261,6 +273,8 @@ def game_mechanics(items: Sequence[Sequence[Any]], board: Dict[str, Any], our_co
         elif t == "BUILD_ROAD":
             e = tuple(int(x) for x in v)
             tr.roads[c].append((e[0], e[1]))
+            if c == me and not tr.setup:
+                m["roads_built"] += 1
             if tr.setup:
                 pass
             elif tr.free_roads > 0 and tr.free_road_color == c:
@@ -396,6 +410,10 @@ def game_mechanics(items: Sequence[Sequence[Any]], board: Dict[str, Any], our_co
     m["port_kind"] = port_kind
     m["share_4to1"] = (m["bank_4to1"] / m["bank_trades"]) if m["bank_trades"] else None
     m["robber_leader_share"] = (m["robber_on_leader"] / m["robber_moves"]) if m["robber_moves"] else None
+    m["knights_held_end"] = sum(1 for cd, _ in devs if cd == "KNIGHT")
+    m["distinct_produced"] = len(produced_types)
+    lost = m["cards_lost_block"]
+    m["robber_income_share"] = (lost / (lost + m["cards_produced"])) if (lost + m["cards_produced"]) else None
     held_ages.extend(player_turns - t0 for _, t0 in devs)
     m["dev_held10"] = sum(1 for a in held_ages if a >= HELD_TURNS)
     m["rounds"] = my_rolls
@@ -576,8 +594,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"{br['games']} games from {len(paths)} file(s); replayed hands equal the logged final hands in "
           f"{br['hand_checks'][1]}/{br['hand_checks'][0]} seat-games")
     print(f"{'metric':24} {'ours':>10} {'opponents':>10}")
-    for k in list(KEY_METRICS) + ["pooled_share_4to1", "bank_trades", "robber_moves", "robber_leader_share",
-                                  "discarded", "stolen_by_us", "monopoly_haul", "dev_bought", "dev_held10"]:
+    for k in list(KEY_METRICS) + ["pooled_share_4to1", "distinct_produced", "settlements_built", "bank_trades",
+                                  "robber_moves", "robber_leader_share", "robber_on_us_rolls", "discarded",
+                                  "stolen_by_us", "monopoly_haul", "dev_bought", "dev_held10"]:
         a, o = br["ours"].get(k), br["opponents"].get(k)
 
         def f(x):

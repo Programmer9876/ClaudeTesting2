@@ -38,21 +38,24 @@ GOLDEN = [
      "robber_on_leader": 5, "robber_leader_pips": 79, "robber_on_us_rolls": 14, "cards_lost_block": 2,
      "stolen_by_us": 5, "stolen_from_us": 0, "discarded": 8, "monopoly_plays": 0, "monopoly_haul": 0, "yop_plays": 0,
      "dev_bought": 3, "dev_held10": 2, "knights_played": 0, "longest_road": 1, "largest_army": 0, "hand_check": True,
-     "rounds": 22},
+     "rounds": 22, "roads_built": 9, "settlements_built": 2, "cards_produced": 48, "distinct_produced": 5,
+     "knights_held_end": 0, "robber_income_share": 0.04},
     {"setup_distinct": 4, "setup_pips": {"WOOD": 5, "BRICK": 0, "SHEEP": 2, "WHEAT": 8, "ORE": 5},
      "first_settle_round": 15, "first_city_round": 3, "settle_before_city": 0, "port_settled": 0, "port_round": None,
      "port_kind": None, "bank_4to1": 8, "bank_3to1": 0, "bank_2to1": 0, "bank_cards_given": 32, "robber_moves": 9,
      "robber_on_leader": 8, "robber_leader_pips": 70, "robber_on_us_rolls": 4, "cards_lost_block": 0,
      "stolen_by_us": 9, "stolen_from_us": 2, "discarded": 13, "monopoly_plays": 0, "monopoly_haul": 0,
      "yop_plays": 0, "dev_bought": 5, "dev_held10": 1, "knights_played": 4, "longest_road": 1, "largest_army": 1,
-     "hand_check": True, "rounds": 17},
+     "hand_check": True, "rounds": 17, "roads_built": 5, "settlements_built": 2, "cards_produced": 70,
+     "distinct_produced": 4, "knights_held_end": 0, "robber_income_share": 0.0},
     {"setup_distinct": 4, "setup_pips": {"WOOD": 5, "BRICK": 3, "SHEEP": 0, "WHEAT": 5, "ORE": 8},
      "first_settle_round": 10, "first_city_round": 4, "settle_before_city": 0, "port_settled": 1, "port_round": 0,
      "port_kind": "3:1", "bank_4to1": 0, "bank_3to1": 7, "bank_2to1": 0, "bank_cards_given": 21, "robber_moves": 2,
      "robber_on_leader": 2, "robber_leader_pips": 22, "robber_on_us_rolls": 32, "cards_lost_block": 13,
      "stolen_by_us": 2, "stolen_from_us": 5, "discarded": 0, "monopoly_plays": 0, "monopoly_haul": 0, "yop_plays": 0,
      "dev_bought": 2, "dev_held10": 1, "knights_played": 0, "longest_road": 1, "largest_army": 0, "hand_check": True,
-     "rounds": 16},
+     "rounds": 16, "roads_built": 6, "settlements_built": 1, "cards_produced": 50, "distinct_produced": 4,
+     "knights_held_end": 1, "robber_income_share": 13 / 63},
 ]
 
 
@@ -61,7 +64,8 @@ def test_mechanics_on_canned_proof_game():
     docs = list(M.iter_proof_games(T1[:1], 3))
     for doc, gold in zip(docs, GOLDEN):
         m = M.proof_game_metrics(doc)
-        assert {k: m[k] for k in gold} == gold
+        for k, v in gold.items():
+            assert (m[k] == pytest.approx(v)) if isinstance(v, float) else (m[k] == v), (k, m[k], v)
         # every seat's replayed hand equals the logged final hand
         for s in range(4):
             assert M.proof_game_metrics(doc, s)["hand_check"] is True
@@ -83,6 +87,11 @@ def test_mechanics_base_rates_t1_sample():
     assert ours["first_settle_round"]["median"] > opp["first_settle_round"]["median"]
     assert ours["first_city_round"]["median"] < opp["first_city_round"]["median"]
     assert ours["settle_before_city"]["mean"] < 0.45 < opp["settle_before_city"]["mean"]
+    # regrouping readouts: roads, Longest Road / Largest Army held, knights, income under the robber
+    assert ours["roads_built"]["mean"] < opp["roads_built"]["mean"]
+    assert ours["largest_army"]["mean"] > 0.5 and ours["knights_played"]["mean"] > ours["knights_held_end"]["mean"]
+    assert 0 < ours["robber_income_share"]["mean"] < opp["robber_income_share"]["mean"] < 0.2
+    assert 3.5 < ours["distinct_produced"]["mean"] < opp["distinct_produced"]["mean"]
 
 
 @pytest.mark.skipif(not R1, reason="proof archive not present")

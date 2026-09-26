@@ -59,7 +59,7 @@ EXPERIMENT_KEYS = {"name", "interpreter", "opponent", "tunable", "values", "flag
 QUEUE_KEYS = {"kind", "area", "polarity", "promise_pp", "mechanism", "tier", "design", "parent", "fallback", "on",
               "after", "route", "estimator", "crn", "weight", "exclusive", "cmd", "verdict_from", "est_cpu_h", "games",
               "players", "counters", "headroom", "d_prior", "confirms", "shadow_gate", "label", "bundle_of", "mech",
-              "info", "chunk_games", "noharm", "pool_m", "requires", "cwd"}
+              "info", "chunk_games", "noharm", "pool_m", "requires", "cwd", "bundle", "knockouts"}
 EXPERIMENT_KEYS = EXPERIMENT_KEYS | QUEUE_KEYS
 RUNNABLE_KINDS = (None, "catanatron")
 NAME_RE = re.compile(r"^[A-Za-z0-9_.@+=-]+$")
@@ -117,7 +117,8 @@ def load_plan(path: str, max_workers: int) -> Tuple[List[Dict[str, Any]], Dict[s
         bad = set(e) - EXPERIMENT_KEYS
         if bad:
             raise SystemExit(f"plan error: experiment {e.get('name', i)}: unknown field(s) {sorted(bad)}")
-        runnable = e.get("kind") in RUNNABLE_KINDS and e.get("route") != "human"
+        runnable = e.get("kind") in RUNNABLE_KINDS and e.get("route") != "human" \
+            and not (e.get("bundle") and not (e.get("cand_spec") or e.get("tunable")))   # queue-built bundle
         for k in (("name", "interpreter", "opponent") if runnable else ("name",)):
             if not e.get(k):
                 raise SystemExit(f"plan error: experiment {i}: '{k}' is required")
@@ -128,7 +129,8 @@ def load_plan(path: str, max_workers: int) -> Tuple[List[Dict[str, Any]], Dict[s
         names.add(e["name"])
         if not runnable:
             # a queue-only row (self-play / command / pool / human route): kept for the plan order, never run here
-            e["_skip"] = f"kind {e.get('kind') or 'catanatron'}" + (" (route human)" if e.get("route") == "human" else "")
+            e["_skip"] = f"kind {e.get('kind') or 'catanatron'}" + (" (route human)" if e.get("route") == "human" else
+                                                                    " (bundle)" if e.get("bundle") else "")
             seeds = e.get("seeds", 100)
             e["seeds"] = {"count": int(seeds.get("count", 100)), "base": int(seeds.get("base", 0))} \
                 if isinstance(seeds, dict) else {"count": int(seeds), "base": 0}

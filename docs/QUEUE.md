@@ -92,11 +92,12 @@ Flags:
 At null, a screen or knockout row falsely ADOPTs about 2.1% of the time and uses about 49% of its cap. The simulated OC grid is in seqtest.py (`POWER_TABLE`; `python3 scripts/seqtest.py --grid`).
 
 The mechanism readout (`--mech`, scripts/mechanics.py) is a secondary endpoint and never ADOPTs a row. Metrics:
-- **Expansion:** `setup_distinct`, `first_settle_round`, `first_city_round`, `settle_before_city`.
+- **Diversification / expansion:** `setup_distinct`, `distinct_produced`, `first_settle_round`, `first_city_round`, `settle_before_city`, `roads_built`, `settlements_built`, `longest_road` (held at the end).
 - **Ports and bank:** `port_settled`, `share_4to1`, bank trades.
-- **Robber, steals and cards:** robber on the leader, cards lost to blocks, steals, discards, Monopoly haul.
-- **Dev cards:** bought and held.
-- **Titles.**
+- **Robber, steals and cards:** robber on the leader, rolls with the robber on us, cards lost to blocks, `robber_income_share` (cards lost / (produced + lost)), steals, discards, Monopoly haul.
+- **Knights and dev cards:** `knights_played`, `knights_held_end`, `largest_army` (held at the end), dev cards bought and held.
+
+Turn numbers are our own turn count (the first turn after setup is 1), summarised per arm as medians. Everything else is a per-arm mean with a paired difference and its se.
 
 Base rates on the proof logs: `python3 scripts/mechanics.py --proof proof/T1/logs`.
 
@@ -129,7 +130,8 @@ Optional fields:
 | `parent`, `fallback` | a fallback row (next section) |
 | `confirms` | a confirmation row. It runs only for parent candidates that ADOPTed with a Holm p < 0.05, once the parent's tier is complete |
 | `shadow_gate` | `{row, key, classes, min_share}`: skip as NOOP(shadow) when the shadow changed fewer decisions |
-| `bundle_of` | a bundle row. Its member rows (too weak alone) run inside it |
+| `bundle`, `knockouts` | bundle-first testing of linked pieces (next section) |
+| `bundle_of` | a power bundle: member rows too weak alone (intake) run inside this row |
 | `estimator: cv`, `crn: dice / auto` | variance reducers. CV needs a pool with M >= 4 N_max on the same default arm. `auto` means `--crn dice` once the CRN pilot passes (discordance down >= 25%, crn A/A identical) |
 | `mechanism` | `{metric, direction}`: the readout the milder fallback's overshoot rule uses |
 | `exclusive`, `weight`, `est_cpu_h`, `requires` | load gate, preemption weight, a command's cost, why a disabled row waits |
@@ -164,10 +166,35 @@ A fallback row names `parent` and `fallback`. It plays on a fresh seed block (ba
 
 A child whose trigger did not fire shows NOT TRIGGERED. Gate outcomes are recomputed at every refresh, so a plan edit can reopen them. Verdicts from games are permanent: the first one per candidate wins.
 
+## Bundle first, then knock out (linked pieces)
+
+Pieces that act through the same thing are tested together (docs/ABLATIONS.md, "Regrouping"): diversification with the win-path Longest Road race (the same roads), and the robber with the Largest Army race (the same knights).
+
+A row with `"bundle": [...]` plays every piece on against the default. A piece is one of:
+- `KEY=VALUE`, a bot-spec key;
+- `NAME=VALUE`, a dotted registry tunable;
+- the name of a plan row that tests the piece alone.
+
+The queue builds the candidate spec and overrides from the pieces unless the row gives them.
+
+With `"knockouts": true`, the queue generates one knockout row per piece, `<bundle>-no-<piece>`:
+- the full bundle is the default arm, and the bundle minus the piece is the candidate;
+- the design is knockout: REMOVE means the piece hurts inside the bundle, KEEP(proven) means it carries the gain;
+- it runs on a fresh seed block (base + 5x10^6 + i x 10^6);
+- it becomes eligible only after the bundle ADOPTs.
+
+If the bundle does not ADOPT, the knockouts are NOT TRIGGERED and member rows are SHELVE(with bundle): both pieces go on ice, with no 2x2.
+
+After an ADOPT, member rows are superseded by the knockouts. The mechanism readout says what went wrong in a failed bundle:
+- roads built and Longest Road for diversification;
+- knights played vs held, Largest Army, and income under the robber for the robber.
+
+Plan rows: `div_lr_bundle` (`ports_conversion_cost@value` + `paths=1`) and `robber_la_bundle` (`robber_corr=1` + `paths=1`). Both are disabled until their pieces are built.
+
 ## Order and preemption
 
 Rows are ordered by:
-1. area (harness, trades, ports, robber, counting, politics, other: "the rest only if there is time");
+1. area (harness, trades, diversification, ports, robber, counting, politics, other: "the rest only if there is time");
 2. headroom rows first;
 3. `priority`;
 4. plan order.
@@ -202,7 +229,8 @@ Epochs:
 The enabled rows are the existing campaign rows, re-expressed:
 - **harness:** the two A/A rows, the 3-row real smoke on 3.2.1 vs vf, and the CRN dice pilot (off / dice / crn A/A).
 - **trades:** `t1_trades0_vrule` (headroom estimate) and the `t2_dump0` knockout.
-- **ports:** openings (pips_diversity, standin_book and the setup_pick control) vs value and vf, and flat resource demand, with the milder registry vector as its fallback (coordinator, 2026-09-26: the port gap is an expansion / diversity gap).
+- **diversification:** openings (pips_diversity, standin_book and the setup_pick control) vs value and vf, and flat resource demand, with the milder registry vector as its fallback. The port gap is an expansion / diversity gap. Disabled until built: `expansion_reach_credit`, `ports_conversion_cost` (conv=1) and the `div_lr_bundle`.
+- **ports (port access only):** the port gate cells, the best-cell row and spot_want, all disabled until built; SPOT_LEADER is deferred to human testing.
 - **robber:** a 40-game zero-game shadow that gates the prior-only rows, plus the knockouts and new-direction rows.
 - **politics:** four vrule rows and two 1,200-game self-play screens, all fixed-N, in one politics tier.
 - **other:** search vs heuristic (estimates), depth 2, the cheaper-search knockouts, and win-path rows gated by their own shadow.
