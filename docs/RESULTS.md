@@ -4,6 +4,14 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 12:20 UTC - check-in: trade premium floor shelved; the rejection-streak fallback also keeps offering
+
+- **Player-trade premium floor** (`acq_floor_selfplay`): -1.2 +- 1.6 points at 960 self-play pairs.  SHELVE;
+  the default is unchanged.  Its value-rule row vs Catanatron is still running.
+- **Rejection-streak fallback:** offers against bots that never accept fell only from 59.6 to 48.9 a game.
+  Like the calibration, it cannot fix offers that cost nothing in the search, so the proposal-cost idea in
+  the backlog is the likely fix.
+
 ## 2026-09-26 12:00 UTC - robber step 5 built (off by default); two gate readings amended before the queue shadow
 
 - **Built**, all off by default:

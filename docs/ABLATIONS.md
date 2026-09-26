@@ -729,6 +729,8 @@ They are all off by default outside the queue, and arm keys are unchanged when t
 | `acq_breadth_bundle` | trades | SHELVE | +0.2 +- 1.6 pp at 960 self-play pairs; default unchanged.  Its 3-player no-harm check was not triggered |
 | `acq_calib_native@value` | trades | behaviour gate **FAILED** | against bots that never accept, the calibrated bot still made 58.0 offers a game (default 59.6; pass line < 10).  Win rate -12.5 +- 5.3 pp at 40 pairs (smoke tier, outside every Holm family) |
 | `acq_calib` | trades | **stopped by hand** (09:22 UTC) | its gate failed, so the 1,200-game politics screen was switched off after about 1.6 CPU-h.  The simpler fallback (`acq_reject_streak_native@value`, then the human-testing list) runs next.  Why calibration does not cut offers against Catanatron's bots is not yet diagnosed |
+| `acq_reject_streak_native@value` | trades | ESTIMATE (behaviour check) | the rejection-streak fallback (stop offering to a seat after 3 rejections in a row) cut offers against never-accepting bots only from 59.6 to 48.9 a game, far above 10.  Win rate -10.0 +- 7.8 pp at 40 pairs (smoke).  Its human-testing row stays deferred.  This supports the diagnosis in docs/PRIORITY_PLAN.md "Backlog": a rejected offer costs nothing in the search |
+| `acq_floor_selfplay` | trades | SHELVE | the player-trade premium floor in self-play: -1.2 +- 1.6 pp at 960 pairs, no gain; default unchanged |
 
 ## Queue after the strength proof (2026-09-26): every strategy the user asked to test
 
