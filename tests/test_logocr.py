@@ -238,3 +238,94 @@ def test_players_palette_and_empty_image():
     res = logocr.read_log_panel(blank)
     assert res.lines == [] and res.box is None and res.warnings
     assert logocr.find_log_panel(blank) is None
+
+
+# ---------------------------------------------------------------------------
+# building icons ("built a [road]") and Colonist's colons ("got:")
+# ---------------------------------------------------------------------------
+BUILD_LINES = ["Alice built a Road", "Bob built a Settlement", "Carol built a City", "Dave placed a Settlement",
+               "Bob got 1 wood, 2 ore", "Alice placed a Road", "Carol bought Development Card", "Dave built a City",
+               "Bob stole a card from Alice", "Alice built a Settlement", "Carol wants to give 2 brick for 1 sheep",
+               "Bob built a Road"]
+
+
+def _icon_kinds(ln):
+    return [k for t in ln.tokens if t["kind"] == "icons" for k in t["icons"]]
+
+
+@pytest.mark.parametrize("dark,colours,size", [
+    (False, ("red", "blue", "orange", "white"), (1280, 800)),
+    (True, ("purple", "brown", "green", "pink"), (1920, 1080)),
+    (False, ("brown", "white", "purple", "green"), (1366, 768)),
+])
+def test_building_icons_are_read_by_shape_and_player_colour(game, dark, colours, size):
+    state, _ = game
+    state = state.copy()
+    for p, c, nm in zip(state.players, colours, ("Alice", "Bob", "Carol", "Dave")):
+        p.color, p.name = c, nm
+    style = synth.LogPanelStyle.dark() if dark else synth.LogPanelStyle()
+    img, truth = render(state, BUILD_LINES, size=size, style=style)
+    res = logocr.read_log_panel(img)
+    right, n = score(res, truth)
+    assert n == len(BUILD_LINES) and right >= n - 1, [(e.canonical, ln.text) for e, ln in zip(truth, res.lines)]
+    by_text = {e.text: e for e in truth}
+    for e, ln in zip(truth, res.lines):
+        kinds = _icon_kinds(ln)
+        item = e.canonical.split()[-1]
+        if item in ("Road", "Settlement", "City"):
+            if sig(ln.text) == sig(e.canonical):
+                # the building icon (not a card, not a name) gives the item
+                assert kinds == [item.lower()] and ln.text.endswith(" " + item), ln.text
+                assert ln.event.kind == "build" and ln.event.item == item.lower()
+        else:
+            # no building is ever read in a line without one
+            assert not set(kinds) & {"road", "settlement", "city"}, (e.text, ln.text)
+    assert by_text["Dave placed a Settlement"].canonical.startswith(colours[3])
+
+
+def test_building_icons_are_not_confused_with_cards_or_names(game):
+    """Card icons stay cards and bold names stay names on a panel full of both (the game's own lines)."""
+    state, lines = game
+    for style in (synth.LogPanelStyle(), synth.LogPanelStyle.dark()):
+        img, truth = render(state, lines, style=style)
+        res = logocr.read_log_panel(img)
+        builds = {i for i, e in enumerate(truth) if e.canonical.split()[-1] in ("Road", "Settlement", "City")}
+        for i, (e, ln) in enumerate(zip(truth, res.lines)):
+            if i not in builds:
+                assert not set(_icon_kinds(ln)) & {"road", "settlement", "city"}, (e.canonical, ln.text)
+        right, n = score(res, truth)
+        assert right >= n - 1
+
+
+@pytest.mark.parametrize("font", ["dejavu", "liberation"])
+def test_colons_glued_to_verbs_are_read(game, font):
+    """Colonist's "got:", "gave bank:", "for:" ...: the colon is read as part of its word, left out of
+    the text, and costs no accuracy or confidence against the same panel without colons."""
+    state, _ = game
+    lines = ["Alice got 2 wood, 1 ore", "Bob gave bank 4 sheep and took 1 ore", "Carol wants to give 1 wood for 1 ore",
+             "Dave stole a card from Bob", "Alice traded 1 wood for 1 ore with Carol", "Bob got 1 sheep",
+             "Carol gave bank 2 wheat and took 1 brick", "Dave wants to give 2 ore for 1 wheat"]
+    state = state.copy()
+    for p, nm in zip(state.players, ("Alice", "Bob", "Carol", "Dave")):
+        p.name = nm
+    if font == "liberation" and not all(os.path.exists(p) for p in LIB):
+        pytest.skip("held-out font not installed")
+    for size in ((1280, 800), (1920, 1080)):
+        reads = {}
+        for share in (0.0, 1.0):
+            style = synth.LogPanelStyle(colons=share)
+            if font == "liberation":
+                style.font_path, style.name_font_path = LIB
+            img, truth = render(state, lines, size=size, style=style)
+            assert all(any(t.text.endswith(":") for t in e.tokens) == (share > 0) for e in truth)
+            res = logocr.read_log_panel(img)
+            right, n = score(res, truth)
+            assert right == n, [(e.canonical, ln.text) for e, ln in zip(truth, res.lines)]
+            assert [ln.text for ln in res.lines] == [e.canonical for e in truth]     # no colon in the text
+            reads[share] = res
+        # the colons are seen (most of the 12 are read as part of their word) ...
+        words = [w for ln in reads[1.0].lines for t in ln.tokens if t["kind"] == "text" for w in t["words"]]
+        assert sum(w.endswith(":") and len(w) > 1 for w in words) >= 7
+        # ... and cost no confidence worth the name: a line fed without colons is fed with them
+        for a, b in zip(reads[0.0].lines, reads[1.0].lines):
+            assert b.confidence >= min(a.confidence - 0.1, logocr.CONF_FEED), (a.text, a.confidence, b.confidence)

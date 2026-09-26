@@ -11,8 +11,9 @@ Pipeline
        * the border is skipped (``inner``), the panel fill and the stripe colour are estimated
          from the per-row colour statistics, each pixel row gets its background colour;
        * ink = colour distance to the row's background; ink rows form *bands* (text rows);
-       * connected components of the ink become glyph pieces, card / die icons (solid or
-         framed blobs about one em high) and words (pieces grouped by gaps narrower than a
+       * connected components of the ink become glyph pieces, building icons (a road / house /
+         city silhouette in the player's colour, matched to shape templates), card / die icons
+         (solid or framed blobs about one em high) and words (pieces grouped by gaps narrower than a
          space); each word gets an ink colour (the most saturated core pixels, unmixed from
          the background) so names (coloured bold words) are told from text;
        * bands are grouped into log entries by the stripe background (alternating per entry)
@@ -30,6 +31,7 @@ import hashlib
 import math
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -378,7 +380,7 @@ class Icon:
     x1: int
     y0: int
     y1: int
-    kind: str = "?"              # wood brick sheep wheat ore card dev die
+    kind: str = "?"              # wood brick sheep wheat ore card dev die / road settlement city
     face: int = 0                # die face 1..6
     conf: float = 0.0
     fill: RGB = (0, 0, 0)
@@ -1002,6 +1004,139 @@ def _classify_icon(lay: PanelLayout, ic: Icon) -> None:
 
 
 # ---------------------------------------------------------------------------
+# building icons ("built a [road]", "placed a [settlement]": a piece in the player's colour)
+# ---------------------------------------------------------------------------
+#: Building icons: normalised outline (x, y in the icon's box, y down) or ``None`` for the road
+#: (a bar from the bottom-left to the top-right corner, :data:`BUILDING_ROAD_T` of the height
+#: thick), and the allowed width / height of the icon's ink.
+BUILDING_SHAPES: Dict[str, Optional[List[Tuple[float, float]]]] = {
+    "road": None,
+    "settlement": [(0.0, 1.0), (0.0, 0.45), (0.5, 0.0), (1.0, 0.45), (1.0, 1.0)],
+    "city": [(0.0, 1.0), (0.0, 0.25), (0.21, 0.0), (0.42, 0.25), (0.42, 0.55), (0.71, 0.3), (1.0, 0.55),
+             (1.0, 1.0)],
+}
+BUILDING_ASPECT: Dict[str, Tuple[float, float]] = {"road": (0.5, 1.1), "settlement": (0.55, 1.1),
+                                                   "city": (0.9, 1.6)}
+BUILDING_ROAD_T = 0.34
+#: A blob is a building when its ink covers the shape and leaves its outside empty: coverage of
+#: the shape minus coverage of the rest of its box at least this (a card, a letter: far less).
+BUILDING_MIN_SCORE = 0.72
+#: A fill with less chroma than this is grey (the white player, or text): it needs this score.
+BUILDING_GREY_CHROMA = 35.0
+BUILDING_GREY_SCORE = 0.85
+
+
+@lru_cache(maxsize=2048)
+def _building_template(kind: str, hh: int, ww: int) -> np.ndarray:
+    """The building ``kind`` rasterised into an ``hh x ww`` box (bool, 4x supersampled; cached:
+    read only)."""
+    from PIL import ImageDraw
+    f = 4
+    im = Image.new("L", (ww * f, hh * f), 0)
+    d = ImageDraw.Draw(im)
+    shape = BUILDING_SHAPES[kind]
+    if shape is None:
+        t = BUILDING_ROAD_T * hh * f
+        W, H = ww * f, hh * f
+        p0 = np.array([t / 2.0, H - t / 2.0])
+        p1 = np.array([W - t / 2.0, t / 2.0])
+        v = p1 - p0
+        n = np.array([-v[1], v[0]]) / max(1e-6, float(np.hypot(*v))) * (t / 2.0)
+        d.polygon([tuple(p0 + n), tuple(p1 + n), tuple(p1 - n), tuple(p0 - n)], fill=255)
+        for c in (p0, p1):
+            d.ellipse([c[0] - t / 2.0, c[1] - t / 2.0, c[0] + t / 2.0, c[1] + t / 2.0], fill=255)
+    else:
+        d.polygon([(x * ww * f, y * hh * f) for x, y in shape], fill=255)
+    a = np.asarray(im, dtype=np.float32).reshape(hh, f, ww, f).mean(axis=(1, 3))
+    return a >= 128.0
+
+
+def _dilate1(m: np.ndarray) -> np.ndarray:
+    out = m.copy()
+    out[1:] |= m[:-1]
+    out[:-1] |= m[1:]
+    out[:, 1:] |= m[:, :-1]
+    out[:, :-1] |= m[:, 1:]
+    return out
+
+
+def _erode1(m: np.ndarray) -> np.ndarray:
+    return ~_dilate1(~m)
+
+
+def building_kind(mask: np.ndarray) -> Tuple[str, float, float]:
+    """``(kind, score, margin)`` of the best-matching building shape for a trimmed ink mask
+    (``kind`` ``"?"`` when the box's aspect fits none)."""
+    hh, ww = mask.shape
+    if hh < 5 or ww < 3:
+        return "?", 0.0, 0.0
+    aspect = ww / float(hh)
+    scores = []
+    for kind in BUILDING_SHAPES:
+        lo, hi = BUILDING_ASPECT[kind]
+        if not lo <= aspect <= hi:
+            scores.append((0.0, kind))
+            continue
+        tpl = _building_template(kind, hh, ww)
+        # a pixel of slack at the shape's edge (anti-aliasing, the outline, blur): the core must be
+        # ink, the outside beyond one pixel must not
+        core, near = _erode1(tpl), _dilate1(tpl)
+        cin = float(mask[core].mean()) if core.any() else 0.0
+        cout = float(mask[~near].mean()) if (~near).any() else 0.0
+        scores.append((cin - cout, kind))
+    scores.sort(reverse=True)
+    if scores[0][0] <= 0.0:
+        return "?", 0.0, 0.0
+    return scores[0][1], scores[0][0], scores[0][0] - scores[1][0]
+
+
+def _find_buildings(lab: np.ndarray, cm: _Comps, ids: Sequence[int], ya: int, hmin: float,
+                    rgb: np.ndarray) -> List[Tuple[Tuple[int, int, int, int], str, float, List[int], RGB]]:
+    """Building icons among the components ``ids`` of a band label map: a solid blob about one
+    icon high whose shape is a road / settlement / city (:func:`building_kind`), in a colour (the
+    player's; a grey one - the white player, or blurred text lumped together - must match the
+    shape more closely): ``[(box, kind, conf, member ids, fill)]``."""
+    out = []
+    used: set = set()
+    for k in sorted(ids, key=lambda k: -int(cm.area[k])):
+        if k in used:
+            continue
+        x0, x1, y0, y1 = int(cm.x0[k]), int(cm.x1[k]), int(cm.y0[k]), int(cm.y1[k])
+        hh, ww = y1 - y0, x1 - x0
+        if hh < hmin or ww < 0.4 * hh or ww > 1.8 * hh:
+            continue
+        members = [k] + [j for j in ids if j != k and j not in used and cm.x0[j] >= x0 - 1 and cm.x1[j] <= x1 + 1
+                         and cm.y0[j] >= y0 - 1 and cm.y1[j] <= y1 + 1]
+        full = np.isin(lab[y0 - ya:y1 - ya, x0:x1], members)
+        # (a roof's apex and a tower's top are narrow: only near-empty edge rows are trimmed)
+        rows, cols = np.flatnonzero(full.mean(axis=1) >= 0.06), np.flatnonzero(full.mean(axis=0) >= 0.06)
+        if rows.size == 0 or cols.size == 0:
+            continue
+        r0, r1, c0, c1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+        sub = full[r0:r1, c0:c1]
+        if sub.shape[0] < hmin:
+            continue
+        kind, sc, margin = building_kind(sub)
+        if kind == "?" or sc < BUILDING_MIN_SCORE:
+            continue
+        # the fill: the blob's own pixels, the darker outline left out
+        px = rgb[y0 - ya + r0:y0 - ya + r1, x0 + c0:x0 + c1][sub].reshape(-1, 3).astype(np.float32)
+        if px.shape[0] < 4:
+            continue
+        lum = px.mean(axis=1)
+        fill = np.median(px[lum >= np.percentile(lum, 40)], axis=0)
+        # a grey blob may be the grey (white) player's piece, or blurred text glued into a lump:
+        # it must match the shape more closely than a coloured one
+        if float(fill.max() - fill.min()) < BUILDING_GREY_CHROMA and sc < BUILDING_GREY_SCORE:
+            continue
+        conf = float(min(1.0, (sc - BUILDING_MIN_SCORE + 0.1) / 0.2) * min(1.0, 0.4 + margin / 0.25))
+        used.update(members)
+        out.append(((x0 + c0, x0 + c1, y0 + r0, y0 + r1), kind, conf, members,
+                    (int(fill[0]), int(fill[1]), int(fill[2]))))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # per-band items
 # ---------------------------------------------------------------------------
 def _trim(mask: np.ndarray) -> Tuple[int, int, int, int]:
@@ -1200,13 +1335,18 @@ def _band_items(lay: PanelLayout, band: Band, cm: _Comps, st: np.ndarray, em0: f
         hmin = 1e9
     brgb = lay.rgb[ya:yb].astype(np.float32)
     bbg = lay.bg_rows[ya:yb].astype(np.float32)
-    found = _find_icons(lab, cm, ids, ya, hmin, rgb=brgb, bg=bbg)
-    used = set(j for _, mem, _ in found for j in mem)
+    # building icons first (a house / bar in the player's colour: its empty top corners are never a
+    # card's), then the cards and dice among the rest
+    buildings = _find_buildings(lab, cm, ids, ya, hmin, brgb) if hmin < 1e8 else []
+    bused = set(j for _, _, _, mem, _ in buildings for j in mem)
+    found = _find_icons(lab, cm, ids, ya, hmin, skip=bused, rgb=brgb, bg=bbg)
+    used = bused | set(j for _, mem, _ in found for j in mem)
     boxes = [bx for bxs, _, _ in found for bx in bxs]
+    bboxes = [bx for bx, _, _, _, _ in buildings]
     # weak-ink pass for low-contrast icons
     weak = lay.ink[ya:yb].copy()
     grow = max(1, int(round(0.15 * em0)))
-    for (x0, x1, y0, y1) in boxes:
+    for (x0, x1, y0, y1) in boxes + bboxes:
         weak[max(0, y0 - ya - grow):max(0, y1 - ya + grow), max(0, x0 - grow):x1 + grow] = False
     n2, lab2, st2 = _components(weak) if hmin < 1e8 else (0, None, None)
     if n2 > 1:
@@ -1216,7 +1356,7 @@ def _band_items(lay: PanelLayout, band: Band, cm: _Comps, st: np.ndarray, em0: f
         for bxs, _, _ in _find_icons(lab2, cm2, [k for k in range(1, n2) if cm2.area[k] > 0], ya, hmin,
                                      span=0.85, rgb=brgb, bg=bbg):
             for (x0, x1, y0, y1) in bxs:
-                if any(min(x1, b[1]) - max(x0, b[0]) > 0.3 * (x1 - x0) for b in boxes):
+                if any(min(x1, b[1]) - max(x0, b[0]) > 0.3 * (x1 - x0) for b in boxes + bboxes):
                     continue
                 boxes.append((x0, x1, y0, y1))
                 for j in ids:
@@ -1227,6 +1367,8 @@ def _band_items(lay: PanelLayout, band: Band, cm: _Comps, st: np.ndarray, em0: f
     icons = [Icon(x0=x0, x1=x1, y0=y0, y1=y1) for (x0, x1, y0, y1) in boxes]
     for ic in icons:
         _classify_icon(lay, ic)
+    for (x0, x1, y0, y1), kind, conf, mem, fill in buildings:
+        icons.append(Icon(x0=x0, x1=x1, y0=y0, y1=y1, kind=kind, conf=conf, fill=fill))
     # glyph pieces: the remaining components, merged when stacked (i / j dots, colons)
     comps = sorted((k for k in ids if k not in used), key=lambda k: int(cm.x0[k]))
     pieces: List[List[int]] = []

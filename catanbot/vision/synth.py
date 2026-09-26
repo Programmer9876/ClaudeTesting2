@@ -24,8 +24,13 @@ right column (:func:`log_panel_box`): one entry per log line (the wording of
 :data:`catanbot.colonist_log.PHRASES`), newest at the bottom, alternating
 stripes, player names in bold in their colour, and - with
 ``LogPanelStyle.icons`` - the cards of card slots as small card icons
-(resource cards, face-down card backs, the development card) and the two dice
-of a roll as dice.  The pipeline is
+(resource cards, face-down card backs, the development card), the two dice
+of a roll as dice and the item of "built a" / "placed a" as a building icon
+in the player's colour (road: a slanted bar, settlement: a small house, city:
+a wider house with a tower).  Like Colonist, a deterministic share of the
+lines (``LogPanelStyle.colons``, by a hash of the line, never the render's
+random stream) writes a colon after its verbs ("got:", "gave bank:", "wants
+to give:", "for:", "from:", "with:").  The pipeline is
 
 1. :func:`log_line_tokens` - a line -> :class:`LogToken` s (names, words,
    icons) through the phrase table: names are taken from the matched
@@ -38,7 +43,10 @@ of a roll as dice.  The pipeline is
    ground truth :class:`LogEntryLayout` per visible entry, including its
    *canonical* text (the text a log OCR must produce: names -> colour words,
    icon runs -> ``N res``, card backs -> ``a card`` / ``N cards``, the
-   development card icon -> ``Development Card``, dice -> ``d1 d2``);
+   development card icon -> ``Development Card``, dice -> ``d1 d2``,
+   building icons -> ``Road`` / ``Settlement`` / ``City``; a verb's colon
+   is left out: ``got:`` reads ``got``, so an entry has one canonical text
+   whether or not its colons are drawn);
 3. the renderer draws exactly that layout.  With ``log=None`` (the default)
    nothing is drawn and the render is byte-identical to a render without the
    feature; the panel never draws from the render's random stream.
@@ -49,6 +57,7 @@ import io
 import math
 import random
 import re
+import zlib
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
@@ -625,8 +634,15 @@ Box = Tuple[float, float, float, float]
 LOG_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 #: Resource card icon ids in resource order (wood, brick, sheep, wheat, ore): the canonical words.
 LOG_RESOURCE_ICONS: Tuple[str, ...] = ("wood", "brick", "sheep", "wheat", "ore")
+#: Building icon ids (drawn in the player's colour) and their canonical words.
+LOG_BUILDING_ICONS: Dict[str, str] = {"road": "Road", "settlement": "Settlement", "city": "City"}
 #: Every icon id a :class:`LogToken` of kind ``icon`` may carry.
-LOG_ICON_IDS: Tuple[str, ...] = LOG_RESOURCE_ICONS + ("card", "dev") + tuple(f"die{k}" for k in range(1, 7))
+LOG_ICON_IDS: Tuple[str, ...] = (LOG_RESOURCE_ICONS + ("card", "dev") + tuple(f"die{k}" for k in range(1, 7))
+                                 + tuple(LOG_BUILDING_ICONS))
+#: Share of log lines written with colons after their verbs (Colonist's "got:", "gave bank:" ...).
+LOG_COLON_SHARE = 0.4
+#: Building icon widths (x their height, which is the card height).
+_BUILDING_W: Dict[str, float] = {"road": 0.8, "settlement": 0.82, "city": 1.2}
 #: Longest run of identical card icons drawn one by one; a longer run is "N" + one icon.
 LOG_MAX_ICON_RUN = 7
 #: The default render scale (:class:`ColonistStyle`), which :func:`layout_log_panel` measures at.
@@ -671,7 +687,8 @@ class LogPanelStyle:
     font_scale: float = 0.0175
     min_font_px: float = 9.0
     line_spacing: float = 1.5
-    icons: bool = True                     # card slots / dice / dev card as icons (False: text only)
+    icons: bool = True                     # card slots / dice / dev card / buildings as icons (False: text only)
+    colons: float = LOG_COLON_SHARE        # share of lines with a colon after their verbs (0: none)
     name_colours: Dict[str, RGB] = field(default_factory=lambda: dict(_LOG_NAME_RGB))
     icon_colours: Dict[str, RGB] = field(default_factory=lambda: dict(_LOG_ICON_RGB))
     icon_mark: RGB = (255, 255, 255)       # pictogram on the resource cards / dev card
@@ -704,7 +721,8 @@ class LogPanelStyle:
 @dataclass(frozen=True)
 class LogToken:
     """One drawn item of a log line: ``kind`` ``text`` (a word), ``name`` (a player name drawn in
-    the colour of ``colour``) or ``icon`` (``text`` is an id of :data:`LOG_ICON_IDS`).  ``space``
+    the colour of ``colour``) or ``icon`` (``text`` is an id of :data:`LOG_ICON_IDS`; a building
+    icon is drawn in the colour of ``colour``, ``None``: an unknown player's grey).  ``space``
     tells whether a space precedes the token; tokens without one are glued (never wrapped apart)."""
 
     kind: str
@@ -878,7 +896,8 @@ def _phrase_match(text: str) -> Optional[PhraseMatch]:
 
 
 def _icon_spans(text: str, pm: Optional[PhraseMatch] = None) -> List[Tuple[int, int, List[LogToken]]]:
-    """``(start, end, tokens)`` of the parts of ``text`` drawn as icons (card slots, dice, dev card)."""
+    """``(start, end, tokens)`` of the parts of ``text`` drawn as icons (card slots, dice, dev card,
+    the building of a build / placement)."""
     pm = pm if pm is not None else _phrase_match(text)
     if pm is None:
         return []
@@ -898,6 +917,8 @@ def _icon_spans(text: str, pm: Optional[PhraseMatch] = None) -> List[Tuple[int, 
         if r is not None:       # the number glued to its icon, as a long run
             spans.append((match.start("n"), match.end("res"),
                           [LogToken("text", groups["n"]), LogToken("icon", LOG_RESOURCE_ICONS[r], None, False)]))
+    elif kind == "build" and groups.get("item"):
+        spans.append((match.start("item"), match.end("item"), [LogToken("icon", groups["item"].lower())]))
     elif kind == "buy_dev":
         dm = _DEV_CARD.search(core, match.end("a"))
         if dm:
@@ -946,7 +967,63 @@ def _name_spans(text: str, names: Dict[str, str], taken: Sequence[Tuple[int, int
     return out
 
 
-def log_line_tokens(line: str, players: Any, icons: bool = True) -> List[LogToken]:
+#: Per phrase kind, the words after which a colon may be written (the word before a card / player slot).
+_COLON_SLOT_WORDS: Dict[str, Tuple[str, ...]] = {
+    "gain": ("got",), "bank_trade": ("bank", "for", "with"), "player_trade": ("for", "with"),
+    "offer": ("give", "for"), "counter": ("for",), "steal": ("from",),
+}
+_BANK_WITH = re.compile(r"\bwith(?= (?:the )?bank$)", re.IGNORECASE)
+
+
+def _colon_hit(text: str, share: float) -> bool:
+    """Whether ``text`` is one of the ``share`` of lines written with colons (a hash of the line)."""
+    if share <= 0.0:
+        return False
+    if share >= 1.0:
+        return True
+    return zlib.crc32(("colon|" + text).encode("utf-8")) / 4294967296.0 < share
+
+
+def _with_colons(text: str, pm: Optional[PhraseMatch]) -> Tuple[str, Optional[PhraseMatch]]:
+    """``text`` with a colon glued to the verbs before its card / player slots, as Colonist writes
+    them ("got:", "gave bank:", "wants to give:", "for:", "from:", "with:"; see :data:`_COLON_SLOT_WORDS`),
+    and its phrase match; unchanged when the phrase has none or the colons would change the event."""
+    if pm is None:
+        return text, pm
+    ph, m, p = pm
+    allowed = _COLON_SLOT_WORDS.get(ph.kind)
+    if not allowed:
+        return text, pm
+    core = m.string
+    pos: List[int] = []
+    for g in ("cards", "get", "b"):
+        if g in m.re.groupindex and m.group(g):
+            q = m.start(g) - 1                      # the space before the slot
+            wm = re.search(r"(\w+)$", core[:q])
+            if q > 0 and core[q] == " " and wm and wm.group(1).lower() in allowed:
+                pos.append(q)
+    if "with" in allowed and ph.kind == "bank_trade":
+        bm = _BANK_WITH.search(core)
+        if bm:
+            pos.append(bm.end())
+    if not pos:
+        return text, pm
+    out = core
+    for q in sorted(set(pos), reverse=True):
+        out = out[:q] + ":" + out[q:]
+    new = text[:p] + out + text[p + len(core):]
+    from .. import colonist_log as L
+    npm = _phrase_match(new)
+    ev0, ev1 = L.parse_log_line(text), L.parse_log_line(new)
+    if npm is None or npm[0] is not ph or ev1 is None or ev0 is None or (
+            (ev1.kind, ev1.player, ev1.other, ev1.cards, ev1.get, ev1.count, ev1.problem)
+            != (ev0.kind, ev0.player, ev0.other, ev0.cards, ev0.get, ev0.count, ev0.problem)):
+        return text, pm
+    return new, npm
+
+
+def log_line_tokens(line: str, players: Any, icons: bool = True, colons: float = LOG_COLON_SHARE
+                    ) -> List[LogToken]:
     """One log line -> the tokens the panel draws, in order.
 
     ``players`` names the players (``state.players``, ``{name: colour}`` or ``[(name, colour)]``).
@@ -956,15 +1033,27 @@ def log_line_tokens(line: str, players: Any, icons: bool = True) -> List[LogToke
     (``"2 wood, 1 ore"`` -> wood wood ore; more than :data:`LOG_MAX_ICON_RUN` of a kind -> the
     number as text glued to one icon; ``a card`` / ``N cards`` -> card backs), Monopoly's ``N res``
     -> the number glued to one icon, ``rolled d1 d2`` -> two dice and ``Development Card`` -> the
-    dev card icon.  The robber line and the letters notation (``WWB``) stay text.  Every other word
-    is a ``text`` token.  Whitespace is collapsed; ``space`` records where the line had a space.
+    dev card icon; the item of ``built a`` / ``placed a`` becomes a building icon in the acting
+    player's colour.  The robber line and the letters notation (``WWB``) stay text.  Every other
+    word is a ``text`` token.  Whitespace is collapsed; ``space`` records where the line had a
+    space.  ``colons`` is the share of lines (chosen by a hash of the line: deterministic, no random
+    stream) drawn with a colon glued to their verbs (:func:`_with_colons`).
     """
     text = re.sub(r"\s+", " ", str(line)).strip()
     if not text:
         return []
     pm = _phrase_match(text)
+    if _colon_hit(text, float(colons)):
+        text, pm = _with_colons(text, pm)
     spans = _icon_spans(text, pm) if icons else []
-    spans = spans + _name_spans(text, _player_names(players), spans, pm)
+    names = _name_spans(text, _player_names(players), spans, pm)
+    if pm is not None and pm[0].kind == "build":
+        # the building is drawn in the colour of the player who built it
+        a0 = pm[1].start("a") + pm[2]
+        colour = next((toks[0].colour for s, e, toks in names if s == a0), None)
+        spans = [(s, e, [replace(t, colour=colour) if t.text in LOG_BUILDING_ICONS else t for t in toks])
+                 for s, e, toks in spans]
+    spans = spans + names
     spans.sort(key=lambda sp: sp[0])
     out: List[LogToken] = []
     pos = 0
@@ -981,6 +1070,7 @@ def log_line_tokens(line: str, players: Any, icons: bool = True) -> List[LogToke
 
 def _canonical_from_tokens(tokens: Sequence[LogToken]) -> str:
     """The canonical OCR text of drawn tokens (see the module docstring)."""
+    from .. import colonist_log as L
     parts: List[Tuple[str, bool]] = []
     n = len(tokens)
 
@@ -1004,6 +1094,9 @@ def _canonical_from_tokens(tokens: Sequence[LogToken]) -> str:
         elif t.kind == "icon" and t.text == "dev":
             parts.append(("Development Card", t.space))
             i += 1
+        elif t.kind == "icon" and t.text in LOG_BUILDING_ICONS:
+            parts.append((LOG_BUILDING_ICONS[t.text], t.space))
+            i += 1
         elif card_icon(i) or multiplier(i):
             space = t.space
             runs: List[List[Any]] = []
@@ -1022,15 +1115,19 @@ def _canonical_from_tokens(tokens: Sequence[LogToken]) -> str:
             for icon, k in runs:
                 words.append(("a card" if k == 1 else f"{k} cards") if icon == "card" else f"{k} {icon}")
             parts.append((", ".join(words), space))
+        elif t.kind == "text" and t.text.endswith(":") and t.text[:-1].lower() in L.COLON_WORDS:
+            parts.append((t.text[:-1], t.space))      # a verb's colon is punctuation: left out
+            i += 1
         else:
             parts.append((t.text, t.space))
             i += 1
     return "".join((" " if sp and k else "") + s for k, (s, sp) in enumerate(parts))
 
 
-def canonical_log_text(line: str, players: Any, icons: bool = True) -> str:
-    """The canonical OCR text of ``line`` as the panel draws it (``icons`` as :class:`LogPanelStyle`)."""
-    return _canonical_from_tokens(log_line_tokens(line, players, icons))
+def canonical_log_text(line: str, players: Any, icons: bool = True, colons: float = LOG_COLON_SHARE) -> str:
+    """The canonical OCR text of ``line`` as the panel draws it (``icons`` / ``colons`` as
+    :class:`LogPanelStyle`)."""
+    return _canonical_from_tokens(log_line_tokens(line, players, icons, colons))
 
 
 # --- layout -----------------------------------------------------------------------------------
@@ -1070,6 +1167,8 @@ def _log_metrics(size: Tuple[int, int], style: LogPanelStyle, box: Optional[Sequ
 
 def _token_width(tok: LogToken, style: LogPanelStyle, mt: _LogMetrics) -> float:
     if tok.kind == "icon":
+        if tok.text in _BUILDING_W:
+            return _BUILDING_W[tok.text] * mt.card_h
         return mt.die if tok.text.startswith("die") else mt.card_w
     path = style.name_font_path if tok.kind == "name" else style.font_path
     return _font(path, mt.px * mt.ss).getlength(tok.text) / mt.ss
@@ -1151,7 +1250,7 @@ def layout_log_panel(lines: Sequence[str], players: Any, size: Tuple[int, int],
         if bottom <= iy0:
             break
         line = lines[i]
-        tokens = log_line_tokens(line, players, style.icons)
+        tokens = log_line_tokens(line, players, style.icons, style.colons)
         rows = _wrap(tokens, style, mt, avail) if tokens else [[]]
         top = bottom - len(rows) * row_h
         partial = top < iy0
@@ -1230,6 +1329,28 @@ def _draw_card_icon(pc: _Canvas, icon: str, x: float, cy: float, mt: _LogMetrics
         pc.polygon(pts, mark)
 
 
+def _draw_building_icon(pc: _Canvas, icon: str, rgb: RGB, x: float, cy: float, mt: _LogMetrics,
+                        style: LogPanelStyle) -> None:
+    """A building in the player's colour ``rgb`` with its left edge at ``x``, one card high: a road
+    (a slanted bar), a settlement (a house) or a city (a house with a tower on its left)."""
+    h = mt.card_h
+    w = _BUILDING_W[icon] * h
+    y0, y1 = cy - h / 2.0, cy + h / 2.0
+    edge = _shade(rgb, 0.6)
+    ow = max(0.5, 0.06 * mt.px)
+    if icon == "road":
+        t = 0.3 * h
+        pc.bar((x + t / 2.0 + ow, y1 - t / 2.0 - ow), (x + w - t / 2.0 - ow, y0 + t / 2.0 + ow), t, rgb, edge, ow)
+    elif icon == "settlement":
+        pc.polygon([(x, y1), (x, y0 + 0.45 * h), (x + w / 2.0, y0), (x + w, y0 + 0.45 * h), (x + w, y1)],
+                   rgb, edge, ow)
+    else:   # city: a tower (left, pointed roof) and a lower house (right)
+        tw = 0.42 * w
+        pc.polygon([(x, y1), (x, y0 + 0.25 * h), (x + tw / 2.0, y0), (x + tw, y0 + 0.25 * h),
+                    (x + tw, y0 + 0.55 * h), (x + tw + (w - tw) / 2.0, y0 + 0.3 * h), (x + w, y0 + 0.55 * h),
+                    (x + w, y1)], rgb, edge, ow)
+
+
 def _draw_die_icon(pc: _Canvas, face: int, x: float, cy: float, mt: _LogMetrics, style: LogPanelStyle) -> None:
     d = mt.die
     pc.rounded_rect(x, cy - d / 2.0, x + d, cy + d / 2.0, 0.18 * d, style.icon_colours.get("die", (250, 250, 250)),
@@ -1268,6 +1389,8 @@ def _draw_log_panel(cv: _Canvas, players: Any, lines: Sequence[str], size: Tuple
             if tok.kind == "icon":
                 if tok.text.startswith("die"):
                     _draw_die_icon(pc, int(tok.text[3:]), lx, cy, mt, style)
+                elif tok.text in LOG_BUILDING_ICONS:
+                    _draw_building_icon(pc, tok.text, style.name_rgb(tok.colour), lx, cy, mt, style)
                 else:
                     _draw_card_icon(pc, tok.text, lx, cy, mt, style)
                 continue

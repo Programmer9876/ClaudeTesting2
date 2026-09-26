@@ -270,6 +270,12 @@ _SLOTS: Dict[str, str] = {
     "{REST}": r"(?P<rest>.*?)",
 }
 _BANK = r"(?:the )?bank"
+#: Words Colonist writes with a glued colon on some lines ("got:", "gave bank:", "wants to give:",
+#: "for:", "from:", "with:" ...; the phrases below accept it).  The colon is punctuation: a log
+#: reader's canonical text leaves it out (``catanbot.vision.synth`` / ``catanbot.vision.logocr``).
+COLON_WORDS: Tuple[str, ...] = ("got", "bank", "give", "for", "from", "with", "took", "traded", "received",
+                                "resources", "discarded", "of", "to", "stole", "offered", "counter-offered",
+                                "rolled")
 
 #: The phrase table: Colonist.io log wordings (best knowledge, see docs/USAGE.md "Card counting"),
 #: tried in order - the first matching row makes the event.  Correct or extend it here.

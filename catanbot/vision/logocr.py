@@ -4,7 +4,8 @@ Pipeline (``read_log_panel``)
     image (path / PIL / numpy RGB)
     -> the panel box: the caller's, a profile's ``log`` region, or :func:`find_log_panel`
     -> :func:`catanbot.vision.logocr_layout.analyse_panel`: background rows (panel fill and stripe
-       estimated from the image), ink, text rows, glyph pieces, card / die icons (shape + colour),
+       estimated from the image), ink, text rows, glyph pieces, card / die / building icons (shape
+       + colour),
        player names (coloured words; the colour word from the unmixed ink colour), entries (stripe
        changes and the continuation-row indent), the cut top entry (``partial``) and each entry's
        content key (a hash of its normalised ink);
@@ -13,7 +14,8 @@ Pipeline (``read_log_panel``)
        (one batch for the whole panel); :mod:`catanbot.vision.logocr_decode` aligns the log
        vocabulary to the cuts (word lattice) and picks the words with a bigram phrase model;
     -> canonical text (names as colour words, icons as ``N res`` / ``a card`` / ``N cards`` /
-       ``Development Card`` / dice faces) that must parse with
+       ``Development Card`` / dice faces / ``Road`` / ``Settlement`` / ``City``; a verb's glued
+       colon, "got:", read and left out) that must parse with
        :func:`catanbot.colonist_log.parse_log_line`, with a confidence: the weakest of the name
        colour, icon and word evidence; lines below 0.6 are not to be fed to the card counter.
 
@@ -54,7 +56,7 @@ __all__ = [
 Box = Tuple[int, int, int, int]
 #: Lines at or above this confidence may be fed to the card counter.
 CONF_FEED = 0.6
-_READER_VERSION = "b2.1"
+_READER_VERSION = "b2.2"
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +245,8 @@ def _lm_symbol_of(tok: Any) -> str:
             return "DICE"
         if tok.kind == "dev":
             return "DEV"
+        if tok.kind in D.BUILDING_WORDS:
+            return D.BUILDING_WORDS[tok.kind]
         return "CARDS"
     return "UNK"
 
@@ -302,6 +306,8 @@ def _assemble(lay: LL.PanelLayout, entry: LL.Entry, readings: Dict[int, D.RunRea
                 notes.append("text-coloured name read as the grey player")
                 continue
             glue = w in (":", ",") or (w.startswith(":") and wi == 0)
+            if not rr.unknown[wi]:
+                w = D.drop_verb_colon(w)      # "got:" reads as "got": the colon is punctuation
             parts.append([w, glue, "unk" if rr.unknown[wi] else "word"])
         confs.append(rr.conf)
         dbg.append({"kind": "text", "words": list(rr.words), "unknown": list(rr.unknown),
@@ -310,7 +316,7 @@ def _assemble(lay: LL.PanelLayout, entry: LL.Entry, readings: Dict[int, D.RunRea
     def is_player_slot(i: int) -> bool:
         if i == 0:
             return True
-        return parts[i - 1][2] == "word" and parts[i - 1][0].lower() in _PLAYER_BEFORE
+        return parts[i - 1][2] == "word" and parts[i - 1][0].lower().rstrip(":") in _PLAYER_BEFORE
     i = 0
     while i < len(parts):
         if parts[i][2] == "unk" and is_player_slot(i):

@@ -256,6 +256,127 @@ def test_multiplier_numbers_are_glued_to_their_icon(line):
 
 
 # ---------------------------------------------------------------------------
+# building icons and Colonist's colons
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("line,icon,colour,canonical", [
+    ("Alice built a Road", "road", "red", "red built a Road"),
+    ("Bob built a Settlement", "settlement", "blue", "blue built a Settlement"),
+    ("Carol built a city", "city", "orange", "orange built a City"),
+    ("Dave placed a Settlement", "settlement", "green", "green placed a Settlement"),
+    ("Dave placed a Road", "road", "green", "green placed a Road"),
+    ("You built a City", "city", None, "You built a City"),        # no player colour: the unknown grey
+])
+def test_built_and_placed_items_are_building_icons_in_the_players_colour(line, icon, colour, canonical):
+    toks = synth.log_line_tokens(line, NAMES)
+    assert toks[-1] == LogToken("icon", icon, colour, True)
+    assert [t.text for t in toks[-3:-1]] == [line.split()[-3], "a"]
+    assert synth.canonical_log_text(line, NAMES) == canonical
+    assert check_canonical(line, NAMES, True) == canonical
+    # text only: the word stays a word
+    assert not [t for t in synth.log_line_tokens(line, NAMES, icons=False) if t.kind == "icon"]
+    assert synth.canonical_log_text(line, NAMES, icons=False).lower() == canonical.lower()    # the word as written
+    # a building is never a card: its id is not a card icon, and the other icons are unchanged
+    assert icon in synth.LOG_ICON_IDS and icon not in synth.LOG_RESOURCE_ICONS
+    assert [t.text for t in synth.log_line_tokens("Bob bought Development Card", NAMES) if t.kind == "icon"] == ["dev"]
+
+
+def test_building_icons_are_drawn_in_the_players_colour_with_their_shapes(game):
+    s, _ = game
+    names = {p.name or p.color: p.color for p in s.players}
+    a, b = list(names)[:2]
+    lines = [f"{a} built a Road", f"{b} built a Settlement", f"{a} built a City", f"{b} placed a Road"]
+    size = (1280, 800)
+    for style in (LogPanelStyle(), LogPanelStyle.dark()):
+        img = synth.render_state(s, size=size, seed=1, me=0, jitter=False, jpeg=False, log=lines, log_style=style)
+        arr = np.asarray(img).astype(int)
+        mt = synth._log_metrics(size, style, None, 2)
+        entries = synth.layout_log_panel(lines, s.players, size, style)
+        assert [e.canonical.split()[-1] for e in entries] == ["Road", "Settlement", "City", "Road"]
+        widths = {}
+        for e in entries:
+            tok, (_, (x0, y0, x1, y1)) = e.tokens[-1], e.token_boxes[-1]
+            assert tok.kind == "icon" and tok.colour == names[a if e.text.startswith(a) else b]
+            want = np.array(style.name_rgb(tok.colour))
+            patch = arr[int(y0):int(y1), int(x0):int(x1) + 1]
+            near = np.abs(patch - want).sum(axis=2) < 30
+            widths[tok.text] = x1 - x0
+            assert near.mean() > 0.2, (tok, style.theme)
+            cols = np.flatnonzero(near.any(axis=0))
+            rows = np.flatnonzero(near.any(axis=1))
+            sub = near[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
+            hh, ww = sub.shape
+            top = sub[:max(1, hh // 5)]
+            if tok.text == "road":         # a slanted bar: top-right filled, top-left empty
+                assert top[:, ww // 2:].mean() > top[:, :ww // 3].mean() + 0.2
+            elif tok.text == "settlement":  # a roof: the top corners are empty, the bottom full
+                assert top[:, :ww // 5].mean() < 0.2 and top[:, -(ww // 5):].mean() < 0.2
+                assert sub[-max(1, hh // 4):].mean() > 0.8
+            else:                            # a tower on the left: top-left filled, top-right empty
+                assert top[:, :ww // 2].mean() > top[:, -(ww // 4):].mean() + 0.2
+        assert widths["city"] > widths["settlement"]
+        assert mt.card_h == pytest.approx(synth._BUILDING_W["road"] ** -1 * widths["road"], rel=0.01)
+
+
+COLON_LINES = [
+    ("Alice got 2 wood, 1 ore", ["got:"]),
+    ("Bob gave bank 4 sheep and took 1 ore", ["bank:"]),
+    ("Carol wants to give 1 wood for 1 ore", ["give:", "for:"]),
+    ("Carol stole a card from Bob", ["from:"]),
+    ("Alice traded 1 wood for 1 ore with Carol", ["for:", "with:"]),
+    ("Alice traded 3 wool for 1 ore with the bank", ["for:", "with:"]),
+    ("Bob counter-offered to Alice: 1 ore for 2 wood", ["for:"]),
+]
+
+
+@pytest.mark.parametrize("line,words", COLON_LINES)
+def test_colons_after_the_verbs_are_drawn_but_not_part_of_the_canonical_text(line, words):
+    plain = synth.log_line_tokens(line, NAMES, colons=0.0)
+    col = synth.log_line_tokens(line, NAMES, colons=1.0)
+    got = [t.text for t in col if t.kind == "text" and t.text.endswith(":") and t.text != ":"]
+    assert got == words
+    assert not [t for t in plain if t.kind == "text" and t.text[:-1] and t.text.endswith(":")]
+    # the colon is glued to its word (never wrapped apart), the rest of the line is unchanged
+    assert [t.kind for t in col] == [t.kind for t in plain]
+    assert [t.text.rstrip(":") for t in col] == [t.text.rstrip(":") for t in plain]
+    # one canonical text whether or not the colons are drawn; it parses to the line's event
+    assert synth.canonical_log_text(line, NAMES, colons=1.0) == synth.canonical_log_text(line, NAMES, colons=0.0)
+    txt = synth.log_line_tokens(line, NAMES, icons=False, colons=1.0)
+    drawn = "".join((" " if t.space and k else "") + t.text for k, t in enumerate(txt))
+    ev0, ev1 = L.parse_log_line(line), L.parse_log_line(drawn)
+    assert event_signature(ev1) == event_signature(ev0) and not ev1.problem, drawn
+    # a line without such a verb takes no colon
+    assert synth.log_line_tokens("Bob rolled 5 3", NAMES, colons=1.0) == synth.log_line_tokens("Bob rolled 5 3", NAMES,
+                                                                                                colons=0.0)
+
+
+def test_colons_are_a_deterministic_share_of_the_lines_and_use_no_random_stream(game):
+    s, lines = game
+    eligible = [ln for ln in lines if synth.log_line_tokens(ln, s.players, colons=1.0)
+                != synth.log_line_tokens(ln, s.players, colons=0.0)]
+    assert len(eligible) > 100
+    hit = [ln for ln in eligible if synth.log_line_tokens(ln, s.players) != synth.log_line_tokens(ln, s.players,
+                                                                                                  colons=0.0)]
+    assert 0.3 < len(hit) / len(eligible) < 0.5            # ~40 % (LOG_COLON_SHARE), chosen per line
+    assert synth.LogPanelStyle().colons == synth.LOG_COLON_SHARE == 0.4
+    # per line (a hash of its text): the same line gets the same colons wherever it is drawn
+    for ln in eligible[:30]:
+        assert synth.log_line_tokens(ln, s.players) == synth.log_line_tokens(ln, s.players)
+        e1 = synth.layout_log_panel([ln], s.players, (1280, 800))[0]
+        e2 = synth.layout_log_panel(["Bob rolled 5 3", ln], s.players, (1280, 800), first_index=7)[-1]
+        assert e1.tokens == e2.tokens and e1.canonical == e2.canonical
+    # the panel's colons come from its style
+    for share in (0.0, 1.0):
+        st = LogPanelStyle(colons=share)
+        e = synth.layout_log_panel(eligible[:1], s.players, (1280, 800), st)[0]
+        assert e.tokens == synth.log_line_tokens(eligible[0], s.players, colons=share)
+    # the render stream is untouched: everything outside the panel is identical with and without colons
+    a = synth.render_state(s, size=(1280, 800), seed=3, me=0, log=lines[-20:], log_style=LogPanelStyle(colons=0.0))
+    b = synth.render_state(s, size=(1280, 800), seed=3, me=0, log=lines[-20:], log_style=LogPanelStyle(colons=1.0))
+    assert _outside_panel_equal(a, b, synth.log_panel_box((1280, 800)), 24)
+    assert not np.array_equal(np.asarray(a), np.asarray(b))
+
+
+# ---------------------------------------------------------------------------
 # layout
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("size", [(1000, 640), (1280, 800), (1366, 768), (1920, 1080), (2560, 1440)])
@@ -403,7 +524,13 @@ def test_render_matches_layout_colours(game):
                 x = int(r[2]) - 2
                 assert np.abs(arr[y, x] - np.array(want)).sum() <= 6, (e.text, arr[y, x], want)
             for tok, (row, (x0, y0, x1, y1)) in zip(e.tokens, e.token_boxes):
-                if tok.kind == "icon" and not tok.text.startswith("die"):
+                if tok.kind == "icon" and tok.text in synth.LOG_BUILDING_ICONS:
+                    # a building: the player's colour at the road's middle, in the lower middle of a house
+                    cy = (y0 + y1) / 2 + (0.0 if tok.text == "road" else 0.25 * mt.card_h)
+                    px = arr[int(cy), int((x0 + x1) / 2)]
+                    assert np.abs(px - np.array(style.name_rgb(tok.colour))).sum() < 40, (tok, px)
+                    seen_icons.add(tok.text)
+                elif tok.kind == "icon" and not tok.text.startswith("die"):
                     # the card colour just inside its left edge, away from the pictogram
                     cy = int((y0 + y1) / 2 + 0.3 * mt.card_h)
                     px = arr[cy, int(x0 + 0.2 * mt.card_w + 0.5)]

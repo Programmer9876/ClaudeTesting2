@@ -45,7 +45,7 @@ def drawn_tokens(text: str, icons: bool) -> List[Tuple[str, str]]:
     from . import synth
     players = {c: c for c in _COLOUR_WORDS}
     out = []
-    for t in synth.log_line_tokens(text, players, icons=icons):
+    for t in synth.log_line_tokens(text, players, icons=icons, colons=0.0):
         if t.kind == "name":
             out.append(("name", t.colour or t.text))
         elif t.kind == "icon":
@@ -127,13 +127,18 @@ def align_truth(texts: Sequence[str], truth: Sequence[str]) -> List[Optional[int
 def forced_alignment(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: Sequence[int],
                      gaps: Sequence[float], xh: float, words: Sequence[str]) -> Optional[List[Tuple[int, int]]]:
     """The best segmentation of a run as exactly ``words``: ``[(segment index, class)]`` per
-    character, or ``None`` when no path exists."""
-    chars: List[Tuple[int, bool]] = []
+    character, or ``None`` when no path exists.  A word Colonist may write with a glued colon
+    ("got" / "got:", see :func:`catanbot.vision.logocr_decode.drop_verb_colon`) may have one on
+    screen: the colon is optional there (taken when the ink shows it)."""
+    chars: List[Tuple[int, bool, bool]] = []          # (class, starts a word, optional)
+    colon = G.CHAR_INDEX[":"]
     for w in words:
         for k, ch in enumerate(w):
             if ch not in G.CHAR_INDEX:
                 return None
-            chars.append((G.CHAR_INDEX[ch], k == 0))
+            chars.append((G.CHAR_INDEX[ch], k == 0, False))
+        if D.drop_verb_colon(w + ":") == w:
+            chars.append((colon, False, True))
     nb = len(bounds)
     if not chars or nb < 2:
         return None
@@ -145,7 +150,7 @@ def forced_alignment(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: S
     dp = np.full((len(chars) + 1, nb), NEG)
     bp = np.full((len(chars) + 1, nb, 2), -1, dtype=np.int64)
     dp[0, 0] = 0.0
-    for k, (c, wstart) in enumerate(chars, start=1):
+    for k, (c, wstart, optional) in enumerate(chars, start=1):
         for j in range(1, nb):
             best, arg = NEG, (-1, -1)
             for n, i in by_end.get(j, ()):
@@ -153,11 +158,15 @@ def forced_alignment(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: S
                     continue
                 if i == 0:
                     t = 0.0 if k == 1 else NEG
+                elif c == colon and not wstart:        # a glued colon may stand a space's width off
+                    t = max(spl[i])
                 else:
                     t = spl[i][0] if wstart else spl[i][1]
                 v = dp[k - 1, i] + float(lp[n, c]) + t
                 if v > best:
                     best, arg = v, (n, i)
+            if optional and dp[k - 1, j] > best:         # the optional colon is not there
+                best, arg = dp[k - 1, j], (-2, j)
             dp[k, j] = best
             bp[k, j] = arg
     if dp[len(chars), nb - 1] <= NEG / 2:
@@ -166,7 +175,8 @@ def forced_alignment(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: S
     j = nb - 1
     for k in range(len(chars), 0, -1):
         n, i = bp[k, j]
-        out.append((int(n), chars[k - 1][0]))
+        if n != -2:
+            out.append((int(n), chars[k - 1][0]))
         j = int(i)
     out.reverse()
     return out

@@ -52,16 +52,28 @@ turn ended their his her is selecting choosing placing discarding won game Large
 No gets receives offers proposed played monopolized everyone Dev dev""".split()
 _CARD_WORDS = ("wood", "brick", "sheep", "wheat", "ore", "lumber", "grain", "wool", "card", "cards")
 _NUMBERS = [str(n) for n in range(0, 31)]
-#: The recognisable words (a comma glued to a card word is part of the word).
+#: Words Colonist writes with a glued colon ("got:", "gave bank:", "wants to give:", "for:", "from:" ...).
+_COLON_WORDS = L.COLON_WORDS
+#: The recognisable words (a comma glued to a card word, a colon glued to a verb, are part of the word).
 LEXICON: Tuple[str, ...] = tuple(dict.fromkeys(
-    _BASE_WORDS + [w + "," for w in _CARD_WORDS] + _NUMBERS + [n + "," for n in _NUMBERS[:13]] + [":", "to:",
-                                                                                                    "stole:"]))
+    _BASE_WORDS + [w + "," for w in _CARD_WORDS] + _NUMBERS + [n + "," for n in _NUMBERS[:13]] + [":"]
+    + [w + ":" for w in _COLON_WORDS]))
 _NUM_RE = re.compile(r"^\d+,?$")
+
+
+def drop_verb_colon(word: str) -> str:
+    """A word of :data:`_COLON_WORDS` without its glued colon ("got:" -> "got"): Colonist writes the
+    colon on some lines only, so the canonical text leaves it out (as the synthetic panel's does)."""
+    if len(word) > 1 and word.endswith(":") and word[:-1].lower() in _COLON_WORDS:
+        return word[:-1]
+    return word
 
 
 def _lm_class(tok: str) -> str:
     """LM symbol of a token: numbers collapse to D (1..6, a die face or a small count) / NUM, with or
-    without a comma."""
+    without a comma; a word's glued colon is left out ("got:" is "got")."""
+    if len(tok) > 1 and tok.endswith(":"):
+        tok = tok[:-1]
     if _NUM_RE.match(tok):
         core = tok.rstrip(",")
         c = "D" if core in ("1", "2", "3", "4", "5", "6") else "NUM"
@@ -293,6 +305,9 @@ def decode_run(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: Sequenc
     best_end = np.full((W, nb), NEG, dtype=np.float32)
     best_st = np.zeros((W, nb), dtype=np.int64)
     nsf = ns.astype(np.float32)
+    # a colon glued to a word may stand a space's width off it (its side bearing): no gap cost
+    colon_join = np.maximum(ns, sp).astype(np.float32)
+    colon = G.CHAR_INDEX[":"]
     LPT = np.ascontiguousarray(LPB.transpose(1, 2, 0))          # (shift, class, start)
     active = np.arange(W)
     for k in range(Lmax):
@@ -300,7 +315,10 @@ def decode_run(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: Sequenc
         if active.size == 0:
             break
         ck = M[active, k]
-        cur = dp[active] if k == 0 else dp[active] + nsf[None, :]
+        if k == 0:
+            cur = dp[active]
+        else:
+            cur = dp[active] + np.where((ck == colon)[:, None], colon_join[None, :], nsf[None, :])
         cst = st[active]
         new = np.full((active.size, nb), NEG, dtype=np.float32)
         nst = np.zeros((active.size, nb), dtype=np.int64)
@@ -405,7 +423,7 @@ def decode_run(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: Sequenc
             if i >= j or not (i == 0 or real_gap[i]):
                 continue
             for pw, (ps, bp) in si.items():
-                if pw not in _NAME_SLOT_AFTER:
+                if _lm_class(pw) not in _NAME_SLOT_AFTER:
                     continue
                 startc = sp[i] if i != 0 else 0.0
                 inner = int(np.count_nonzero(real_gap[i + 1:j]))
@@ -441,7 +459,9 @@ def decode_run(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: Sequenc
         rr.spans.append((run_x0 + int(bounds[i]), run_x0 + int(bounds[j])))
     for v, k in finals[1:3]:
         rr.alts.append((float(v - total), [k]))
-    margin = (finals[0][0] - finals[1][0]) if len(finals) > 1 else 10.0
+    # a reading ending in the same word with / without its glued colon ("got:" / "got") is no rival
+    rivals = [v for v, k in finals[1:] if _lm_class(k) != _lm_class(last)]
+    margin = (finals[0][0] - rivals[0]) if rivals else 10.0
     q = min((s for s, u in zip(rr.scores, rr.unknown) if not u), default=-10.0)
     rr.conf = float(max(0.0, min(1.0, 1.0 + q / 1.5)) * min(1.0, 0.5 + margin / 4.0))
     return rr
@@ -451,6 +471,8 @@ def decode_run(lp: np.ndarray, pairs: Sequence[Tuple[int, int]], bounds: Sequenc
 # icons -> text
 # ---------------------------------------------------------------------------
 _RES = ("wood", "brick", "sheep", "wheat", "ore")
+#: Building icons -> their canonical words.
+BUILDING_WORDS: Dict[str, str] = {"road": "Road", "settlement": "Settlement", "city": "City"}
 
 
 def icon_text(kinds: Sequence[str], mult: Optional[int] = None) -> str:
@@ -466,6 +488,9 @@ def icon_text(kinds: Sequence[str], mult: Optional[int] = None) -> str:
             continue
         if k == "dev":
             out.append("Development Card")
+            continue
+        if k in BUILDING_WORDS:
+            out.append(BUILDING_WORDS[k])
             continue
         if runs and runs[-1][0] == k:
             runs[-1][1] += 1

@@ -23,7 +23,10 @@ Samples (deterministic from ``--seed``): heuristic-bot games rendered as Colonis
 (``tests/test_colonist_log.py::play``, card styles counts / words / colonist) with hand-made
 counter-offer, Monopoly, Year of Plenty, discard, steal, bank-trade and offer lines injected; per
 sample a window of recent entries is drawn with :func:`catanbot.vision.synth.render_state` on a
-random board and the truth is the layout it drew (``render_state(..., log_layout=[])``).  Each
+random board and the truth is the layout it drew (``render_state(..., log_layout=[])``); as on
+Colonist, the panel draws the item of "built a" / "placed a" as a building icon in the player's
+colour and writes a colon after the verbs of ~40 % of the lines ("got:", "for:" ...:
+``LogPanelStyle`` defaults, so both are in every condition).  Each
 sample is drawn twice: the window, and the window without its newest entry (the previous frame of
 a live screen: the same panel one entry earlier, every entry one entry-height lower).
 
