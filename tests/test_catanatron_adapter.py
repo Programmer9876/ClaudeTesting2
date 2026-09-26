@@ -47,8 +47,8 @@ needs_321 = pytest.mark.skipif(API_33, reason=f"catanatron {AD.CATANATRON_VERSIO
                                                 "(no random DISCARD / hard-coded discard rule)")
 
 
-def fresh_game(seed: int = 123, seat_players=None):
-    players = seat_players or [WeightedRandomPlayer(c) for c in AD.COLORS]
+def fresh_game(seed: int = 123, seat_players=None, num_players: int = 4):
+    players = seat_players or [WeightedRandomPlayer(c) for c in AD.colors_for(num_players)]
     return AD.make_game(players, seed=seed)
 
 
@@ -244,13 +244,15 @@ def _check_conversion(g, m):
     return cb, legal
 
 
-def test_converted_states_match_catanatron_through_a_game():
+@pytest.mark.parametrize("num_players", [4, 2])
+def test_converted_states_match_catanatron_through_a_game(num_players):
     # catanatron orders some playable actions from sets of Color enums, so a seeded game is
     # only reproducible within one process: play seeds until every prompt has been seen.
+    # 2 players: the 1v1 format of scripts/bench_catanatron.py --players 2.
     prompts = set()
     ticks = 0
-    for seed in range(123, 133):
-        g = fresh_game(seed=seed)
+    for seed in range(123, 133 if num_players == 4 else 163):
+        g = fresh_game(seed=seed, num_players=num_players)
         m = AD.mapping_for(g.state.board.map)
         while g.winning_color() is None and g.state.num_turns < TURNS_LIMIT:
             prompts.add(g.state.current_prompt)
@@ -278,11 +280,12 @@ def test_me_color_must_be_seated():
 PRE_ROLL_ONLY_IN_33 = {ActionType.PLAY_ROAD_BUILDING, ActionType.PLAY_YEAR_OF_PLENTY, ActionType.PLAY_MONOPOLY}
 
 
-def test_action_round_trips_for_every_action_type():
+@pytest.mark.parametrize("num_players", [4, 2])
+def test_action_round_trips_for_every_action_type(num_players):
     seen = set()
     pre_roll_extras = set()
-    for seed in range(1, 11):
-        g = fresh_game(seed=seed)
+    for seed in range(1, 11 if num_players == 4 else 41):
+        g = fresh_game(seed=seed, num_players=num_players)
         m = AD.mapping_for(g.state.board.map)
         while g.winning_color() is None and g.state.num_turns < TURNS_LIMIT:
             st = g.state
@@ -1104,3 +1107,72 @@ def test_timing_summary():
     assert s["n"] == 100 and abs(s["mean_ms"] - 50.5) < 1e-9 and abs(s["total_s"] - 5.05) < 1e-9
     assert abs(s["p50_ms"] - 50.0) < 1e-9 and abs(s["p95_ms"] - 95.0) < 1e-9 and abs(s["max_ms"] - 100.0) < 1e-9
     assert AD.timing_summary([])["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Two-player (1v1) games: scripts/bench_catanatron.py --players 2
+# (the whole-game conversion and action round trips above also run with 2 players)
+# ---------------------------------------------------------------------------
+def test_colors_for_player_counts():
+    assert AD.colors_for(2) == (Color.RED, Color.BLUE)
+    assert AD.colors_for(3) == AD.COLORS[:3] and AD.colors_for() == AD.COLORS
+    for bad in (0, 1, 5):
+        with pytest.raises(ValueError):
+            AD.colors_for(bad)
+
+
+def test_two_player_setup_order_discards_and_robber_victims():
+    """Both engines play the base rules with two seats: setup snake 0-1-1-0, a discard queue of
+    the seated players only, and a robber that can steal only from the one opponent (catanbot's
+    legal robber moves name the same victims catanatron offers)."""
+    robbers = discards = 0
+    for seed in range(300, 340):
+        g = fresh_game(seed=seed, num_players=2)
+        m = AD.mapping_for(g.state.board.map)
+        order = []
+        while g.winning_color() is None and g.state.num_turns < TURNS_LIMIT:
+            st = g.state
+            prompt = st.current_prompt
+            if prompt == ActionPrompt.BUILD_INITIAL_SETTLEMENT:
+                order.append(int(st.current_player_index))
+            elif prompt == ActionPrompt.DISCARD:
+                cb = AD.to_catanbot_state(g)
+                assert cb.num_players == 2 and set(cb.discard_queue) <= {0, 1}
+                discards += 1
+            elif prompt == ActionPrompt.MOVE_ROBBER:
+                cb = AD.to_catanbot_state(g)
+                mover = int(st.current_player_index)
+                ours = {AD.catanbot_action_to_key(a, cb, m, st.colors) for a in E.legal_actions(cb)
+                        if a[0] == A.MOVE_ROBBER}
+                theirs = {AD.playable_key(a) for a in AD.playable_actions_of(g)
+                          if a.action_type == ActionType.MOVE_ROBBER}
+                assert ours == theirs
+                assert {k[1][1] for k in theirs} <= {None, st.colors[1 - mover]}
+                robbers += 1
+            g.play_tick()
+        assert order == [0, 1, 1, 0]
+        if robbers >= 20 and discards >= 3:
+            break
+    assert robbers >= 20 and discards >= 3
+
+
+@pytest.mark.parametrize("seat", [0, 1])
+def test_two_player_catanbot_player_game_and_replay(seat):
+    """A strict CatanbotPlayer plays a whole 1v1 game from either seat without an adapter error
+    or fallback, observes the opponent, and the recorded log replays to the same final state."""
+    me = AD.CatanbotPlayer(AD.COLORS[seat], spec=SMALL_SPEC, strict=True, seed=1)
+    players = [me if i == seat else WeightedRandomPlayer(c) for i, c in enumerate(AD.colors_for(2))]
+    res = AD.play_game(players, seed=20 + seat, record_log=True)
+    assert res["colors"] == ["RED", "BLUE"] and len(res["vps"]) == 2
+    assert res["winner"] is not None or res["turns"] >= TURNS_LIMIT
+    st = me.stats
+    assert st["errors"] == 0 and st["observe_errors"] == 0 and st["fallback"] == 0
+    assert st["searched"] > 0 and st["observed"] >= 0.8 * res["actions"]
+    log = res["log"]
+    assert log["colors"] == ["RED", "BLUE"] and len(log["final"]["vps"]) == 2
+    g = AD.rebuild_game(log)
+    assert g.state.colors == (Color.RED, Color.BLUE)
+    for item in log["actions"]:
+        AD.replay_log_action(g, item)
+    assert AD.state_fingerprint(g.state) == log["final"]["fingerprint"]
+    assert [int(g.state.player_state[f"P{i}_ACTUAL_VICTORY_POINTS"]) for i in range(2)] == res["vps"]
