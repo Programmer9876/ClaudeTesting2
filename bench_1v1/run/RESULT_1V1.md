@@ -1,0 +1,15 @@
+Analysis of 2026-09-26 08:35 UTC by `scripts/analyze_1v1.py` (docs/BENCH_1V1_PROTOCOL.md).
+
+| test | opponent | games | wins | win rate | 95% CI | one-sided p vs 50% | avg VP (ours / opp) | seat 0 / seat 1 wins | registered |
+|---|---|---|---|---|---|---|---|---|---|
+| H1 (primary) | AlphaBetaPlayer | 400 | 302 | 75.5% | 71.0-79.6% | 1.39e-25 | 9.05 / 6.46 | 154/200, 148/200 | yes |
+| H2 (secondary) | ValueFunctionPlayer | 400 | 293 | 73.2% | 68.6-77.5% | 2.11e-21 | 8.98 / 6.55 | 152/200, 141/200 | yes |
+
+**Primary (H1).** REJECTED H0 (win rate <= 50%) at one-sided alpha 0.05: p = 1.39e-25 - our bot beats catanatron's AlphaBetaPlayer head to head
+
+**Secondary (H2).** H2 (gated by H1) REJECTED H0 (win rate <= 50%) at one-sided alpha 0.05: p = 2.11e-21
+
+**Comparison with HexMachina.** Against catanatron 3.3.0's AlphaBetaPlayer (defaults) in 1v1 games our bot won 302/400 = 75.5% (95% CI 71.0-79.6%; average 9.1 VP vs 6.5). HexMachina's reported 54.1% lies below our whole 95% interval: our rate is higher than their reported point estimate. HexMachina (Belle et al., arXiv 2506.04651) is reported at 54.1% (8.2 VP) against AlphaBeta, with AlphaBeta itself at 51.0% (7.8 VP) in the same setup; their exact game format, catanatron version, AlphaBeta settings and number of games are unconfirmed (the paper could not be read from our environment), and their uncertainty is unknown, so this is a side-by-side of two numbers, not a test of one against the other.
+
+
+Sources: `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H1/g00000-00050.json`, `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H1/g00050-00100.json`, `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H1/g00100-00150.json`, `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H1/g00150-00200.json`, `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H1/g00200-00250.json`, `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H1/g00250-00300.json`, `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H1/g00300-00350.json`, `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H1/g00350-00400.json`, `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H2/g00000-00100.json`, `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H2/g00100-00200.json`, `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H2/g00200-00300.json`, `/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/bench1v1/run/json/H2/g00300-00400.json`

@@ -4,6 +4,20 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 08:50 UTC - 1v1 benchmark: 75.5 % against Catanatron's AlphaBeta (HexMachina comparison)
+
+Pre-registered in `docs/BENCH_1V1_PROTOCOL.md` (commit `35ef224`, before any game) and run from a frozen
+worktree of that commit.  Full write-up: `docs/BENCH_1V1.md`; evidence: `bench_1v1/`.
+
+- **H1, vs AlphaBetaPlayer (primary):** 302/400 = **75.5 %** (95 % CI 71.0-79.6 %), p = 1.4e-25 against 50 %.
+  Average VP 9.05 vs 6.46.
+- **H2, vs ValueFunctionPlayer (secondary, gated):** 293/400 = **73.2 %** (68.6-77.5 %), p = 2.1e-21.
+- **HexMachina's reported 54.1 %** is below our whole 95 % interval, so our rate is higher than their reported
+  point estimate.  Their format is unconfirmed, so this is a side-by-side of two numbers, not a test, and we
+  do not claim to be better than HexMachina.
+- **Clean run:** 0 replay mismatches in 800 games, 0 crashes, 0 turn-cap games.  AlphaBeta's slowest decision
+  took 0.73 s against its 20 s deadline.
+
 ## 2026-09-26 09:20 UTC - first queue results: player trading is worth about 24 points
 
 - **Trading headroom** (`t1_trades0_vrule@value`, 2,000 paired seeds, vs 3x

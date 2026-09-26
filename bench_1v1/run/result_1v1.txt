@@ -1,0 +1,10 @@
+1v1 benchmark (docs/BENCH_1V1_PROTOCOL.md): catanbot [search:depth=1,beam=4,expand=8,evaluator=heuristic] vs catanatron 3.3.0, head to head (null 50%)
+H1 (primary) vs AlphaBetaPlayer: 302/400 = 75.5%  95% CI 71.0-79.6%  (99% 69.5-80.8%)  one-sided p vs 50% = 1.39e-25
+    avg VP 9.05 vs 6.46; turns/game 69.4; seat 0 (moves first) 154/200, seat 1 148/200; turn-cap games 0, crashed games 0 (0 crashed attempts); adapter errors 0, fallbacks 0, unmapped top 0
+    registered data: yes
+H2 (secondary) vs ValueFunctionPlayer: 293/400 = 73.2%  95% CI 68.6-77.5%  (99% 67.2-78.8%)  one-sided p vs 50% = 2.11e-21
+    avg VP 8.98 vs 6.55; turns/game 70.8; seat 0 (moves first) 152/200, seat 1 141/200; turn-cap games 0, crashed games 0 (0 crashed attempts); adapter errors 0, fallbacks 0, unmapped top 0
+    registered data: yes
+PRIMARY (H1): REJECTED H0 (win rate <= 50%) at one-sided alpha 0.05: p = 1.39e-25 - our bot beats catanatron's AlphaBetaPlayer head to head
+SECONDARY: H2 (gated by H1) REJECTED H0 (win rate <= 50%) at one-sided alpha 0.05: p = 2.11e-21
+HEXMACHINA COMPARISON: Against catanatron 3.3.0's AlphaBetaPlayer (defaults) in 1v1 games our bot won 302/400 = 75.5% (95% CI 71.0-79.6%; average 9.1 VP vs 6.5). HexMachina's reported 54.1% lies below our whole 95% interval: our rate is higher than their reported point estimate. HexMachina (Belle et al., arXiv 2506.04651) is reported at 54.1% (8.2 VP) against AlphaBeta, with AlphaBeta itself at 51.0% (7.8 VP) in the same setup; their exact game format, catanatron version, AlphaBeta settings and number of games are unconfirmed (the paper could not be read from our environment), and their uncertainty is unknown, so this is a side-by-side of two numbers, not a test of one against the other.
