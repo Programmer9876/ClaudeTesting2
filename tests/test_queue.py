@@ -117,7 +117,7 @@ def test_every_current_plan_row_gets_area_polarity_tier(tmp_path):
         assert q.rows[n].design == "politics" and q.plan.row(n)["tier"] == "politics"
     assert RQ.looks_for(q.plan.row("counters_selfplay"), "politics", 1200) == [1200]
     op = q.plan.row("t1_openings@value")
-    assert op["area"] == "diversification" and op["values"] == ["pips_diversity", "standin_book", "setup_pick"]
+    assert op["area"] == "diversification" and op["values"] == ["pips_diversity", "standin_book", "conversion", "setup_pick"]
     for n in ("t1_openings@vf", "demand_flat_pyeval@vf", "demand_mild_pyeval@vf", "expansion_reach_credit@value",
               "ports_conversion_cost@value", "div_lr_bundle", "t3_openings@alphabeta"):
         assert q.plan.row(n)["area"] == "diversification", n
@@ -127,7 +127,11 @@ def test_every_current_plan_row_gets_area_polarity_tier(tmp_path):
     assert b["_pieces"] == ["conv=1", "paths=1"] and b["_members"] == ["ports_conversion_cost@value"]
     assert {r["name"] for r in q.plan.rows if r.get("_knockout_of") == "robber_la_bundle"} == \
         {"robber_la_bundle-no-robber_corr", "robber_la_bundle-no-paths"}
-    assert not any(r["enabled"] for r in q.plan.rows if "bundle" in r["name"] and r["name"] != "acq_breadth_bundle")
+    # div_lr_bundle is enabled since ports.conversion_cost landed (conv=1); the robber bundle waits for its code
+    assert q.plan.row("div_lr_bundle")["enabled"] and q.plan.row("ports_conversion_cost@value")["enabled"]
+    assert not any(r["enabled"] for r in q.plan.rows
+                   if "bundle" in r["name"] and r["name"] != "acq_breadth_bundle"
+                   and not r["name"].startswith("div_lr_bundle"))
     assert q.plan.row("demand_flat_pyeval@vf")["values"] == [[1, 1, 1, 1, 1]]
     child = q.plan.row("demand_mild_pyeval@vf")
     assert child["parent"] == "demand_flat_pyeval@vf" and child["fallback"] == "milder"

@@ -4,6 +4,62 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 07:20 UTC - port-aware diversification built; the opening is the real lever
+
+Built off by default (step 2 of the plan and the user's diversification
+request):
+- **Corrections hub** (`catanbot/corrections.py`): one place where extra
+  scoring terms are added on top of the C++ static values.  Win-path
+  results are bit-identical before and after the refactor, and the default
+  bot's pinned game digests are unchanged.
+- **Conversion-cost term** (`catanbot/conversion.py`, spec key `conv=1`).
+  Every missing resource costs 3 / 2 / 1 extra cards per needed card
+  (bank / 3:1 port / 2:1 port with a surplus), times the rolls left.  It is
+  priced at 0.12 points a card, the static value's own card price.  With no
+  fitting, the model reproduces the logs:
+
+  | | model | measured |
+  |---|---|---|
+  | extra cards a game at 4:1 | 12.5 | ~15 |
+  | saved by a 3:1 port | 4.2 | ~5 |
+  | saved by a 2:1 wheat port | 3.2 | 3.6-3.8 |
+
+- **`conversion` opening policy** for setup placement.
+
+**Zero-game comparison** (1,997 decisions from 60 proof games; the A/A
+control changed 0):
+
+| arm | decisions changed | CPU cost |
+|---|---|---|
+| `conv=1` | 1.1 % | 1.01-1.04x |
+| `conv=1` + road credit | 2.4 % | 1.06-1.09x |
+| `paths=1` | 11.1 % | 1.23x |
+| `conv=1` + `paths=1` | 12.0 % | 1.24-1.27x |
+
+- `conv=1` changes *which* city or settlement, almost never the *kind* of
+  action.  A one-turn term cannot make the bot save cards for next turn's
+  settlement.
+- With `paths=1` the two are additive, with no double counting; the extra
+  roads come from the win paths.
+- The opening policy is the strong lever.  It changes 56 % of our setup
+  settlements:
+
+  | our opening | current | conversion policy |
+  |---|---|---|
+  | resource types (proof positions) | 3.78 | 4.28 |
+  | resource types (200 random boards) | 4.07 | 4.62 |
+  | five-type openings | 26 % | 62 % |
+  | total pips | 20.2 | 18.9 |
+  | on a port | 7 % | 13 % |
+
+**Queue:** these rows are now enabled in `scripts/queue_plan.json`:
+- the `conversion` policy in the openings rows;
+- `div_lr_bundle` (`conv=1` + `paths=1`, bundle first);
+- `ports_conversion_cost`, with the road credit as its stronger fallback.
+
+216 tests pass on both Python environments (hub, conversion, search,
+winpaths, openings, pinned default digests, C++ parity, queue).
+
 ## 2026-09-26 06:30 UTC - budgeted test queue built (step 1 of docs/PRIORITY_PLAN.md)
 
 `scripts/run_queue.py` runs the user's testing policy (docs/QUEUE.md).
