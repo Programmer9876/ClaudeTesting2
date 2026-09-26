@@ -1369,7 +1369,6 @@
   },
   {
    "name": "shadow_robber_step5",
-   "enabled": false,
    "kind": "command",
    "area": "robber",
    "priority": 22.5,
@@ -1405,12 +1404,10 @@
     "key": "aa_ok",
     "pass_if": true
    },
-   "requires": "step 5 code (search.robber_corr, search.kick, catanbot/robber_eval.py, catanbot/knightkick.py, decision_shadow.py --robber-gates) is in the working tree; a command row is not tunable-checked, so enable it by hand after --bump-code --areas robber (epoch B3)",
    "notes": "robber.shadow_metrics, step-5 part (zero games): 40 default self-play games (seeds 7400-7439), every robber and knight decision and 1 in 5 main-phase decisions re-searched per candidate (C++ evaluator) with the robber / would-kick-holder classifier; candidates R1a persistence (robber_corr=1), knight_kick (kick=0.95), R1b insurance alone (INSURANCE_W=1, INS_OFFSET at its calibrated default: an out-of-sample centring check) and R1c block duration alone (BLOCK_DUR_W=0.5). PASS = the A/A candidate changed nothing; the gate rows below read the design's G1-G5 from its JSON."
   },
   {
    "name": "robber_gate_r1a",
-   "enabled": false,
    "kind": "command",
    "area": "robber",
    "priority": 22.6,
@@ -1437,12 +1434,10 @@
     "key": "pass",
     "pass_if": true
    },
-   "requires": "step 5 code (search.robber_corr, search.kick, catanbot/robber_eval.py, catanbot/knightkick.py, decision_shadow.py --robber-gates) is in the working tree; a command row is not tunable-checked, so enable it by hand after --bump-code --areas robber (epoch B3)",
    "notes": "R1a persistence shadow gates (the design): G1 >= 30% of the default's robber / knight moves onto a would-kick knight holder kicking within one roll change; G2 <= 3% of the other robber / knight decisions (the default blocks no would-kick holder; hits on holders kicking after 2+ rolls are a readout) change; G3 <= 1% of main-phase first actions change; G4 ms ratio <= 1.2 mean, <= 1.5 p95. PASS unlocks robber_la_bundle and robber_persistence."
   },
   {
    "name": "robber_gate_kick_trigger",
-   "enabled": false,
    "kind": "command",
    "area": "robber",
    "priority": 22.61,
@@ -1469,12 +1464,10 @@
     "key": "fallback_trigger",
     "pass_if": true
    },
-   "requires": "step 5 code (search.robber_corr, search.kick, catanbot/robber_eval.py, catanbot/knightkick.py, decision_shadow.py --robber-gates) is in the working tree; a command row is not tunable-checked, so enable it by hand after --bump-code --areas robber (epoch B3)",
    "notes": "The knight_kick fallback rule (docs/PRIORITY_PLAN.md cross-area conflicts): PASS when R1a fails shadow gate G1 (inert) or G4 (too slow); never after a win-rate SHELVE, never stacked with R1a in one arm (the hub refuses kick with persistence on)."
   },
   {
    "name": "robber_gate_r1b",
-   "enabled": false,
    "kind": "command",
    "area": "robber",
    "priority": 22.62,
@@ -1501,12 +1494,10 @@
     "key": "pass",
     "pass_if": true
    },
-   "requires": "step 5 code (search.robber_corr, search.kick, catanbot/robber_eval.py, catanbot/knightkick.py, decision_shadow.py --robber-gates) is in the working tree; a command row is not tunable-checked, so enable it by hand after --bump-code --areas robber (epoch B3)",
    "notes": "R1b knight insurance shadow gates: G1 >= 3% of knight holders' roll / main first actions change; G2 >= 60% of the holder decisions whose knight play flips follow exposure (kept with P_hit above its median, spent below it; the design's literal 'kept while exposed' share is reported as kept_exposed); G3 <= 1% of non-holders' change; G4 |mean C_ins| over insured leaves <= 0.05 points (centring); G5 ms ratio <= 1.3. PASS = INSURANCE_W goes to the SPSA robber group (a request to its owner); no standalone A/B."
   },
   {
    "name": "robber_gate_r1c",
-   "enabled": false,
    "kind": "command",
    "area": "robber",
    "priority": 22.63,
@@ -1533,7 +1524,6 @@
     "key": "pass",
     "pass_if": true
    },
-   "requires": "step 5 code (search.robber_corr, search.kick, catanbot/robber_eval.py, catanbot/knightkick.py, decision_shadow.py --robber-gates) is in the working tree; a command row is not tunable-checked, so enable it by hand after --bump-code --areas robber (epoch B3)",
    "notes": "R1c block duration shadow gate: >= 2% of robber / knight decisions change (readouts: P(needed card), leader hits, blocked pips, offensive knights). PASS = BLOCK_DUR_W goes to the SPSA robber group (a request to its owner); no standalone A/B."
   },
   {
@@ -1630,7 +1620,6 @@
   },
   {
    "name": "robber_la_bundle",
-   "enabled": false,
    "area": "robber",
    "polarity": "new",
    "promise_pp": 4,
@@ -1657,7 +1646,6 @@
      "PASS"
     ]
    },
-   "requires": "step 5 code (robber_corr=1, robber_eval) is in the working tree; its pieces are spec keys, which the queue does not tunable-check, so enable it by hand after --bump-code --areas robber (epoch B3)",
    "notes": "Bundle first: robber persistence (robber_corr=1) + the win-path Largest Army race (paths=1) vs the default. ADOPT unlocks the two generated knockouts (robber_la_bundle-no-robber_corr, robber_la_bundle-no-paths); SHELVE shelves both. Mechanism readout: knights_played vs knights_held_end, largest_army, robber_on_us_rolls, robber_income_share (knight timing is the risk)."
   },
   {
