@@ -639,6 +639,50 @@ machine was otherwise idle, load ~1.9 at 2 workers and ~2.6-2.9 at 3):
 3 workers give ~1.45x the 2-worker rate on an idle 4-core machine; with the other benchmark on 2 cores,
 use 2.  The alphabeta row rests on 4-6 games.
 
+## Testing policy (user decision, 2026-09-26): thousands of games, priority queue, shelve the unprovable
+
+This replaces any plan above that needed tens of thousands of games per
+idea.
+
+* **Budget:** a few thousand games per candidate (about 2,000 paired seeds
+  against Catanatron, about 2,400 self-play games).  If proving an effect
+  would take tens of thousands of games, the idea is **SHELVED**: its default
+  stays as is and it is listed as shelved.
+* **Early stopping (preemption):** each candidate is checked at interim
+  looks.
+  - **ADOPT** when it is clearly good; it then goes through the league gate
+    before becoming the default.
+  - **REJECT** when it is clearly bad, or clearly too small to matter.
+  - **SHELVE** when neither is clear at the budget cap.
+* **Priority queue** by how likely an idea is to move the needle per game
+  spent.  A higher-priority item preempts the running one only when that is
+  worth its switching cost.  Everything runs in batches that share their
+  default arms.
+* **Priorities**, in order:
+  1. **Trading**: get what we need from whichever source is cheapest: the
+     bank at 4:1, ports at 3:1 or 2:1, or other players.
+  2. **Ports**: is a port spot worth giving up a three-tile spot for a two-
+     or one-tile one, including the roads to reach it and whether others can
+     and will block it, by what they need and a simple "are they the
+     leader" check.
+  3. **Robber**: block production and steal the right resources.
+  4. **Card counting**: who holds what.
+     - Resource odds for robber targets and our Monopoly.
+     - Hurting the leader.
+     - Reading held dev cards.  A card held a long time is most likely a
+       VP card, so a secret leader.  Knights tend to be played for Largest
+       Army or to move the robber, and Year of Plenty is usually used fast.
+       A Monopoly becomes more plausible when the bank is low in what that
+       player needs, because the other players then hold it.
+
+  Everything else runs only if there is time.
+* **Replace ideas that do not deliver:** an idea that does not deliver its
+  promised benefit goes on ice and is replaced by a more moderate version of
+  it.
+* **2x2 interaction tests and joint tuning** only run within the same
+  thousands-of-games budget, and only for the four priority areas.
+* **The politics rule below still applies.**
+
 ## Queue after the strength proof (2026-09-26): every strategy the user asked to test
 
 Everything below runs after T7-T11, one experiment at a time on 3 cores.
