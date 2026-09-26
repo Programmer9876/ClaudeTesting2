@@ -658,7 +658,8 @@ idea.
   spent.  A higher-priority item preempts the running one only when that is
   worth its switching cost.  Everything runs in batches that share their
   default arms.
-* **Priorities**, in order:
+* **Priorities** (regrouped below: diversification / expansion is now
+  its own area, second after trading), in order:
   1. **Trading**: get what we need from whichever source is cheapest: the
      bank at 4:1, ports at 3:1 or 2:1, or other players.
   2. **Ports**: is a port spot worth giving up a three-tile spot for a two-
@@ -690,6 +691,30 @@ idea.
     time limit.  The one wall-clock limit in play is Catanatron's 20 s
     AlphaBeta cutoff, and every run reports the slowest opponent decision.
 * **The politics rule below still applies.**
+
+## Test queue (`scripts/run_queue.py`, 2026-09-26)
+
+The policy above is implemented by the budgeted test queue. docs/QUEUE.md covers how to run it, read the verdicts, add rows, and use fallbacks and epochs. The plan is `scripts/queue_plan.json`.
+
+In short:
+- Every row goes through a sequential verdict engine (`scripts/seqtest.py`):
+  - screen: ADOPT / REJECT / SHELVE;
+  - knockout: REMOVE / KEEP;
+  - estimate;
+  - politics: a fixed-N screen, then SIGNIFICANT / INCONCLUSIVE by Holm within the row's tier;
+  - confirm.
+- A null row stops at about half its cap. False ADOPT is about 2% per row.
+- Rows are ordered by area (harness, trades, ports, robber, counting, politics, other), then priority. Preemption is decided in CPU seconds (getrusage).
+- Chunks run from pinned code snapshots, one epoch per area batch.
+- A shelved idea unlocks its declared fallback row.
+
+Verdicts are also written as `{"kind": "stop", "source": "queue"}` records into each row's JSONL. `ablate_catanatron.py` (and so campaign.py) no longer plays a candidate the queue has stopped. Other stop records keep their old meaning.
+
+**Tooling exemption from the tuning.py rule.** Queue options are test tooling, not bot behaviour, so none of them is a `catanbot/tuning.py` tunable:
+- the plan fields `design`, `polarity`, `estimator`, `crn`;
+- the `ablate_catanatron.py` flags `--mech`, `--crn dice`, `--default-only`.
+
+They are all off by default outside the queue, and arm keys are unchanged when they are off. The bot is untouched. A tuning.py entry would change the code fingerprint and void default-arm reuse.
 
 ## Queue after the strength proof (2026-09-26): every strategy the user asked to test
 
@@ -776,6 +801,46 @@ Plan (off by default, then tested):
 2. Add a candidate generic-port value that scales with our total
    production: a 3:1 port converts every surplus resource.
 3. Run paired campaign rows vs value and vf, then the league gate.
+
+## Regrouping (user decision, 2026-09-26): diversification is its own area; test the linked pieces together
+
+**Areas, in priority order:**
+1. **Trading:** get what we need from the cheapest source.
+2. **Diversification / expansion:** grow onto new ground and new resource
+   types.  This covers `ports.conversion_cost` (the cost of missing
+   resources, weighted by our ports), opening diversity (`pips_diversity`,
+   `standin_book`, `RESOURCE_DEMAND`) and expansion pace (a road/settlement
+   plan credit).
+   - Linked to **Longest Road**: the same roads serve expansion and the road
+     race.
+3. **Ports:** port access, meaning which port spots are worth a weaker land
+   spot, and the roads and blocking race to reach them.
+4. **Robber:** block production, steal the right cards, robber persistence
+   and knight insurance.
+   - Linked to **Largest Army**: the same knights move the robber and win the
+     army race.
+5. **Card counting:** resource odds, and reading held dev cards.
+
+**The VP-path layer ties them together.**  The win-path portfolio
+(`search.paths`, docs/ABLATIONS_WINPATHS.md) values the Longest Road and
+Largest Army races by crowding.  Diversification and robber features must be
+tested with it, not in isolation.
+- Roads: expansion value (resource access) and race value (the Longest Road
+  prize) are different things, so they add.  The risk is over-building roads.
+- Knights: insurance says hold the knight, the army race says play it.  The
+  risk is bad knight timing.
+
+**How linked pieces are tested within the budget: bundle first, then knock
+out.**
+1. Play the bundle (both pieces on) against the default, e.g.
+   `conv=1,paths=1` or `robber_corr=1,paths=1`.
+2. If the bundle is clearly good: knock out one piece at a time to see which
+   carries the gain, and whether the pair beats each piece alone.
+3. If the bundle is unclear at the cap: shelve both.  Do not spend a full
+   2x2.
+4. Mechanism metrics decide what went wrong in a failed bundle:
+   - roads built, Longest Road held, extra settlements, resource types;
+   - knights held vs played, Largest Army held, time the robber sits on us.
 
 ## Politics rule (user decision, 2026-09-26): inconclusive -> deferred to human testing
 

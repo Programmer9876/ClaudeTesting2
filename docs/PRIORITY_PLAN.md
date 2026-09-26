@@ -1,5 +1,19 @@
 # Priority areas: designs and plan (2026-09-26)
 
+**Regrouped after the designs (user, 2026-09-26):**
+
+| order | area | linked VP path |
+|---|---|---|
+| 1 | trading | |
+| 2 | diversification / expansion (conversion cost, opening diversity, expansion pace) | Longest Road |
+| 3 | ports (access) | |
+| 4 | robber | Largest Army |
+| 5 | card counting | |
+
+Linked pieces are tested as bundles first, then knocked out one at a time
+(docs/ABLATIONS.md "Regrouping").  The rest of this file is the design
+output as written, with the old area names.
+
 The design workflow's output for the user's four priority areas (trading, ports, robber, card counting) plus the budgeted test queue.
 For each area, one agent mapped the code and measured the proof logs; two critics (Catan strategy, engineering) attacked the design; a reviser folded the fixes in; a planner merged everything into one queue.
 Full detail (every formula, plug-in point and test): `docs/designs/priority_areas_2026-09-26.json`.
