@@ -23,8 +23,10 @@ fields are replaced.  An A/A candidate (``aa``: nothing changed) is always added
 static evaluator (``needs_python_evaluator``) re-executes the script with ``CATANBOT_NO_ACCEL=1``.
 
 Phase classes (``--phases``, default all): setup, roll, main, robber (the robber move after a 7), discard, trade
-(answering / selecting), and knight (any decision where playing a knight is legal - the knight's hex and victim
-are part of that action).  A decision can be in two classes (roll + knight).
+(answering / selecting), knight (any decision where playing a knight is legal - the knight's hex and victim are part
+of that action) and buy_dev (buying a development card is legal).  A decision can be in several classes (roll +
+knight, main + buy_dev).  ``--main-every N`` shadows only every N-th main-phase decision that is in no other
+covered class (main decisions are ~80% of all; the robber shadow samples 1 in 5).
 
 Output: per candidate the changed share overall and per class, the changed kinds (default kind -> candidate
 kind), the mean and p95 ms of both searches and their ratio.  ``scripts/run_queue.py`` reads the JSON through
@@ -50,7 +52,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-CLASSES = ("setup", "roll", "main", "robber", "discard", "trade", "knight")
+CLASSES = ("setup", "roll", "main", "robber", "discard", "trade", "knight", "buy_dev")
 
 
 def _p95(xs: Sequence[float]) -> float:
@@ -117,6 +119,8 @@ def classes_of(state, legal) -> Tuple[str, ...]:
         out.append("trade")
     if any(a[0] == A.PLAY_KNIGHT for a in legal):
         out.append("knight")
+    if any(a[0] == A.BUY_DEV for a in legal):
+        out.append("buy_dev")
     return tuple(out)
 
 
@@ -128,7 +132,7 @@ class ShadowBot:
     configuration and every candidate (same ``random.Random(k)``), then lets the inner bot decide as always."""
 
     def __init__(self, inner, candidates: Sequence[Candidate], phases: Sequence[str], seed: int, spec: str,
-                 rows: List[Dict[str, Any]], tag: str = ""):
+                 rows: List[Dict[str, Any]], tag: str = "", main_every: int = 1):
         self.inner = inner
         self.name = getattr(inner, "name", "search")
         self.candidates = list(candidates)
@@ -138,6 +142,8 @@ class ShadowBot:
         self.rows = rows
         self.tag = tag
         self.k = 0
+        self.main_every = max(1, int(main_every))
+        self._main_seen = 0
         self._cfg_cache: Dict[str, Any] = {}
 
     # Bot protocol --------------------------------------------------------------------------
@@ -158,7 +164,12 @@ class ShadowBot:
     def decide(self, state, legal, rng):
         if len(legal) > 1:
             cls = classes_of(state, legal)
-            if self.phases.intersection(cls):
+            hit = self.phases.intersection(cls)
+            if hit and self.main_every > 1 and hit <= {"main", "buy_dev"}:
+                self._main_seen += 1
+                if (self._main_seen - 1) % self.main_every:
+                    hit = set()
+            if hit:
                 self._shadow(state, legal, cls)
         return self.inner.decide(state, legal, rng)
 
@@ -219,15 +230,15 @@ class ShadowBot:
 # ---------------------------------------------------------------------------
 # Sources
 # ---------------------------------------------------------------------------
-def run_selfplay(spec: str, candidates, phases, games: int, seed: int, max_turns: int, log=sys.stdout
-                 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def run_selfplay(spec: str, candidates, phases, games: int, seed: int, max_turns: int, log=sys.stdout,
+                 main_every: int = 1) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     from catanbot.selfplay import make_bot, play_game
     rows: List[Dict[str, Any]] = []
     results = []
     for g in range(games):
         gseed = seed + g
-        bots = [ShadowBot(make_bot(spec), candidates, phases, gseed, spec, rows, tag=f"sp{gseed}")
-                for _ in range(4)]
+        bots = [ShadowBot(make_bot(spec), candidates, phases, gseed * 10 + i, spec, rows, tag=f"sp{gseed}",
+                          main_every=main_every) for i in range(4)]
         res = play_game(bots, rng=random.Random(gseed), seed=gseed, max_turns=max_turns)
         results.append({"seed": gseed, "winner": res.winner, "vps": list(res.vps), "turns": res.turns,
                         "actions": res.actions})
@@ -236,8 +247,8 @@ def run_selfplay(spec: str, candidates, phases, games: int, seed: int, max_turns
     return rows, results
 
 
-def run_proof(spec: str, candidates, phases, paths: Sequence[str], max_games: Optional[int], log=sys.stdout
-              ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def run_proof(spec: str, candidates, phases, paths: Sequence[str], max_games: Optional[int], log=sys.stdout,
+              main_every: int = 1) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Positions from archived proof games (catanbot-actionlog/1): our seat's CatanbotPlayer, whose bot is a
     ShadowBot around the default bot, is asked at each of its logged turns; its answer is ignored and the logged
     action is replayed, so every position is the proof game's own."""
@@ -267,7 +278,8 @@ def run_proof(spec: str, candidates, phases, paths: Sequence[str], max_games: Op
                 color = Color(doc["colors"][seat])
                 bot_seed = int(players[seat].get("bot_seed", 0))
                 game = ad.rebuild_game(doc)
-                shadow = ShadowBot(make_bot(spec), candidates, phases, bot_seed, spec, rows, tag=f"pf{doc.get('game')}")
+                shadow = ShadowBot(make_bot(spec), candidates, phases, bot_seed, spec, rows, tag=f"pf{doc.get('game')}",
+                                   main_every=main_every)
                 me = ad.CatanbotPlayer(color, spec=spec, bot=shadow, seed=bot_seed, suppress_trades=True)
                 errors = 0
                 for item in doc["actions"]:
@@ -356,6 +368,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--spec", default=None, help="the default bot spec (default: the shipped search bot)")
     ap.add_argument("--cand", action="append", default=[], metavar="LABEL:NAME=VALUE,...")
     ap.add_argument("--phases", default=",".join(CLASSES), help=f"classes to shadow ({','.join(CLASSES)})")
+    ap.add_argument("--main-every", type=int, default=1, help="shadow every N-th main-phase decision only")
     ap.add_argument("--no-aa", action="store_true", help="do not add the A/A identity candidate")
     ap.add_argument("--keep-rows", action="store_true", help="keep the per-decision rows in --json")
     ap.add_argument("--json", help="write the result here")
@@ -381,14 +394,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     t0 = time.time()
     cpu0 = time.process_time()
     if args.source == "selfplay":
-        rows, games = run_selfplay(spec, cands, phases, args.games, args.seed, args.max_turns)
+        rows, games = run_selfplay(spec, cands, phases, args.games, args.seed, args.max_turns,
+                                   main_every=args.main_every)
     else:
         if not args.logs:
             raise SystemExit("error: --source proof needs --logs")
         paths = sorted(glob.glob(args.logs))
         if not paths:
             raise SystemExit(f"error: no files match {args.logs}")
-        rows, games = run_proof(spec, cands, phases, paths, args.max_games)
+        rows, games = run_proof(spec, cands, phases, paths, args.max_games, main_every=args.main_every)
     summ = summarize(rows, cands)
     aa = summ.get("aa")
     aa_ok = None if aa is None else aa["changed"] == 0
@@ -408,6 +422,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"      {cnt:4d}  {kname}")
     if args.json:
         out = {"source": args.source, "spec": spec, "evaluator": tuning.evaluator_mode(), "phases": phases,
+               "main_every": args.main_every,
                "games": games, "decisions": len(rows), "aa_ok": aa_ok, "candidates": summ,
                "cpu_s": time.process_time() - cpu0}
         if args.keep_rows:
