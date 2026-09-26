@@ -4,6 +4,19 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 15:00 UTC - check-in: the port gate fails; flat demand rejected; old robber terms kept
+
+- **Ports:** the pre-registered gate failed in every cell.  Cards saved vs 4:1 must rise by at least 1.1 a
+  game; measured at 300 pairs: F1 +0.76, F2 +0.41, flow -0.01.  The port ideas go on ice and the default is
+  unchanged.  The milder mode-3 cell was not triggered.
+- **Diversification:**
+  - flat resource demand REJECT: -3.8 +- 1.9 points;
+  - the diversification + Longest Road bundle SHELVE: +0.9 +- 1.7.
+- **Robber, existing terms:**
+  - removing any of them shows no gain, so all are kept (KEEP unproven);
+  - `knight03` was rejected as futile: +0.4 +- 0.2 points at 1,000 pairs.
+  - The step-5 robber measurement runs next.
+
 ## 2026-09-26 14:40 UTC - step 6 (development-card guessing) built; implementation finished
 
 - **Built,** off by default:

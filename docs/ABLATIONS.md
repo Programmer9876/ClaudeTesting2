@@ -735,6 +735,13 @@ They are all off by default outside the queue, and arm keys are unchanged when t
 | `t1_openings@vf` `standin_book` | diversification | **ADOPT** (one opponent set) | +3.8 +- 1.4 pp at 1,600 pairs vs the vf stand-ins, p = 0.006.  Not a default change: the confirmation row and the league gate decide |
 | `t1_openings@value` `standin_book` | diversification | SHELVE | -1.1 +- 2.0 pp at 800 pairs vs Catanatron's ValueFunction |
 | `t1_openings` `pips_diversity`, `conversion`, `setup_pick` | diversification | SHELVE | within +-1.5 pp at 800-1,600 pairs against both opponent sets |
+| `ports_gate` (cells F1, F2, flow) | ports | gate **FAIL** | pre-registered rule: cards saved vs 4:1 up by at least 1.1 a game.  Measured at 300 pairs: F1 +0.76, F2 +0.41, flow -0.01.  The best-cell screens do not run; the milder F1 mode-3 cell was not triggered.  Ports on ice; default unchanged |
+| `ports_gate_f1@vf`, `ports_gate_f2@vf`, `ports_gate_flow@vf` | ports | ESTIMATE (gate cells) | win rate -1.0 +- 1.8, +0.7 +- 1.2, +0.3 +- 0.7 pp at 300 pairs |
+| `demand_flat_pyeval@vf` | diversification | **REJECT** (worse) | flat resource demand: -3.8 +- 1.9 pp at 800 pairs |
+| `div_lr_bundle` | diversification | SHELVE | diversification + Longest Road bundle: +0.9 +- 1.7 pp at 800 pairs |
+| `shadow_robber` | robber | gate PASS | epoch-A robber shadow; its prior-only knockouts ran |
+| `t2_danger_mult_off@value`, `t2_block_need0@value`, `t2_exposure0_pyeval@value`, `t1_blockw0_pyeval@value` | robber | KEEP(unproven) | removing each: 0.0 +- 0.6, -1.2 +- 1.0, -0.5 +- 1.6, -0.6 +- 1.0 pp (400-800 pairs); the terms stay |
+| `t2_knight03@value` | robber | REJECT (futile) | +0.4 +- 0.2 pp at 1,000 pairs, below the smallest effect worth adopting |
 
 ## Queue after the strength proof (2026-09-26): every strategy the user asked to test
 
