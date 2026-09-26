@@ -9,6 +9,11 @@ each finished row (last record `stop`) goes to docs/queue/games/<row>.jsonl.gz, 
 so an unchanged row gives a byte-identical file and git stores it once.  `--all` also copies rows still
 running, cut at the last complete line (before a session ends).
 
+Self-play rows keep their chunks in `<dir>/selfplay/<row>/<candidate>/chunk_<i>.json` (per-seat results of
+each chunk, not per game).  A self-play row with a verdict in the ledger, or one named with `--include` (a row
+stopped by hand), goes to docs/queue/games/selfplay/<row>.json.gz: one JSON object mapping each chunk's path to
+its content.
+
 It also writes:
 - index.json: per row, its status, number of games, code fingerprints and the sha256 of the uncompressed file;
 - epochs.json: per code epoch, the git commit whose files match the snapshot the games ran on;
@@ -19,6 +24,7 @@ It also writes:
 from __future__ import annotations
 
 import argparse
+import glob
 import gzip
 import hashlib
 import json
@@ -92,6 +98,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--dir", required=True, help="the queue directory (run_queue.py --dir)")
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--all", action="store_true", help="also copy rows that are still running")
+    ap.add_argument("--include", action="append", default=[], help="self-play row to copy although it has no "
+                    "verdict (a row stopped by hand)")
     args = ap.parse_args(argv)
     os.makedirs(args.out, exist_ok=True)
     idx_path = os.path.join(args.out, "index.json")
@@ -126,6 +134,33 @@ def main(argv: Optional[List[str]] = None) -> int:
         }
         changed += 1
         print(f"{row}: {index[row]['status']}, {index[row]['games']} games")
+    ledger = [json.loads(line) for line in open(os.path.join(args.dir, "ledger.jsonl"))]
+    judged = {r.get("row") for r in ledger if r.get("kind") == "verdict"}
+    sp = os.path.join(args.dir, "selfplay")
+    for row in sorted(os.listdir(sp)) if os.path.isdir(sp) else []:
+        files = sorted(glob.glob(os.path.join(sp, row, "**", "*.json"), recursive=True))
+        finished = row in judged or row in args.include
+        if not files or not (finished or args.all):
+            continue
+        payload = {}
+        for fp in files:
+            with open(fp) as f:
+                payload[os.path.relpath(fp, os.path.join(sp, row))] = json.load(f)
+        data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        sha = hashlib.sha256(data).hexdigest()
+        key = f"selfplay/{row}"
+        dest = os.path.join(args.out, "selfplay", row + ".json.gz")
+        if index.get(key, {}).get("sha256") == sha and os.path.exists(dest):
+            continue
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest + ".tmp", "wb") as f:
+            f.write(gz(data))
+        os.replace(dest + ".tmp", dest)
+        index[key] = {"status": "finished" if row in judged else ("stopped by hand" if finished else "partial"),
+                      "games": sum(int(c.get("games", 0)) for c in payload.values()), "chunks": len(files),
+                      "sha256": sha, "bytes": len(data)}
+        changed += 1
+        print(f"{key}: {index[key]['status']}, {index[key]['games']} games in {len(files)} chunks")
     with open(idx_path, "w") as f:
         json.dump(index, f, indent=1, sort_keys=True)
         f.write("\n")
@@ -140,14 +175,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         json.dump(epochs, f, indent=1, sort_keys=True)
         f.write("\n")
     lines = []
-    for name in sorted(os.listdir(args.out)):
-        if name.endswith(".gz"):
-            with open(os.path.join(args.out, name), "rb") as f:
-                lines.append(f"{hashlib.sha256(f.read()).hexdigest()}  {name}\n")
+    for fp in sorted(glob.glob(os.path.join(args.out, "**", "*.gz"), recursive=True)):
+        with open(fp, "rb") as f:
+            lines.append(f"{hashlib.sha256(f.read()).hexdigest()}  {os.path.relpath(fp, args.out)}\n")
     with open(os.path.join(args.out, "MANIFEST.sha256"), "w") as f:
         f.writelines(lines)
-    games = sum(v["games"] for v in index.values())
-    print(f"{changed} row file(s) written; {len(index)} rows, {games} games in {args.out}")
+    games = sum(v["games"] for k, v in index.items() if not k.startswith("selfplay/"))
+    sp_games = sum(v["games"] for k, v in index.items() if k.startswith("selfplay/"))
+    print(f"{changed} row file(s) written; {len(index)} rows, {games} games vs Catanatron and {sp_games} "
+          f"self-play games in {args.out}")
     for eid, e in epochs.items():
         print(f"epoch {eid}: commit {e['commit'] or 'none matches: ' + ', '.join(e['differs_from_head'])}")
     return 0

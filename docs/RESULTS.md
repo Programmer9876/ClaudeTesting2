@@ -4,7 +4,7 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
-## 2026-09-26 09:30 UTC - check-in: two trade ideas shelved or stopped; the ports agent was stopped
+## 2026-09-26 09:22 UTC - check-in: two trade ideas shelved or stopped; the ports agent was stopped
 
 - **Wider trade offers** (`acq_breadth_bundle`, self-play): +0.2 +- 1.6 points at 960 pairs, too small to
   prove.  SHELVE; the default is unchanged.
