@@ -676,6 +676,7 @@ Everything below runs after T7-T11, one experiment at a time on 3 cores.
 | counteroffers | `search.counters` 1 (`--counters` rules) | self-play, 1,200 games | queued |
 | analyse the proposer's turn before answering an offer | `search.respond_lookahead` 1 | self-play, 1,200 games, then the league gate | queued |
 | does the 6/8 rule matter / break the model | boards with adjacent 6/8 vs without | not built yet (needs a board generator switch) | to build |
+| going to ports (4:1 without one) | port weights in placement and static value (new tunables) | campaign vs value and vf | to build (see below) |
 
 Self-play commands:
 
@@ -691,6 +692,38 @@ found no significant effect for most tier 2 terms.  At that size the
 standard error is about 4.6 points, so small effects cannot be seen.  These
 runs use 1,000-2,000 seeds per row, with a standard error of about 1-1.5
 points.
+
+## Ports: a measured gap (2026-09-26)
+
+The proof logs show how our bot uses ports:
+
+| | T1 (vs 3x ValueFunction) | T2 (vs 3x AlphaBeta) |
+|---|---|---|
+| our bot has a port settlement | 59 % of games | 56 % |
+| Catanatron's bots have one | 71 % | 68 % |
+| our bank / port trades per game | 6.7 | 6.6 |
+| Catanatron's, per seat | 5.5 | 6.8 |
+| share of our bank trades at 4:1 | 75 % | 78 % |
+| share of Catanatron's at 4:1 | 52 % | 60 % |
+
+Our bot settles on ports less often, yet trades with the bank more, mostly
+at the worst rate.  About 5 trades a game at 4:1 instead of 3:1 is roughly 5
+cards a game, about one build.
+
+The current weights:
+
+| where | generic 3:1 port | 2:1 port |
+|---|---|---|
+| placement (spot score of typically 12-16) | flat +1.0, whatever we produce | 0.5 + 6 x production of that resource |
+| static value (10 points per VP) | flat +0.2 | 0.15 + 4 x production of that resource |
+
+Plan (off by default, then tested):
+1. Make the port weights tunables.  The placement score and static_value
+   are mirrored in C++, so the candidate arm needs the Python evaluator,
+   like `PLACEMENT_BLOCK_WEIGHT`.
+2. Add a candidate generic-port value that scales with our total
+   production: a 3:1 port converts every surplus resource.
+3. Run paired campaign rows vs value and vf, then the league gate.
 
 ## Politics rule (user decision, 2026-09-26): inconclusive -> deferred to human testing
 
