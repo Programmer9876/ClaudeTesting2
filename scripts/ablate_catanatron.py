@@ -9,10 +9,6 @@
     # two bot specs (search vs heuristic bot, depth 2 vs depth 1, ...):
     python3 scripts/ablate_catanatron.py --cand-spec search:depth=2,beam=4,expand=8,evaluator=heuristic \\
         --def-spec search:depth=1,beam=4,expand=8,evaluator=heuristic --opponent vf --seeds 400 --out d2.jsonl
-    # 2x2 factorial (every combination on the same seeds, one shared base arm; docs/TUNING.md):
-    /home/user/venv_cat33/bin/python scripts/ablate_catanatron.py --factorial \\
-        danger.danger_multiplier=off,danger.steal_factor=off --opponent value --seeds 2000 --workers 2 \\
-        --out runs/dm_x_sf_value.jsonl --reuse 'runs/campaign1/*.jsonl'
     python3 scripts/ablate_catanatron.py --report --out runs/turns_half_value.jsonl   # statistics from the file
     python3 scripts/ablate_catanatron.py --plan ...                                  # runs / keys / jobs only
 
@@ -350,30 +346,7 @@ def build_runs(args) -> Tuple[List[Dict[str, Any]], bool]:
             adapter["discards_public"] = True
     cand_adapter = dict(adapter, **parse_kv(args.cand_adapter_opt))
     runs: List[Dict[str, Any]] = []
-    if getattr(args, "factorial", None):
-        # 2^k factorial: one run per non-base cell, all sharing the base (default) arm, so every seed is
-        # played once per cell on the same board / dice / seat (catanbot/factorial.py, docs/TUNING.md)
-        if args.tunable or args.cand_spec or args.def_spec:
-            raise SystemExit("error: use either --factorial, --tunable or --cand-spec/--def-spec")
-        from catanbot import factorial as F
-        try:
-            factors = F.parse_factors(args.factorial)
-        except (ValueError, KeyError) as ex:
-            raise SystemExit(f"error: --factorial: {ex}")
-        ts = [tuning.find(n) for n, _ in factors]
-        base = args.base_spec or (tuning.DEFAULT_DEEP_SPEC if any(t.requires_depth >= 2 for t in ts)
-                                  else tuning.DEFAULT_SEARCH_SPEC)
-        base = _load_ablate().factorial_spec(ts, base)
-        fact = [[n, json.loads(json.dumps(v))] for n, v in factors]
-        dflt = make_arm("def", base, common, adapter, "base (every factor at its default)")
-        for c in F.cells(len(factors))[1:]:
-            cell = json.loads(json.dumps(F.cell_overrides(factors, c)))
-            over = dict(common, **cell)
-            over.update(cand_extra)
-            runs.append({"tunable": None, "value": cell, "value_text": F.cell_label(factors, c), "default_text": "base",
-                         "cand": make_arm("cand", base, over, cand_adapter, F.cell_label(factors, c)), "def": dflt,
-                         "factorial": {"factors": fact, "cell": c}})
-    elif args.tunable:
+    if args.tunable:
         if args.cand_spec or args.def_spec:
             raise SystemExit("error: use either --tunable or --cand-spec/--def-spec")
         ab = _load_ablate()
@@ -448,13 +421,10 @@ def finalize_runs(runs: List[Dict[str, Any]], ctx: Dict[str, Any], exp: str, see
 
 
 def run_line(r: Dict[str, Any], ctx: Dict[str, Any], code: str) -> Dict[str, Any]:
-    line = {"v": SCHEMA, "kind": "run", "run_key": r["run_key"], "cand_key": r["cand_key"], "def_key": r["def_key"],
+    return {"v": SCHEMA, "kind": "run", "run_key": r["run_key"], "cand_key": r["cand_key"], "def_key": r["def_key"],
             "exp": r["exp"], "tunable": r["tunable"], "value": r["value"], "value_text": r["value_text"],
             "default_text": r["default_text"], "cand": r["cand"], "def": r["def"], "ctx": ctx,
             "seed_base": r["seed_base"], "seeds": r["seeds"], "code": code, "t": time.time()}
-    if r.get("factorial"):
-        line["factorial"] = r["factorial"]     # {"factors": [[name, value], ...], "cell": bit mask}
-    return line
 
 
 # ---------------------------------------------------------------------------
@@ -1074,70 +1044,6 @@ def print_run(run: Dict[str, Any], st: Dict[str, Any], stopped: Optional[Dict[st
     p(f"  verdict   {st['verdict']} (win rate); {st['vp_verdict'].replace('candidate', 'candidate VP')} (VP)")
 
 
-def factorial_groups(index: Index) -> List[Tuple[List[List[Any]], Dict[int, Dict[str, Any]]]]:
-    """The factorial designs declared in a file: ``[(factors, {cell: run})]`` (runs sharing factors, experiment
-    and base arm; the latest declaration of a cell wins)."""
-    groups: Dict[str, Tuple[List[List[Any]], Dict[int, Dict[str, Any]]]] = {}
-    for run in index.runs.values():
-        fx = run.get("factorial")
-        if not fx:
-            continue
-        key = sha([fx["factors"], run.get("exp"), run["def_key"]])
-        groups.setdefault(key, (fx["factors"], {}))[1][int(fx["cell"])] = run
-    return list(groups.values())
-
-
-def factorial_stats(index: Index, factors: List[List[Any]], runs: Dict[int, Dict[str, Any]],
-                    retry_errors: bool = False) -> Optional[Dict[str, Any]]:
-    """Main effects and interactions from the seeds where the base and every cell finished ok with one code
-    version (per-seed win 0/1 and final VP, paired over seeds; ``catanbot/factorial.py``)."""
-    from catanbot import factorial as F
-    k = len(factors)
-    if sorted(runs) != F.cells(k)[1:]:
-        return None
-    seeds = sorted(set().union(*(index.seeds_of(r) for r in runs.values())))
-    won: Dict[int, List[float]] = {c: [] for c in F.cells(k)}
-    vp: Dict[int, List[float]] = {c: [] for c in F.cells(k)}
-    used, dropped = [], 0
-    for s in seeds:
-        pairs = {c: index.pair(r, s, retry_errors) for c, r in runs.items()}
-        recs = [x for p in pairs.values() for x in p]
-        if any(x is None or x.get("status") != "ok" for x in recs) or len({x.get("code") for x in recs}) != 1:
-            dropped += 1
-            continue
-        base = pairs[1][1]
-        for c in F.cells(k):
-            rec = base if c == 0 else pairs[c][0]
-            won[c].append(float(bool(rec["won"])))
-            vp[c].append(float(rec["our_vp"]))
-        used.append(s)
-    if not used:
-        return {"factors": factors, "seeds": 0, "dropped": dropped}
-    fs = [(n, v) for n, v in factors]
-    return {"factors": factors, "seeds": len(used), "dropped": dropped,
-            "win": F.analyse(fs, won, MIN_VERDICT_PAIRS), "vp": F.analyse(fs, vp, MIN_VERDICT_PAIRS)}
-
-
-def print_factorials(index: Index, retry_errors: bool = False, out=sys.stdout) -> List[Dict[str, Any]]:
-    from catanbot import factorial as F
-    from catanbot import tuning
-    results = []
-    for factors, runs in factorial_groups(index):
-        k = len(factors)
-        res = factorial_stats(index, factors, runs, retry_errors)
-        names = ", ".join(f"{n}={tuning.find(n).format(v)}" for n, v in factors)
-        if res is None:
-            print(f"factorial 2^{k} ({names}): only {len(runs)} of {2 ** k - 1} cells declared", file=out)
-            continue
-        results.append(res)
-        print(f"factorial 2^{k} ({names}): {res['seeds']} seed(s) with every cell and the base complete"
-              + (f", {res['dropped']} incomplete / with an error skipped" if res["dropped"] else ""), file=out)
-        if res["seeds"]:
-            print("\n".join(F.format_report(res["win"], "seeds", True, "catanbot win rate (1 seat vs 3)")), file=out)
-            print("\n".join(F.format_report(res["vp"], "seeds", False, "catanbot final VP")), file=out)
-    return results
-
-
 def print_report(path: str, retry_errors: bool = False, out=sys.stdout) -> List[Tuple[Dict, Dict]]:
     index, bad = load_index(path)
     rows = report_runs(index, retry_errors)
@@ -1147,7 +1053,6 @@ def print_report(path: str, retry_errors: bool = False, out=sys.stdout) -> List[
     for run, st in rows:
         stop = index.stops.get(run["run_key"])
         print_run(run, st, stop, out=out)
-    print_factorials(index, retry_errors, out=out)
     return rows
 
 
@@ -1442,10 +1347,6 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--base-spec", help="bot spec of both arms for --tunable (default "
                                        "search:depth=1,beam=4,expand=8,evaluator=heuristic; depth 2 for knobs only "
                                        "the depth-2 search reads)")
-    g.add_argument("--factorial", metavar="NAME=V,NAME2=V2",
-                   help="2^k factorial test instead of --tunable (2-4 factors; a bare flag name = off): every "
-                        "combination is a candidate arm against one shared base arm on the same seeds; the report "
-                        "adds main effects and interactions with paired 95%% CIs")
     g.add_argument("--cand-spec", help="candidate bot spec (with --def-spec, instead of --tunable)")
     g.add_argument("--def-spec", help="default bot spec")
     g.add_argument("--cand-set", action="append", metavar="NAME=VALUE", help="extra tunable override on the candidate arm")
@@ -1503,15 +1404,8 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def factorial_results(path: str) -> List[Dict[str, Any]]:
-    index, _ = load_index(path)
-    out = [factorial_stats(index, fx, runs) for fx, runs in factorial_groups(index)]
-    return [f for f in out if f]
-
-
-def write_report_json(path: str, rows, factorials: Sequence[Dict[str, Any]] = ()) -> None:
+def write_report_json(path: str, rows) -> None:
     data = [{"run": {k: v for k, v in run.items() if not k.startswith("_")}, "stats": st} for run, st in rows]
-    data += [{"factorial": f} for f in factorials]
     with open(path, "w") as fh:
         json.dump(json_safe(data), fh, indent=1)
 
@@ -1549,7 +1443,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.report:
         rows = print_report(args.out)
         if args.report_json:
-            write_report_json(args.report_json, rows, factorial_results(args.out))
+            write_report_json(args.report_json, rows)
         return 0
     if not args.opponent:
         print("error: --opponent is required", file=sys.stderr)
@@ -1568,8 +1462,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         from catanbot.agents import param_bot  # noqa: F401
         _bench()
     code = code_fingerprint()
-    exp = args.exp_name or (f"{args.tunable}@{args.opponent}" if args.tunable else
-                            f"factorial@{args.opponent}" if args.factorial else f"spec@{args.opponent}")
+    exp = args.exp_name or (f"{args.tunable}@{args.opponent}" if args.tunable else f"spec@{args.opponent}")
     seeds = list(range(args.seed_base, args.seed_base + args.seeds))
     finalize_runs(runs, ctx, exp, (args.seed_base, args.seeds))
     keys = [r["def_key"] for r in runs]
@@ -1613,7 +1506,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print()
     rows = print_report(args.out)
     if args.report_json:
-        write_report_json(args.report_json, rows, factorial_results(args.out))
+        write_report_json(args.report_json, rows)
     return 0 if status in ("done", "deadline") else 130
 
 

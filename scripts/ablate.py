@@ -336,6 +336,9 @@ def run_factorial(args) -> int:
           f"(= {args.games * (2 ** k - 1)} games; the base cell is 0 by construction); seed {args.seed}; workers "
           f"{workers}" + ("; counter-offer rules ON" if args.counters else ""))
     print(f"evaluator mode: {mode}")
+    note = F.politics_note([n for n, _ in factors])
+    if note:
+        print(f"note: {note}")
     if args.plan:
         for c in F.cells(k)[1:]:
             print(f"  cell {F.cell_label(factors, c)}: overrides {F.cell_overrides(factors, c)}")

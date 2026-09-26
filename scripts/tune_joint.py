@@ -2,14 +2,18 @@
 """Joint tuning of numeric strategy weights with SPSA (docs/TUNING.md).
 
     python3 scripts/tune_joint.py --list-groups
-    python3 scripts/tune_joint.py --group robber --state runs/tune/robber.json --plan
-    python3 scripts/tune_joint.py --group robber --state runs/tune/robber.json --iterations 100 --games 36 --workers 3
+    python3 scripts/tune_joint.py --group robber --max-games 2400 --state runs/tune/robber.json --plan
+    python3 scripts/tune_joint.py --group robber --max-games 2400 --games 36 --state runs/tune/robber.json --workers 3
     python3 scripts/tune_joint.py --state runs/tune/robber.json --resume --workers 3 --max-minutes 120
     python3 scripts/tune_joint.py --state runs/tune/robber.json --status          # trajectory + league command
     /home/user/venv_cat33/bin/python scripts/tune_joint.py --group robber --mode catanatron --opponent value \\
-        --state runs/tune/robber_value.json --games 48 --workers 3
+        --max-games 4000 --games 48 --state runs/tune/robber_value.json --workers 3
     python3 scripts/tune_joint.py --group trade --exclude politics.BASELINE,search.counter_margin \\
-        --state runs/tune/trade.json                          # restrict a group (politics rule, docs/TUNING.md)
+        --max-games 2400 --state runs/tune/trade.json        # restrict a group (politics rule, docs/TUNING.md)
+
+Budget: ``--max-games`` (required for a new run) caps the games of the whole run; the number of
+iterations defaults to what fits (``max_games // games per iteration``), the planned total is printed
+before anything is played and a run never starts an iteration that would exceed the cap.
 
 SPSA (simultaneous perturbation stochastic approximation; Spall 1992) moves every parameter of a group at
 once.  Parameters live in normalised units ``u = (x - default) / scale``: the scale is the span of the
@@ -25,7 +29,7 @@ registry's default and candidate values (``catanbot/tuning.py``), the default bo
   for an unclipped real parameter); ``theta += a_k g`` with every coordinate's step capped at
   ``--max-step``, then clipped to the bounds;
 * ``a_k = a / (A + k + 1)^alpha``, ``c_k = c / (k + 1)^gamma`` (Spall's alpha 0.602, gamma 0.101; A = 10%
-  of the planned iterations; c 0.15; ``a`` is set so that a one-standard-error estimate of D moves a
+  of the planned iterations; c 0.25; ``a`` is set so that a one-standard-error estimate of D moves a
   parameter by ``--first-step`` (0.05 of its scale) at k = 0 - see ``auto_gain``).
 
 Game modes (``--mode``):
@@ -73,6 +77,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from catanbot import factorial as F  # noqa: E402
 from catanbot import tuning  # noqa: E402  (imported again after a re-exec; see ensure_env)
 
 SCHEMA = 1
@@ -88,7 +93,8 @@ GROUPS: Dict[str, Dict[str, Any]] = {
         "params": ["danger.TURNS_HALF", "danger.BLOCK_NEED", "danger.BLOCK_FLOOR", "devcards.KNIGHT_VALUE",
                    "heuristic.EXPOSURE_WEIGHT", "placement.PLACEMENT_ROBBER_Q"],
         "note": "who / where to rob, knight value, steal exposure; EXPOSURE_WEIGHT needs the search bot and, with "
-                "PLACEMENT_ROBBER_Q, the Python evaluator (~3x slower; --exclude both for the C++ evaluator)"},
+                "PLACEMENT_ROBBER_Q, the Python evaluator (~5x slower in self-play, ~3x vs Catanatron; --exclude both "
+                "for the C++ evaluator)"},
     "trade": {
         "params": ["trading.accept_margin", "politics.MAX_SLACK", "politics.BASELINE", "coalitions.SCALE",
                    "opponent_model.stage_late_drop", "search.counter_margin"],
@@ -96,8 +102,7 @@ GROUPS: Dict[str, Dict[str, Any]] = {
                 "--exclude the rest.  search.counter_margin needs counter=1 and the counter-offer rules (added "
                 "automatically unless --base-spec is given)"},
 }
-POLITICS = ("politics.", "coalitions.", "trading.feed_leader_guard", "opponent_model.stage_late_drop",
-            "search.counter", "search.respond_lookahead")
+POLITICS = F.POLITICS_TERMS
 TRADE_TERMS = ("trading.", "politics.", "coalitions.", "opponent_model.", "search.counter", "search.trade_proposals")
 
 
@@ -622,14 +627,17 @@ def new_state(cfg: Dict[str, Any], params: Sequence[Param], env: Dict[str, Any])
 
 
 def run(state: Dict[str, Any], state_path: str, runner: Callable, deadline: Optional[float] = None,
-        log=sys.stdout) -> str:
+        log=None) -> str:
     """Play iterations until ``config.iterations`` (``"done"``) or the deadline (``"deadline"``); the state
     file is rewritten after every iteration."""
     cfg = state["config"]
     params = params_from_state(state)
+    log = log or sys.stdout
     while state["k"] < cfg["iterations"]:
         if deadline is not None and time.time() >= deadline:
             return "deadline"
+        if (state["k"] + 1) * cfg["games_per_iteration"] > cfg["max_games"]:
+            return "games cap reached"
         row, results = iteration(state, runner)
         append_games(state_path, results)
         apply_row(state, row)
@@ -699,8 +707,8 @@ def trajectory_lines(state: Dict[str, Any], max_rows: int = 30) -> List[str]:
     return out
 
 
-def print_status(state: Dict[str, Any], state_path: str, out=sys.stdout) -> None:
-    p_ = lambda *a: print(*a, file=out)   # noqa: E731
+def print_status(state: Dict[str, Any], state_path: str, out=None) -> None:
+    p_ = lambda *a: print(*a, file=out or sys.stdout)   # noqa: E731
     cfg = state["config"]
     params = params_from_state(state)
     env = state.get("env") or {}
@@ -717,12 +725,15 @@ def print_status(state: Dict[str, Any], state_path: str, out=sys.stdout) -> None
     if K:
         p_(f"  cost {state['seconds'] / K:.0f} s per iteration at the workers used "
            f"({3600.0 * state['games_played'] / max(state['seconds'], 1e-9):.0f} games/h)")
-    rec = state["result"]
+    rec = state["result"] = recommendation(state)       # recomputed from the history (not the stored copy)
     p_(f"  {'parameter':34} {'default':>9} {'bounds':>17} {'scale':>8} {'start':>9} {'last':>9} {'average':>9}")
     for p in params:
         p_(f"  {p.name:34} {p.pretty(p.default):>9g} {f'[{p.lo:g}, {p.hi:g}]':>17} {p.scale:>8.4g} "
            f"{p.pretty(p.start):>9g} {rec['last'][p.name]:>9g} {rec['average'][p.name]:>9g}"
            + ("  (int)" if p.integer else ""))
+    if K:
+        p_("  (a parameter nothing depends on drifts too - at a few thousand games no per-parameter statistic tells "
+           "drift from signal; the vector is judged as a whole, by the league gate)")
     if state["history"]:
         p_("  trajectory (theta after each update, installed values):")
         for line in trajectory_lines(state):
@@ -746,8 +757,12 @@ def print_status(state: Dict[str, Any], state_path: str, out=sys.stdout) -> None
 # Environment
 # ---------------------------------------------------------------------------
 def _load(name: str, path: str):
+    """A script as a module, registered in ``sys.modules`` so worker pools can pickle its functions."""
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -861,16 +876,24 @@ def build_config(args) -> Tuple[Dict[str, Any], List[Param], List[str]]:
         notes.append(f"{games} games is not a multiple of 6: the seat arrangements are not all equally used")
     if args.mode == "catanatron" and games % 4:
         notes.append(f"{games} seeds is not a multiple of 4: our seat is not balanced within an iteration")
-    iterations = args.iterations or 100
+    per_iter = games * (2 if args.mode == "catanatron" else 1)
+    if not args.max_games:
+        raise SystemExit("error: --max-games N is required: the cap on the games of the whole run (e.g. 2400 in "
+                         "self-play, 4000 = 2000 paired seeds against Catanatron; docs/TUNING.md)")
+    iterations = args.iterations or args.max_games // per_iter
+    if iterations < 1 or iterations * per_iter > args.max_games:
+        raise SystemExit(f"error: {iterations} iterations x {per_iter} games = {iterations * per_iter} games exceed "
+                         f"--max-games {args.max_games}: lower --iterations or --games")
     A = args.A if args.A is not None else max(1.0, round(0.1 * iterations))
     alpha = args.alpha if args.alpha is not None else 0.602
     gamma = args.gamma if args.gamma is not None else 0.101
-    c = args.c if args.c is not None else 0.15
+    c = args.c if args.c is not None else 0.25
     objective = args.objective or "win"
     first_step = args.first_step if args.first_step is not None else 0.05
     a = args.a if args.a is not None else auto_gain(first_step, A, alpha, c, games, SIGMA[objective])
     cfg = {"mode": args.mode, "group": args.group if not args.params else None, "names": names, "base_spec": spec,
-           "counters": counters, "games": games, "iterations": iterations, "seed": args.seed if args.seed is not None else 1,
+           "counters": counters, "games": games, "games_per_iteration": per_iter, "iterations": iterations,
+           "max_games": args.max_games, "seed": args.seed if args.seed is not None else 1,
            "a": a, "a_auto": args.a is None, "A": A, "alpha": alpha, "c": c, "gamma": gamma, "first_step": first_step,
            "max_step": args.max_step if args.max_step is not None else 0.1, "objective": objective,
            "sigma": SIGMA[objective], "max_turns": args.max_turns or 400, "game_timeout": args.game_timeout,
@@ -879,6 +902,7 @@ def build_config(args) -> Tuple[Dict[str, Any], List[Param], List[str]]:
         if not args.opponent:
             raise SystemExit("error: --mode catanatron needs --opponent (e.g. value on catanatron 3.3)")
         cfg["opponent"] = args.opponent
+        cfg["opponent_params"] = AB.parse_opponent_params(args.opponent_params)
         cfg["trades"] = args.trades or "off"
         cfg["adapter"] = {"trades": cfg["trades"]}
     if args.fake_optimum:
@@ -892,7 +916,8 @@ def finish_context(cfg: Dict[str, Any], env: Dict[str, Any]) -> None:
     """Fields that need the running process: the Catanatron context and the code fingerprint."""
     cfg["code"] = env["code"]
     if cfg["mode"] == "catanatron":
-        cfg["ctx"] = {"opponent": cfg["opponent"], "opponent_params": {}, "python": env["python"],
+        cfg["ctx"] = {"opponent": cfg["opponent"], "opponent_params": dict(cfg.get("opponent_params") or {}),
+                      "python": env["python"],
                       "catanatron": env["catanatron"], "evaluator": env["evaluator"], "vps_to_win": 10,
                       "discard_limit": 7, "hashseed": env["hashseed"], "fake": None}
 
@@ -912,12 +937,13 @@ def validate(cfg: Dict[str, Any], params: Sequence[Param]) -> None:
             raise SystemExit(f"error: opponent {cfg['opponent']!r}: {ex}")
 
 
-def print_plan(cfg: Dict[str, Any], params: Sequence[Param], out=sys.stdout) -> None:
-    p_ = lambda *a: print(*a, file=out)   # noqa: E731
+def print_plan(cfg: Dict[str, Any], params: Sequence[Param], out=None) -> None:
+    p_ = lambda *a: print(*a, file=out or sys.stdout)   # noqa: E731
     p_(f"SPSA plan: {len(params)} parameters, mode {cfg['mode']}" + (f" vs 3x {cfg.get('opponent')}" if cfg["mode"] ==
                                                                         "catanatron" else "")
        + f", base spec {cfg['base_spec']}" + ("; counter-offer rules ON" if cfg["counters"] else ""))
     p_(f"  {cfg['iterations']} iterations x {cfg['games']} {'games' if cfg['mode'] == 'selfplay' else 'seeds (x2 games)'}"
+       f" = {cfg['iterations'] * cfg['games_per_iteration']} games planned (cap --max-games {cfg['max_games']})"
        f"; objective {cfg['objective']}; seed {cfg['seed']}; Python evaluator {'yes' if cfg['python_eval'] else 'no'}")
     a0, c0 = gains(cfg, 0)
     aK, cK = gains(cfg, cfg["iterations"] - 1)
@@ -963,12 +989,17 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--counters", action="store_true", help="self-play under the counter-offer rules variant")
     g.add_argument("--opponent", help="--mode catanatron: bench_catanatron preset (value / alphabeta on 3.3, vf / "
                                       "random ... on 3.2.1)")
+    g.add_argument("--opponent-params", default=None, metavar="KEY=VAL,...",
+                   help="--mode catanatron: constructor parameters of every opponent (bench_catanatron.py syntax)")
     g.add_argument("--trades", default=None, help="--mode catanatron: domestic trading as in ablate_catanatron.py "
                                                   "(off | native | value | fair, 3.3 only)")
     g.add_argument("--games", type=int, default=None, help="per iteration: 2v2 games (selfplay, default 36) or seeds "
                                                            "played by both sides (catanatron, default 48)")
-    g.add_argument("--iterations", type=int, default=None, help="total iterations (default 100; may be raised on "
-                                                                "--resume)")
+    g.add_argument("--max-games", type=int, default=None,
+                   help="REQUIRED for a new run: cap on the games of the whole run (catanatron: 2 per seed); may be "
+                        "raised explicitly on --resume")
+    g.add_argument("--iterations", type=int, default=None, help="total iterations (default: as many as --max-games "
+                                                                "allows; may be raised on --resume within the cap)")
     g.add_argument("--seed", type=int, default=None, help="base seed (perturbations and game seeds; default 1)")
     g.add_argument("--max-turns", type=int, default=None)
     g.add_argument("--game-timeout", type=int, default=1800, help="seconds before a game is recorded as an error")
@@ -976,7 +1007,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--a", type=float, default=None, help="step gain (default: auto from --first-step)")
     g.add_argument("--A", type=float, default=None, help="stability constant (default 10%% of --iterations)")
     g.add_argument("--alpha", type=float, default=None, help="a_k exponent (default 0.602)")
-    g.add_argument("--c", type=float, default=None, help="perturbation size c (default 0.15)")
+    g.add_argument("--c", type=float, default=None, help="perturbation size c (default 0.25)")
     g.add_argument("--gamma", type=float, default=None, help="c_k exponent (default 0.101)")
     g.add_argument("--first-step", type=float, default=None,
                    help="auto a: step of a one-s.e. gradient estimate at k=0 (default 0.05)")
@@ -1032,9 +1063,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         if given:
             print(f"note: --resume keeps the state's configuration; ignored: {', '.join('--' + o.replace('_', '-') for o in given)}")
         cfg = state["config"]
+        if args.max_games:
+            cfg["max_games"] = args.max_games       # an explicit new cap
         if args.iterations and args.iterations != cfg["iterations"]:
             if args.iterations < state["k"]:
                 raise SystemExit(f"error: {state['k']} iterations are already done")
+            if args.iterations * cfg["games_per_iteration"] > cfg["max_games"]:
+                raise SystemExit(f"error: {args.iterations} iterations = {args.iterations * cfg['games_per_iteration']}"
+                                 f" games exceed the run's cap of {cfg['max_games']} (raise it with --max-games)")
             cfg["iterations"] = args.iterations     # A stays as created, so the finished iterations are unchanged
         cfg["game_timeout"] = args.game_timeout
     else:

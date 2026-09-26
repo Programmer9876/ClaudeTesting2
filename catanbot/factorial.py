@@ -3,8 +3,8 @@
 One-at-a-time ablations measure a term with every other term at its default.  Terms interact (a robber
 on our hex hurts less while we hold a knight), so a suspected pair (or triple) is tested as a full 2^k
 design: every combination of "factor at its test value" / "factor at its default" is played on the SAME
-seeds (``scripts/ablate.py --factorial`` in self-play, ``scripts/ablate_catanatron.py --factorial``
-against Catanatron; docs/TUNING.md).  This module holds the design and the arithmetic only (no games).
+seeds (``scripts/ablate.py --factorial`` in self-play, ``scripts/factorial_catanatron.py`` against
+Catanatron; docs/TUNING.md).  This module holds the design and the arithmetic only (no games).
 
 Cells are bit masks over the factors (bit ``i`` set = factor ``i`` at its test value; ``0`` = the base,
 every factor at its default).  ``values[cell]`` is one number per unit (a game or a seed), aligned across
@@ -34,6 +34,24 @@ Z95 = 1.959964
 MAX_FACTORS = 4          # 16 cells; beyond that a fractional design would be the tool, not this one
 
 Factor = Tuple[str, Any]   # (registry name, test value); the other level is the registry default
+
+# Politics / table-social terms (docs/ABLATIONS.md "Politics rule"): they enter a factorial or a joint-tuning run
+# only if their one pre-planned screen was significant (Holm p < 0.05); otherwise they are deferred to human
+# testing.  The tools print a note for them; they do not look the screens up.
+POLITICS_TERMS = ("politics.", "coalitions.", "trading.feed_leader_guard", "opponent_model.stage_late_drop",
+                  "search.counter", "search.respond_lookahead")
+
+
+def is_politics(name: str) -> bool:
+    return name.startswith(POLITICS_TERMS)
+
+
+def politics_note(names: Sequence[str]) -> Optional[str]:
+    hit = [n for n in names if is_politics(n)]
+    if not hit:
+        return None
+    return (f"POLITICS RULE: {', '.join(hit)} may only be tested here if its one-at-a-time screen was significant "
+            f"(Holm p < 0.05); otherwise it is INCONCLUSIVE and deferred to human testing (docs/ABLATIONS.md)")
 
 
 def parse_factors(text: str) -> List[Factor]:

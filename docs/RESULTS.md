@@ -4,6 +4,47 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 02:00 UTC - joint tuning (SPSA) and 2x2 interaction tools built; what the budget can detect
+
+Tools, all off the default path:
+- `scripts/tune_joint.py`: SPSA over groups of weights, in self-play or
+  against Catanatron.  `--max-games` is required, and the planned total is
+  printed before any game.
+- `scripts/ablate.py --factorial` and `scripts/factorial_catanatron.py`: 2x2
+  (up to 2^4) tests reporting main effects and interactions.
+- `docs/TUNING.md`: how to run them.
+- A tuned set reaches the league gate as a `tune=` bot spec.
+
+64 tests pass on both Python environments.  So far only smoke-sized real
+runs have been played.
+
+**What a budget of thousands of games can and cannot see** (measured on a
+synthetic objective with a known optimum):
+
+| method, budget | what it can detect |
+|---|---|
+| SPSA, 2,376 self-play games | a group's weights only when their combined edge is about 5 points: it recovers +3.8 on average, never worse than the defaults |
+| the same, combined edge of about 2 points | +0.6 on average, and 4 of 12 runs ended *worse* than the defaults |
+| 2x2 self-play test, 800 games per cell | main effects of about 4 points and interactions of about 9 points |
+
+So only large effects show at this budget.  The joint tuner is judged as a
+whole by the league gate, not per weight.
+
+**Throughput correction** (it changes the time estimates):
+
+| mode | games per hour on 3 cores |
+|---|---|
+| vs Catanatron, C++ evaluator | about 6,000 (1.1 s per game) |
+| vs Catanatron, Python evaluator (needed for weights inside the static value) | about 3,000 (3.6 s per game) |
+| self-play, 4 search bots, C++ evaluator | about 1,000 (11.5 s per game) |
+| self-play, Python evaluator | about 170 (62 s per game): 2,400 games take about 14 h |
+
+Consequence: test new ideas against Catanatron wherever the mechanic
+exists there (bank and port trades, ports, robber, card counting in
+counted mode).  Keep self-play for player trades.  Port static-value
+weights to C++ with a parameter rather than paying the Python-evaluator
+cost.
+
 ## 2026-09-26 01:00 UTC - advisor counts cards from Colonist's game log (off by default)
 
 The advisor used to read one screenshot at a time, so it knew opponents'
