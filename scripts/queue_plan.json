@@ -1659,7 +1659,6 @@
   },
   {
    "name": "devbelief_gate",
-   "enabled": false,
    "kind": "command",
    "area": "counting",
    "priority": 28,
@@ -1678,7 +1677,6 @@
     "key": "pass",
     "pass_if": true
    },
-   "requires": "--bump-code --areas counting (step 6 code: scripts/dev_belief_calibrate.py and catanbot/devbelief.py are not in epoch B3; command rows are not tunable-checked)",
    "notes": "Gate (A): offline calibration on the T1-T11 logs through the real counted tracker and DevAgeModel; 0 games. PASS = hidden-VP MSE >= 30% below uniform in every holder class, log-loss no worse than uniform in every class x age bucket (n >= 30), 0 devbelief errors, fallbacks < 0.1%; readouts: knight log-loss overall and in the knight-context stratum (R3 as devbelief.H_KNIGHT_CTX)."
   },
   {
@@ -1712,7 +1710,6 @@
   },
   {
    "name": "shadow_dev_oracle",
-   "enabled": false,
    "kind": "command",
    "area": "counting",
    "priority": 30,
@@ -1733,7 +1730,6 @@
     "key": "pass",
     "pass_if": true
    },
-   "requires": "--bump-code --areas counting (step 6 code: scripts/belief_shadow.py, reveal_devs and catanbot/devbelief.py are not in epoch B3; command rows are not tunable-checked)",
    "notes": "shadow.dev_oracle: zero-game three-arm shadow (U uniform / H held-age posterior / O true dev cards via reveal_devs) on ~2,000 counted positions of our seat in the T4 logs (Colonist information: discards public), K=4 per arm with shared det / search seeds, paired value regret against 8 oracle determinizations where a_U != a_H plus a 25% subsample. PASS (gate B) = captured regret > 0 at one-sided p < 0.05 with the A/A and common-random-number checks clean; readouts: change rate (< 1% = advisor only), headroom, implied pp (x3 >= 4 pp opens test D)."
   },
   {
