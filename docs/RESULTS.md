@@ -4,6 +4,44 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 04:30 UTC - strength proof complete: all four claims PASS, ready for supervised human testing
+
+T7-T11 finished at 04:10 UTC.  With T1-T6 and R1-R2 that is 7,600 games,
+with 0 errors, fallbacks, crashes, turn-cap games or card-counter resets.
+Every game replays exactly.
+
+| claim | tests | result | largest Holm-adjusted p |
+|---|---|---|---|
+| 1 better than Catanatron's strong bots | T1-T6 | PASS | 1.85e-32 |
+| 2 ready for supervised human testing | T1-T6, R1-R2 | PASS | 1.85e-32 |
+| 3 strong with only Colonist information | T7 61.7 %, T8 58.5 %, T9 56.8 % (fair 25 %) | PASS | 1.87e-41 |
+| 4 beats a mixed Catanatron table | T10 61.0 % (full), T11 61.8 % (Colonist) | PASS | 3.13e-52 |
+
+**Readiness for supervised human testing** (claims 2, 3 and 4): **PASS.**
+
+* **Colonist information costs almost nothing against these bots.**  Win
+  rates stay within noise of the full-information runs: 61.7 vs 62.8 %
+  against ValueFunction, and 58.5 / 56.8 vs 54.5 % against the search bots.
+  Our bot's time per game rises about 3.4x (4 guesses of the hidden cards
+  per decision).
+* **Mixed table:** SameTurnAlphaBeta was the strongest Catanatron seat (60 /
+  71 wins in T10 / T11), then AlphaBeta (54 / 58), then ValueFunction
+  (42 / 24).
+* **Two container restarts** each cut off one chunk (T7 games 800-999, T9
+  games 120-159).  Both chunks were discarded and replayed in full with the
+  same seeds, and all 39 games finished before the cut came out identical.
+  This is disclosed in docs/PROOF.md.
+* **Timing:** Catanatron's slowest decision in T8-T11 was 7.4 s, against
+  its 20 s search limit.
+* **Evidence** archived in `proof/`: sha256 manifest of 312 files, replay
+  checks, and the registered analysis re-run on the archive with identical
+  output.
+
+**Next** (docs/ABLATIONS.md testing policy):
+- the budgeted test queue with the priority areas: trading, ports, robber,
+  card counting;
+- the new strategies through the league gate.
+
 ## 2026-09-26 02:00 UTC - joint tuning (SPSA) and 2x2 interaction tools built; what the budget can detect
 
 Tools, all off the default path:

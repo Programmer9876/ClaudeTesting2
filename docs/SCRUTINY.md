@@ -5,11 +5,10 @@ beats Catanatron's strong bots, and is ready for supervised human testing
 (docs/PROOF_PROTOCOL.md).  Every answer below says what the evidence is and how
 to re-check it.
 
-**Status (2026-09-26 00:25 UTC):**
-- T1-T6 and R1-R2 are finished, and **claims 1 and 2 PASS** (docs/PROOF.md).
-- T7-T11 (Colonist information and the mixed table; claims 3 and 4, needed
-  for readiness) are running.
-- The T1-T6 numbers below are final.
+**Status (2026-09-26 04:11 UTC): the proof is complete.**
+- **All four claims PASS**, and so does the readiness for supervised human
+  testing, which needs claims 2, 3 and 4 (docs/PROOF.md).
+- Every number below is final.
 - `RUN` below is the archived evidence, `proof/` in this repository
   (proof/README.md).
 
@@ -21,12 +20,19 @@ to re-check it.
 | T4 | ValueFunction x2 | 2v2 (fair share 50 %) | 1000/1000 | 836 (83.6 %) | 2.5e-109 | 0.804 |
 | T5 | AlphaBeta x2 | 2v2 | 400/400 | 323 (80.8 %) | 3.2e-37 | 0.752 |
 | T6 | SameTurnAlphaBeta x2 | 2v2 | 400/400 | 315 (78.8 %) | 1.9e-32 | 0.730 |
+| T7 | ValueFunction x3, Colonist info | 1v3 | 1000/1000 | 617 (61.7 %) | 1.7e-132 | 0.576 |
+| T8 | AlphaBeta x3, Colonist info | 1v3 | 400/400 | 234 (58.5 %) | 9.8e-46 | 0.520 |
+| T9 | SameTurnAlphaBeta x3, Colonist info | 1v3 | 400/400 | 227 (56.8 %) | 1.9e-41 | 0.502 |
+| T10 | one each of ValueFunction / AlphaBeta / SameTurn | 1v3 | 400/400 | 244 (61.0 %) | 3.1e-52 | 0.545 |
+| T11 | the same, Colonist info | 1v3 | 400/400 | 247 (61.8 %) | 2.9e-54 | 0.553 |
 
 Registered pass lines, from the protocol:
 - Claim 1: Holm family-wise alpha = 0.01.
 - Claim 2: family-wise alpha = 5.7e-7, plus the lower end of the 99 % interval
   at least 0.35 (1v3) / 0.55 (2v2).  Claim 2 also has seat, error and
   stand-in conditions, covered below.
+- Claims 3 (T7-T9) and 4 (T10-T11): the same strict thresholds.  They add
+  zero card-counter errors or resets.
 
 ---
 
@@ -186,6 +192,16 @@ No.
   - Hidden: steal cards (to third parties), discard types, unplayed dev
     types.
   - Readiness for human testing requires these to pass (claims 3 and 4).
+    They did:
+
+    | opponents | Colonist info | full info |
+    |---|---|---|
+    | 3x ValueFunction | 61.7 % (T7) | 62.8 % (T1) |
+    | 3x AlphaBeta | 58.5 % (T8) | 54.5 % (T2) |
+    | 3x SameTurnAlphaBeta | 56.8 % (T9) | 54.5 % (T3) |
+
+  - The tracker had zero errors or belief resets in 2,200 counted-mode
+    games.
 
 ### Q8. Could it make illegal moves or get special treatment from the engine?
 
@@ -263,6 +279,15 @@ No.
   games.
 - There is no early stopping.  Interim numbers were read for monitoring
   only and changed nothing.
+- **Two container restarts** interrupted T7-T11, cutting off T7 games
+  800-999 and T9 games 120-159.
+  - The runner keeps a chunk only once it has completed, so both chunks
+    were discarded and played again in full with the same seeds.
+  - Nothing was chosen between runs.
+  - All 39 games that had finished before an interruption came out
+    identical in the replay: winner, every seat's VP and turn count.
+  - The interrupted output is archived in `proof/T7/interrupted/` and
+    `proof/T9/interrupted/`.
 
 ### Q13. Six tests: isn't a multiple-comparisons correction needed?
 
@@ -377,9 +402,9 @@ proof/README.md):
 - console output, replay checks and the analysis;
 - a sha256 manifest.
 
-All 5,000 archived games were replay-checked before the commit.  The
-registered analysis re-run on the archived copy prints output identical to
-the run's own.  T7-T11 will be added the same way when they finish.
+All 7,600 archived games (T1-T11, R1-R2) were replay-checked before the
+commit.  The registered analysis re-run on the archived copy prints output
+identical to the run's own.
 
 ### Q20. Exactly which code played?
 
@@ -399,8 +424,9 @@ the run's own.  T7-T11 will be added the same way when they finish.
 - **No trading** in any proof game, because Catanatron's bots cannot trade.
   Trading, counteroffers and table politics are untested against outside
   opponents.  Self-play and human testing are where they get judged.
-- **T1-T6 are full-information games.**  The Colonist-information result is
-  T7-T11 (pending).
+- **T1-T6 and T10 are full-information games.**  T7-T9 and T11 are the
+  Colonist-information results: our bot sees only public information, while
+  Catanatron's bots still see everything.
 - **Catanatron's bots are the only outside opponents.**  The stand-ins in
   R1-R2 are our own stronger versions of them, not independent programs.
 - **The screenshot parser** has only been validated on synthetic renders.

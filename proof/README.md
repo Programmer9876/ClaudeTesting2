@@ -16,15 +16,19 @@ covers exactly games 0..N-1 once, in both results and logs.
 
 ```
 proof/
-  <ID>/                         one directory per test (T1-T6, R1-R2; T7-T11 when they finish)
+  <ID>/                         one directory per test (T1-T11, R1-R2)
     results/<ID>_g<a>-<b>.json  bench results of games [a, b) of the test, unchanged
     logs/<ID>_<opponent>_<format>_seed<base>_g<a>-<b>.jsonl.gz
                                 action logs of the same games, one game per line, sorted by game number
     console/<ID>_g<a>-<b>.txt   the bench's console output for the chunk
     replay_check_<ID>.txt       replay --check of the original logs, run by run_proof.sh
-  run/run_proof.log             what ran when (the runner's own log)
+    interrupted/                T7 and T9 only: console output of a chunk cut off by a container
+                                restart (discarded and replayed; the finished games match exactly)
+  run/run_proof.log             what ran when (the runner's own log, both runs)
+  run/queue_t7_t11.log          when T7-T11 started and the two restarts
   run/proof.txt, proof.json, PROOF.md
-                                the analysis as produced at the end of the run
+                                the final analysis of claims 1-4 (end of the T7-T11 run)
+  run/claims1-2_first_analysis/ the analysis of claims 1-2 made at the end of the T1-R2 run
   MANIFEST.sha256               sha256 of every file above (sha256sum -c MANIFEST.sha256, from proof/)
 ```
 
@@ -44,7 +48,7 @@ proof/
 
 ## Re-check
 
-From the repository root.  `$PY33` is a Python with Catanatron 3.3.0 (T1-T6);
+From the repository root.  `$PY33` is a Python with Catanatron 3.3.0 (T1-T11);
 `python3` has Catanatron 3.2.1 (R1-R2).
 
 ```
@@ -52,13 +56,17 @@ From the repository root.  `$PY33` is a Python with Catanatron 3.3.0 (T1-T6);
 (cd proof && sha256sum -c MANIFEST.sha256)
 
 # replay every game and verify every action, the final VPs, winner, turns and fingerprint
-$PY33 scripts/replay_catanatron.py proof/T1/logs --check        # likewise T2 ... T6
+$PY33 scripts/replay_catanatron.py proof/T1/logs --check        # likewise T2 ... T11
 python3 scripts/replay_catanatron.py proof/R1/logs --check      # likewise R2
 
 # rebuild one position (board, hands, buildings) after a given turn or action
 $PY33 scripts/replay_catanatron.py proof/T2/logs --game 17 --turn 40
 
-# the registered analysis (exactly the script the proof ran with)
+# the registered analysis of all four claims (scripts/prove_strength.py, sha256 prefix 3010fd6ee4063937,
+# the file named in protocol amendment 5)
+ARGS=""; for t in T1 T2 T3 T4 T5 T6 R1 R2 T7 T8 T9 T10 T11; do ARGS="$ARGS --test $t=proof/$t/results"; done
+python3 scripts/prove_strength.py $ARGS
+# claims 1-2 with the script of the first run
 git show 9984181:scripts/prove_strength.py > /tmp/prove_9984181.py
 ARGS=""; for t in T1 T2 T3 T4 T5 T6 R1 R2; do ARGS="$ARGS --test $t=proof/$t/results"; done
 python3 /tmp/prove_9984181.py $ARGS
@@ -68,9 +76,10 @@ python3 scripts/audit_opponents.py --run proof T2 T3
 ```
 
 Result on 2026-09-26:
-- all 5,000 archived games replay with 0 mismatches;
+- all 7,600 archived games replay with 0 mismatches;
 - the analysis of the archived copy is identical to the run's own
-  (`run/proof.txt`).
+  (`run/proof.txt`, and `run/claims1-2_first_analysis/` for the first run);
+- claims 1-4 all PASS (docs/PROOF.md).
 
 **Hash seed:** games are reproducible only with `PYTHONHASHSEED=0`, because
 Catanatron iterates over sets.  `replay --check` does not depend on it: it
