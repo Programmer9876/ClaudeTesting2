@@ -4,6 +4,22 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 21:15 UTC - check-in: four politics screens inconclusive; dev-card guessing gate fails by a hair; two fixes reviewed
+
+- **Politics** (1,000 pairs each vs value-rule responders): no slack toward friendly players -2.6 +- 1.3 pp,
+  coalition signals doubled -2.7 +- 1.2, the feed-the-leader guard off -0.2 +- 0.4, no late-game drop in
+  trade willingness +1.1 +- 1.1.  None is significant after Holm (smallest adjusted p 0.11).  Under the politics
+  rule all four are INCONCLUSIVE: defaults unchanged, deferred to human testing (docs/ABLATIONS.md).
+- **Development-card guessing, gate A: FAIL.**  Over 6,200 proof games the held-age model beats uniform guessing
+  by far (log-loss 0.30 vs 0.87 for our bot's cards, 0.30 vs 1.06 for AlphaBeta's).  But one registered cell,
+  our bot's cards bought that same turn, came out 0.5205 vs 0.5204, and the gate asked for "no worse".  A card
+  bought this turn has no age to go on, so the two guesses are the same there.  As registered, the game test
+  does not run and the model stays off.  Gate B (the oracle shadow) passed: knowing opponents' cards exactly
+  changes 1.7 % of decisions, worth about 0.8 pp, too little for a dedicated game test.
+- **Offer cost and dev-card checks:** both agents' work reviewed.  With both in, default play is identical to
+  epoch B5: 24/24 games with full information, 12/12 with Colonist information, 16/16 with player trades on.
+  Both go into the queue (epoch B6) once the full test suites pass.
+
 ## 2026-09-26 19:20 UTC - check-in: robber persistence fails its gate; a queue snapshot bug fixed
 
 - **Robber:** R1a (a block on a Knight holder is temporary) failed its gates on the 40-game shadow.  So its

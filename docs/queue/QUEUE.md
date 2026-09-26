@@ -1,6 +1,6 @@
 # Test queue report
 
-Plan `scripts/queue_plan.json` (541e74058b9f), results `/home/user/queue_runs/queue1`, written 2026-09-26 19:13:01.  One line per candidate.  Units: win-rate percentage points of the candidate minus the default (paired); `p` = stage-wise one-sided p (fixed two-sided p for politics / estimate rows), `Holm` = adjusted within the row's tier (provisional `*` until the tier is complete).  Estimates of rows stopped early are biased away from 0 (winner's curse): confirm on fresh seeds.
+Plan `scripts/queue_plan.json` (541e74058b9f), results `/home/user/queue_runs/queue1`, written 2026-09-26 21:09:16.  One line per candidate.  Units: win-rate percentage points of the candidate minus the default (paired); `p` = stage-wise one-sided p (fixed two-sided p for politics / estimate rows), `Holm` = adjusted within the row's tier (provisional `*` until the tier is complete).  Estimates of rows stopped early are biased away from 0 (winner's curse): confirm on fresh seeds.
 
 | area | row | candidate | polarity | design | label | look | pairs | estimate (pp) +- se | unit | base rate / relative | p | Holm | dVP +- se | discordant / diverged | mechanism (cand - def) | CPU-h | next action |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -78,14 +78,14 @@ Plan `scripts/queue_plan.json` (541e74058b9f), results `/home/user/queue_runs/qu
 | robber | knight_kick | 0.95 | new | screen | NOT TRIGGERED |  |  |  |  |  |  |  |  |  |  | 0.00 | after robber_gate_kick_trigger: condition not met |
 | robber | robber_retal_w | row |  | human | DEFERRED |  |  |  |  |  |  |  |  |  |  | 0.00 | deferred to human testing (no games) |
 | robber | t3_blockw0_pyeval@alphabeta | 0 | knockout | confirm | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | confirmation waits for tier t1 to complete (Holm family) |
-| counting | devbelief_gate_v2 | row |  | gate | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | queued |
-| counting | devbelief_smoke@value | 1 | measure | estimate | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after devbelief_gate_v2 |
-| counting | shadow_dev_oracle_v2 | row |  | gate | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | queued |
-| politics | t2_max_slack0_vrule@value | 0 | knockout | politics | open | 1 | 400 |  |  |  |  |  | -0.08 +- 0.07 | 0.17 / 0.99 |  | 0.53 | politics: one fixed-N screen, running |
-| politics | t2_coal_scale2_vrule@value | 2 | knockout | politics | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | politics: one fixed-N screen, queued |
-| politics | t2_feed_leader_off_vrule@value | off | knockout | politics | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | politics: one fixed-N screen, queued |
-| politics | t2_late_drop0_vrule@value | 0 | knockout | politics | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | politics: one fixed-N screen, queued |
-| politics | counters_selfplay | 1 | new | politics | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | politics: one fixed-N screen, queued |
+| counting | devbelief_gate_v2 | row |  | gate | FAIL |  |  |  |  |  |  |  |  |  |  | 0.08 |  |
+| counting | devbelief_smoke@value | 1 | measure | estimate | NOT TRIGGERED |  |  |  |  |  |  |  |  |  |  | 0.00 | after devbelief_gate_v2: condition not met |
+| counting | shadow_dev_oracle_v2 | row |  | gate | PASS |  |  |  |  |  |  |  |  |  |  | 0.09 | pipeline / pairing verified |
+| politics | t2_max_slack0_vrule@value | 0 | knockout | politics | SCREENED(fixed N) | 1 | 1000 | -2.6 +- 1.3 | pp (1v3 win rate vs value, vs value-rule responders) | 86.1% / -3% | 0.0458 | 0.137* | -0.12 +- 0.04 | 0.17 / 0.99 | first_city_round -0.09+-0.11; first_settle_round +0.05+-0.11; knights_held_end -0.02+-0.02; knights_played -0.12+-0.06; largest_army -0.00+-0.01; longest_road - | 0.78 | INCONCLUSIVE (provisional: tier incomplete): no more games, default unchanged, deferred to human testing |
+| politics | t2_coal_scale2_vrule@value | 2 | knockout | politics | SCREENED(fixed N) | 1 | 1000 | -2.7 +- 1.2 | pp (1v3 win rate vs value, vs value-rule responders) | 86.1% / -3% | 0.0277 | 0.111* | -0.10 +- 0.04 | 0.15 / 0.94 | first_city_round -0.06+-0.11; first_settle_round +0.11+-0.10; knights_held_end -0.01+-0.02; knights_played -0.08+-0.05; largest_army -0.00+-0.01; longest_road - | 0.96 | INCONCLUSIVE (provisional: tier incomplete): no more games, default unchanged, deferred to human testing |
+| politics | t2_feed_leader_off_vrule@value | off | knockout | politics | SCREENED(fixed N) | 1 | 1000 | -0.2 +- 0.4 | pp (1v3 win rate vs value, vs value-rule responders) | 86.1% / -0% | 0.637 | 0.673* | -0.01 +- 0.01 | 0.02 / 0.10 | first_city_round -0.01+-0.01; first_settle_round +0.01+-0.02; knights_held_end -0.01+-0.01; knights_played +0.00+-0.01; largest_army -0.00+-0.00; longest_road + | 0.95 | INCONCLUSIVE (provisional: tier incomplete): no more games, default unchanged, deferred to human testing |
+| politics | t2_late_drop0_vrule@value | 0 | knockout | politics | SCREENED(fixed N) | 1 | 1000 | +1.1 +- 1.1 | pp (1v3 win rate vs value, vs value-rule responders) | 86.1% / +1% | 0.337 | 0.673* | +0.03 +- 0.03 | 0.13 / 1.00 | first_city_round -0.04+-0.08; first_settle_round -0.01+-0.08; knights_held_end +0.04+-0.02; knights_played -0.03+-0.05; largest_army +0.01+-0.01; longest_road + | 1.20 | INCONCLUSIVE (provisional: tier incomplete): no more games, default unchanged, deferred to human testing |
+| politics | counters_selfplay | 1 | new | politics | queued |  |  |  |  |  |  |  |  |  |  | 0.53 | politics: one fixed-N screen, running |
 | politics | respond_lookahead_selfplay | 1 | new | politics | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | politics: one fixed-N screen, queued |
 | other | t1_search_vs_heur@value | cand | measure | estimate | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | queued |
 | other | t1_search_vs_heur@vf | cand | measure | estimate | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | queued |
@@ -102,22 +102,16 @@ Plan `scripts/queue_plan.json` (541e74058b9f), results `/home/user/queue_runs/qu
 
 | # | area | row | status | remaining CPU-h | weight | why |
 |---|---|---|---|---|---|---|
-| 1 | counting | devbelief_gate_v2 | ELIGIBLE | 0.20 | 0.0010 |  |
-| 2 | counting | shadow_dev_oracle_v2 | ELIGIBLE | 1.50 | 0.0009 |  |
-| 3 | politics | t2_max_slack0_vrule@value | RUNNING | 0.82 | 0.0002 |  |
-| 4 | politics | t2_coal_scale2_vrule@value | ELIGIBLE | 1.67 | 0.0002 |  |
-| 5 | politics | t2_feed_leader_off_vrule@value | ELIGIBLE | 1.67 | 0.0002 |  |
-| 6 | politics | t2_late_drop0_vrule@value | ELIGIBLE | 1.67 | 0.0002 |  |
-| 7 | politics | counters_selfplay | ELIGIBLE | 3.60 | 0.0002 |  |
-| 8 | politics | respond_lookahead_selfplay | ELIGIBLE | 3.60 | 0.0002 |  |
-| 9 | other | t1_search_vs_heur@value | ELIGIBLE | 1.57 | 0.0001 |  |
-| 10 | other | t1_search_vs_heur@vf | ELIGIBLE | 1.02 | 0.0001 |  |
-| 11 | other | t1_depth2@value | ELIGIBLE | 1.64 | 0.0001 |  |
-| 12 | other | t2x_beam2@value | ELIGIBLE | 0.48 | 0.0001 |  |
-| 13 | other | t2x_expand4@value | ELIGIBLE | 0.48 | 0.0001 |  |
-| 14 | other | shadow_paths | ELIGIBLE | 0.15 | 0.0001 |  |
+| 1 | politics | counters_selfplay | RUNNING | 2.66 | 0.0002 |  |
+| 2 | politics | respond_lookahead_selfplay | ELIGIBLE | 3.60 | 0.0002 |  |
+| 3 | other | t1_search_vs_heur@value | ELIGIBLE | 1.57 | 0.0001 |  |
+| 4 | other | t1_search_vs_heur@vf | ELIGIBLE | 1.02 | 0.0001 |  |
+| 5 | other | t1_depth2@value | ELIGIBLE | 1.64 | 0.0001 |  |
+| 6 | other | t2x_beam2@value | ELIGIBLE | 0.48 | 0.0001 |  |
+| 7 | other | t2x_expand4@value | ELIGIBLE | 0.48 | 0.0001 |  |
+| 8 | other | shadow_paths | ELIGIBLE | 0.15 | 0.0001 |  |
 
-Waiting / blocked: acq_breadth_confirm@value (WAITING: confirmation waits for tier t1 to complete (Holm family)); t3_trades0_vrule@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); t3_openings@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); t3_blockw0_pyeval@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); devbelief_smoke@value (WAITING: after devbelief_gate_v2); paths_main@value (WAITING: shadow shadow_paths); paths_main@vf (WAITING: shadow shadow_paths); t3_search_vs_heur@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); t3_depth2@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family))
+Waiting / blocked: acq_breadth_confirm@value (WAITING: confirmation waits for tier t1 to complete (Holm family)); t3_trades0_vrule@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); t3_openings@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); t3_blockw0_pyeval@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); paths_main@value (WAITING: shadow shadow_paths); paths_main@vf (WAITING: shadow shadow_paths); t3_search_vs_heur@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); t3_depth2@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family))
 
 ## Per area
 
@@ -128,8 +122,8 @@ Waiting / blocked: acq_breadth_confirm@value (WAITING: confirmation waits for ti
 | diversification | 10 | 9 | 0 | 1 | 10 | 0 | 0 | 0 | 4.14 |
 | ports | 15 | 15 | 0 | 0 | 0 | 0 | 0 | 1 | 0.84 |
 | robber | 22 | 21 | 0 | 0 | 1 | 3 | 0 | 1 | 5.30 |
-| counting | 3 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0.00 |
-| politics | 6 | 0 | 6 | 0 | 0 | 0 | 0 | 0 | 0.53 |
+| counting | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0.17 |
+| politics | 6 | 4 | 2 | 0 | 0 | 0 | 0 | 0 | 4.42 |
 | other | 10 | 0 | 6 | 0 | 0 | 0 | 0 | 0 | 0.00 |
 
 ## Bundle proposals (a human commits them; then the league gate)
@@ -144,5 +138,9 @@ Waiting / blocked: acq_breadth_confirm@value (WAITING: confirmation waits for ti
 | opponent_model.REJECT_STREAK | none (no bot harness reacts) | n/a | deferred |
 | winpaths.SPOT_LEADER | none (no bot harness reacts) | n/a | deferred |
 | robber_eval.RETAL_W | none (no bot harness reacts) | n/a | deferred |
+| politics.MAX_SLACK=0 | t2_max_slack0_vrule@value (1000 pairs) | -2.6 +- 1.3 pp, Holm p 0.14 | INCONCLUSIVE (provisional) |
+| coalitions.SCALE=2 | t2_coal_scale2_vrule@value (1000 pairs) | -2.7 +- 1.2 pp, Holm p 0.11 | INCONCLUSIVE (provisional) |
+| trading.feed_leader_guard=off | t2_feed_leader_off_vrule@value (1000 pairs) | -0.2 +- 0.4 pp, Holm p 0.67 | INCONCLUSIVE (provisional) |
+| opponent_model.stage_late_drop=0 | t2_late_drop0_vrule@value (1000 pairs) | +1.1 +- 1.1 pp, Holm p 0.67 | INCONCLUSIVE (provisional) |
 
 CRN pilot: discordant share 0.318 (off) -> 0.215 (dice), ratio 0.68; A/A identical -> PASS: rows with crn auto use --crn dice

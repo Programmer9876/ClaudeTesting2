@@ -742,12 +742,14 @@ They are all off by default outside the queue, and arm keys are unchanged when t
 | `shadow_robber` | robber | gate PASS | epoch-A robber shadow; its prior-only knockouts ran |
 | `t2_danger_mult_off@value`, `t2_block_need0@value`, `t2_exposure0_pyeval@value`, `t1_blockw0_pyeval@value` | robber | KEEP(unproven) | removing each: 0.0 +- 0.6, -1.2 +- 1.0, -0.5 +- 1.6, -0.6 +- 1.0 pp (400-800 pairs); the terms stay |
 | `t2_knight03@value` | robber | REJECT (futile) | +0.4 +- 0.2 pp at 1,000 pairs, below the smallest effect worth adopting |
-
 | `shadow_robber_step5` | robber | gate PASS (A/A clean) | the 40-game step-5 shadow ran |
 | `robber_gate_r1a` | robber | gate **FAIL** | R1a persistence failed its gates on the 40-game shadow, so `robber_persistence` and the robber + Largest Army bundle do not run.  The knight_kick fallback was not triggered (it triggers only on a G1 or G4 failure) |
 | `robber_gate_r1b`, `robber_gate_r1c` | robber | gate PASS | knight insurance and block duration pass their gates; both are SPSA knobs (backlog), with no standalone screen |
 | `t1_blockw0_pyeval@vf` | robber | KEEP(unproven) | -0.9 +- 1.0 pp at 800 pairs |
 | `devbelief_gate`, `shadow_dev_oracle` | counting | FAILED (queue bug) | the epoch-B4 snapshot lacked the two new scripts (the queue snapshots a fixed script list).  Fixed in `run_queue.py`; epoch B5 re-runs them as `devbelief_gate_v2` and `shadow_dev_oracle_v2` |
+| `devbelief_gate_v2` (gate A) | counting | gate **FAIL** (by a hair) | 6,200 proof games, 36,542 observations, 0 errors, 0 fallbacks.  The held-age model beats uniform guessing by far overall (log-loss of P(holds a VP card) for our bot 0.30 vs 0.87; hidden-VP error 0.22 vs 0.79; AlphaBeta 0.30 vs 1.06; SameTurn 0.30 vs 1.07).  It failed one of the registered cells: our bot's cards bought this very turn, log-loss 0.5205 vs uniform 0.5204 (4,974 observations), where the gate asked for "no worse".  A card bought this turn carries no age information, so the two are the same guess there.  As registered, `devbelief_smoke@value` (the game test) does not run; the model stays off |
+| `shadow_dev_oracle_v2` (gate B) | counting | gate PASS | 2,000 counted positions from T4: knowing opponents' dev cards exactly changes 1.7 % of decisions; the held-age model captures part of that regret (t = 2.17).  Implied gain 0.8 pp, below the 4 pp (after x3) that would open a dedicated game test |
+| `t2_max_slack0_vrule@value`, `t2_coal_scale2_vrule@value`, `t2_feed_leader_off_vrule@value`, `t2_late_drop0_vrule@value` | politics | **INCONCLUSIVE** (politics rule) | 1,000 pairs each vs value-rule responders: -2.6 +- 1.3, -2.7 +- 1.2, -0.2 +- 0.4, +1.1 +- 1.1 pp.  None is significant after Holm (smallest adjusted p 0.11, and the two politics screens still running cannot lower it).  Defaults unchanged; all four go to the deferred-to-human table |
 
 ## Queue after the strength proof (2026-09-26): every strategy the user asked to test
 
@@ -910,7 +912,10 @@ a reason to.
 
 | term | screen | result | status |
 |---|---|---|---|
-| (none yet) | | | |
+| `politics.MAX_SLACK` = 0 (no slack toward friendly players) | `t2_max_slack0_vrule@value`, 1,000 pairs | -2.6 +- 1.3 pp (nominal p 0.046, Holm 0.14) | INCONCLUSIVE, deferred (2026-09-26) |
+| `coalitions.SCALE` = 2 (coalition signals twice as strong) | `t2_coal_scale2_vrule@value`, 1,000 pairs | -2.7 +- 1.2 pp (nominal p 0.028, Holm 0.11) | INCONCLUSIVE, deferred (2026-09-26) |
+| `trading.feed_leader_guard` off | `t2_feed_leader_off_vrule@value`, 1,000 pairs | -0.2 +- 0.4 pp (Holm 0.67) | INCONCLUSIVE, deferred (2026-09-26) |
+| `opponent_model.stage_late_drop` = 0 | `t2_late_drop0_vrule@value`, 1,000 pairs | +1.1 +- 1.1 pp (Holm 0.67) | INCONCLUSIVE, deferred (2026-09-26) |
 
 ## After screening: interactions and joint tuning (user's point, 2026-09-26)
 
