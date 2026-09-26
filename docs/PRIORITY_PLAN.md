@@ -389,6 +389,20 @@ Resolution:
 - The task text assumes about 6,000 self-play games/h. RESULTS.md measured about 1,000 games/h on 3 cores (11.5 s per game), and 170 on the Python evaluator. This plan uses 1,000.
 - The task says the proof is running. RESULTS.md reports T7-T11 finished at 04:10 UTC, and no bench, ablate or Python process was running when this plan was made. The proof guard stays for future pre-registered runs.
 
+## Working rules (user, 2026-09-26 evening)
+
+- **Small mechanical changes** (variable and weight edits, README and doc edits) go to Sonnet agents; an Opus
+  review checks each one before it is committed.
+- **Real design and implementation** go to Opus agents.
+- **A bug that takes more than an hour:** stop and tell the user, who can enable Fable or look into it.
+- **Parallel agents never edit `scripts/queue_plan.json` directly.**  They write proposed rows to
+  `docs/proposed_rows/<name>.json` and the coordinator merges them.
+- **After the user's usage reset, work resumes:**
+  - the offer-cost fix for trade spam;
+  - the development-card due-diligence checks (SCRUTINY Q22);
+  - the SPSA knob groups;
+  - then milder versions of shelved ideas.
+
 ## Rule for Colonist-information rows (user, 2026-09-26)
 
 Discards are public on Colonist.  Every counted-mode row sets `"discards_public": true` next to
