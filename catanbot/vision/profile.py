@@ -87,9 +87,10 @@ class UiProfile:
         if box is None:
             return None
         w, h = size
-        x0, y0, x1, y1 = box
-        px = (int(round(x0 * w)), int(round(y0 * h)), int(round(x1 * w)), int(round(y1 * h)))
-        return (max(0, px[0]), max(0, px[1]), min(w, max(px[0] + 1, px[2])), min(h, max(px[1] + 1, px[3])))
+        x0, y0, x1, y1 = _check_fraction_box(name, box)    # regions assigned directly bypass set_region
+        px0 = min(w - 1, max(0, int(round(x0 * w))))
+        py0 = min(h - 1, max(0, int(round(y0 * h))))
+        return (px0, py0, min(w, max(px0 + 1, int(round(x1 * w)))), min(h, max(py0 + 1, int(round(y1 * h)))))
 
     def sidecar_path(self, name: str) -> Optional[str]:
         """Absolute path of a sidecar file ``name`` stored next to the profile JSON."""

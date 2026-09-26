@@ -33,6 +33,12 @@ def test_pixel_box_and_unknown_region():
     assert p.pixel_box("bank", (1280, 800)) is None
     with pytest.raises(ProfileError):
         p.set_region("chat", (0, 0, 1, 1))
+    p.regions["hand_bar"] = (1085, 120, 1265, 624)     # pixels assigned directly: refused, not silently used
+    with pytest.raises(ProfileError):
+        p.pixel_box("hand_bar", (1280, 800))
+    p.regions["dice"] = (0.999, 0.999, 1.0, 1.0)         # a sliver at the corner still gives a non-empty box
+    x0, y0, x1, y1 = p.pixel_box("dice", (100, 100))
+    assert 0 <= x0 < x1 <= 100 and 0 <= y0 < y1 <= 100
 
 
 def test_save_load_round_trip(tmp_path):
