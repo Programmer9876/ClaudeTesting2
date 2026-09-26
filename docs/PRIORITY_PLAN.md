@@ -389,6 +389,34 @@ Resolution:
 - The task text assumes about 6,000 self-play games/h. RESULTS.md measured about 1,000 games/h on 3 cores (11.5 s per game), and 170 on the Python evaluator. This plan uses 1,000.
 - The task says the proof is running. RESULTS.md reports T7-T11 finished at 04:10 UTC, and no bench, ablate or Python process was running when this plan was made. The proof guard stays for future pre-registered runs.
 
+## Backlog (low priority; user, 2026-09-26)
+
+**Why the acceptance calibration failed its behaviour check** (`acq_calib_native@value`: 58.0 offers a game
+against bots that never accept).  Reading the code, the likely cause is not the learning:
+- the search values a proposal as P(accept) x (the trade) + P(reject) x (nothing happens), so a rejected offer
+  costs nothing (`search.py`, `_trade_outcomes`);
+- any offer with a positive gain therefore beats not offering, however low P(accept) falls, and the bot
+  offers up to its per-turn cap (`trade_cap`) either way;
+- at a real table an offer is not free: it tells everyone what you need, which feeds their card counting.
+Candidate fix, not built: a small cost per proposal for that information leak, as a tunable.  The
+rejection-streak fallback runs next in the queue.
+
+**Learn each opponent's trade valuation from their answers** (the user's idea).  Every answer bounds the
+opponent's own value of the deal: an acceptance says it was at least break-even for them, a rejection says
+it was below.
+- **Today:** the base model (on by default) already moves a per-opponent value for each resource after every
+  answer, by a fixed step (`opponent_model.py`, `note_accept`).  The calibration (off) adds a per-opponent
+  offset to P(accept).
+- **The idea:** treat each answer as a threshold observation instead.  Move the estimate further when the
+  offer was far from the predicted break-even, and use it to find the price each opponent actually takes.
+- **Risk:** adaptive means exploitable.  An opponent can reject on purpose to push our offers up.  The guard
+  is the rule that already exists: the bot never offers or accepts below its own value of the trade (the
+  player-trade premium), so it can lose surplus but not make a losing trade.  Also keep the decay, and cap how
+  far the estimate moves per game.
+- **Cost:** the update is a few arithmetic operations per answer.  The expensive part is price discovery:
+  more offer candidates per decision means more decision time.
+- **Priority:** low, after the four areas.
+
 ## Notes (total test hours 26.3)
 
 **How the hours are counted.** Hours are wall-clock on 3 cores (x3 for CPU-hours), taken at each row's game cap. They assume:
