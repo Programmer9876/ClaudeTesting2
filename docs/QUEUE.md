@@ -228,7 +228,14 @@ Epochs:
 
 The enabled rows are the existing campaign rows, re-expressed:
 - **harness:** the two A/A rows, the 3-row real smoke on 3.2.1 vs vf, and the CRN dice pilot (off / dice / crn A/A).
-- **trades:** `t1_trades0_vrule` (headroom estimate) and the `t2_dump0` knockout.
+- **trades:** `t1_trades0_vrule` (headroom estimate) and the `t2_dump0` knockout.  Step 3 (epoch B1, after
+  `--bump-code --areas trades`; the rows wait as BLOCKED until their tunables exist): the acq.breadth bundle
+  (`search.acq_breadth`, self-play) with its value-rule confirmation and 3p no-harm follow-ups; the player-trade
+  premium (`search.acq_floor`) in self-play and vs value-rule responders; acq.calib's 40-seed native-trading check,
+  then its one politics self-play screen, and the rejection-streak fallback (40-seed check + deferred to human
+  testing).  With their plan promises (+2 pp) intake SHELVEs the three screens at 0 games until the user takes
+  plan decision 1.  acq.progress is disabled (it failed its Stage 0 audit) and the (A)-only breadth fallback is not
+  triggered (injected offers were accepted).  `acq_flow_fit` is a zero-game command row run from the working tree.
 - **diversification:** openings (pips_diversity, standin_book and the setup_pick control) vs value and vf, and flat resource demand, with the milder registry vector as its fallback. The port gap is an expansion / diversity gap. Disabled until built: `expansion_reach_credit`, `ports_conversion_cost` (conv=1) and the `div_lr_bundle`.
 - **ports (port access only):** the port gate cells, the best-cell row and spot_want, all disabled until built; SPOT_LEADER is deferred to human testing.
 - **robber:** a 40-game zero-game shadow that gates the prior-only rows, plus the knockouts and new-direction rows.

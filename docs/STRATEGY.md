@@ -471,6 +471,57 @@ by our chance at contested spots, the `REACH_W` saving is not rescaled.
 **Cost**: 1.01-1.04x the default's CPU per decision (1.06-1.09x with the reach component); the setup policy
 replaces the setup search and costs ~0.12x of it.
 
+## Acquisition: get what we need from the cheapest source (`acquisition.py`; off by default)
+
+Area: trading (docs/PRIORITY_PLAN.md step 3; design `docs/designs/priority_areas_2026-09-26.json`, "trades").
+Against Catanatron the bank / port side is already close to its per-turn optimum (0 impossible 4:1 trades, 2 %
+with a cheaper give, ~90 % of bought cards spent the same turn); the 4:1 gap is structural (ports area).  Every
+switch below is off by default and needs neither the Python evaluator nor a C++ change.
+
+* **acq.progress** (`search.acq` 1 / 2, `acq_w`, `acq_self`): a hub provider that replaces static's hand-progress
+  term for our seat by an *effective* progress - bank / port conversions of the surplus (capped by the bank; half
+  credit for a started conversion) and, with 2, `E[min(Y_r, missing_r)]` from the exact distribution of what we roll
+  in the `n` rolls up to our next turn (the same horizon at every node of our turn and after END_TURN).  No
+  correction above 7 cards; no pending-port credit.  It also applies when we answer an offer: the reject leaf keeps
+  the surplus our own port converts next turn.  **Stage 0 failed its pre-registered rule** (`scripts/acq_audit.py`,
+  300 trade-legal T1 positions, A/A 0): 8.0 % of decisions change, 0 END_TURN flips above 7 cards, 1.12-1.15x ms,
+  but only 1 of the 13 bank trade -> END_TURN delays at 7 or fewer cards is waitable (P(roll the bought card before
+  our next turn) >= 0.5; 50 % required; T2: 0 of 6).  The conversion credit makes a held surplus worth as much as
+  the converted card, so the search keeps options instead of trading; production does not turn those delays back
+  into trades.  So no games (the feature stops); `acquisition.best_target_left` stays for advice text.
+* **Composition with `conv=1`**: both are hub providers, summed per leaf (tested).  Conversion cost is a *flow*
+  (cards our buildings lose to the bank over the rest of the game; moves with buildings and ports), acq.progress a
+  *stock* (this hand's distance to the next build; moves with the hand).  They cancel disjoint parts of static (the
+  port credit / the hand-progress term) and share only the port ratios.  In the audit `conv=1,acq=2` changes 25
+  decisions, `acq=2` 24, `conv=1` 1, none by both, and the pair always picks acq's or conv's action.
+* **acq.breadth** (`search.trade_proposals` 5 = (A); `search.acq_shapes` = (B): mixed-give 2-for-1 offers - one
+  card each of two surplus types for one missing card - injected as real proposal candidates of our main-phase nodes,
+  ranked by `p_any` exactly as `_trade_outcomes` computes it, never where a 2:1 port already pays the card, never to
+  a likely accepter at 9 VP or fed a build; `search.acq_breadth` = both as one switch).  Self-play smoke: injected
+  offers accepted 4 of 20 (3 executed); shadow: the bundle changes 9.1 % of main / trade decisions (mostly which
+  offer), 1.17x ms.
+* **Player-trade premium** (`search.acq_floor`, `acquisition.W_PREMIUM`; the user's direction): a player trade is
+  riskier than the same exchange with the bank because the partner also gains.  Every trade we would propose or
+  accept is compared with our best bank / port plan for the same cards (this turn, or our next turn when we answer)
+  in win probability of the search's own multi-seat evaluator; it must win by `W_PREMIUM x partner's gain x
+  danger_multiplier(partner)` (danger.py, 0.4 far from a win .. 2.0 can win now); ties go to the bank.  The
+  feed-the-leader and late-game rules are unchanged.  `candidate_offers` drops offers our own port rate matches.  The
+  reason is the explanation ("your port gives you the same 1 brick for 2 wheat on your next turn without helping
+  blue (~3 turns from winning)"); the advisor has it as `catanbot recommend --trade-floor W`.  Shadow: 1.6 % of
+  decisions (25 accept -> reject), 1.21x ms; in self-play the default fails the rule in 0.6 % of its proposals and
+  6.7 % of its accepts.
+* **acq.flow** (`acquisition.port_flow_value`): a port's value = the bank trades still to come x the ratio it saves,
+  `sum_r R(t) w_r (rho_r - rho'_r)`, `R(t)` the trades our bot still makes after `t` turns (6.7 at the start, T1
+  table) and `w_r` a logit on our production share.  Fitted on T1, validated on T2 (`scripts/acq_flow_fit.py`:
+  mean absolute error per resource per game 0.69 for the give split vs 1.27 for flat shares).  A pure function for
+  the ports area's provider (step 4); the bot never calls it.
+* **acq.calib** (`opponent_model.CALIB_RATE` / `CALIB_PRIOR`; fallback `REJECT_STREAK`; politics rule): the
+  acceptance model is ~2.5x overconfident even against copies of our bot (0.51-0.56 predicted vs 0.18-0.22
+  realised in the self-play smokes).  An
+  online per-opponent recalibration `sigmoid(a0 + a_j + beta l)` of its raw logit `l` (updated at every observed
+  answer, before the profile learns from it) halves the Brier score in self-play (0.153 vs 0.310).  The streak rule
+  gives a seat P(accept) = 0 after 3 rejections in a row until it accepts.
+
 ## Counter-offers and out-of-turn trade analysis (`counteroffers.py`; off by default)
 
 **Rules (Colonist.io).**  A rules variant, `GameState.allow_counters` (off: the base game is unchanged).

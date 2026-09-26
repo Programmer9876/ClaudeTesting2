@@ -199,6 +199,14 @@ def make_bot(spec: str) -> Bot:
             paths_spots=int(float(kw.get("paths_spots", 0))),
             # conversion cost through the leaf-correction hub (catanbot/conversion.py): off unless conv=1
             conv=int(float(kw.get("conv", 0))),
+            # trades area (catanbot/acquisition.py): off unless the spec says acq= / acq_shapes= / acq_breadth= /
+            # acq_floor=
+            acq=int(float(kw.get("acq", 0))),
+            acq_w=float(kw.get("acq_w", 1.0)),
+            acq_self=int(float(kw.get("acq_self", 1))),
+            acq_shapes=int(float(kw.get("acq_shapes", 0))),
+            acq_breadth=int(float(kw.get("acq_breadth", 0))),
+            acq_floor=int(float(kw.get("acq_floor", 0))),
             # counter-offers / out-of-turn trade analysis: off unless the spec says counter=1 / resp_la=1
             counters=int(float(kw.get("counter", 0))),
             counter_candidates=int(float(kw.get("counter_n", 2))),

@@ -156,7 +156,7 @@ class SearchBot(Bot):
                     predicted = legal[max(range(len(legal)), key=lambda i: priors[i])]
             except Exception:
                 predicted = None
-        self.model.observe(state, action, player, predicted)
+        self.model.observe(state, action, player, predicted, belief=self.belief, politics=self.politics)
 
     def explain(self, state: GameState) -> Optional[str]:
         if not self.last_results:

@@ -4,9 +4,9 @@ Several strategy terms are search-time corrections on top of the static value: a
 points ``C_i`` added to ``heuristic.static_value`` before the evaluator's softmax, computed in Python on top of
 the C++ static values, so that neither ``static_value`` nor ``cpp/*`` changes and no ``needs_python_evaluator``
 re-exec is needed.  Win-path races (``winpaths.PathsContext``) were the first; the conversion cost
-(``conversion.ConversionContext``) and the trades / ports / robber terms of docs/PRIORITY_PLAN.md (steps 3-5) are
-the next.  Instead of each wrapping the evaluator on its own (and wrapping each other, three softmaxes per leaf),
-they are *providers* of one :class:`CorrectionHub`:
+(``conversion.ConversionContext``) and acq.progress (``acquisition.AcqContext``, the trades area) followed; the ports
+/ robber terms of docs/PRIORITY_PLAN.md (steps 4-5) are the next.  Instead of each wrapping the evaluator on its own
+(and wrapping each other, three softmaxes per leaf), they are *providers* of one :class:`CorrectionHub`:
 
 * a provider has ``corrections(state) -> per-seat points`` (``None`` or all zeros = nothing to add), and
   optionally ``adjust_priors(state, legal, priors)`` (move ordering of our own nodes; chained in provider order
@@ -93,7 +93,8 @@ class CorrectionHub:
 
     @classmethod
     def for_search(cls, base, root: GameState, me: int, cfg) -> "CorrectionHub":
-        """The providers ``cfg`` switches on, in the fixed order: winpaths (``paths``), conversion (``conv``)."""
+        """The providers ``cfg`` switches on, in the fixed order: winpaths (``paths``), conversion (``conv``),
+        acquisition (``acq``, catanbot/acquisition.py acq.progress)."""
         providers: List[Any] = []
         if getattr(cfg, "paths", 0):
             from . import winpaths   # the same constructor as paths = 1 alone
@@ -101,6 +102,9 @@ class CorrectionHub:
         if getattr(cfg, "conv", 0):
             from .conversion import ConversionContext
             providers.append(ConversionContext(root, me))
+        if getattr(cfg, "acq", 0):
+            from .acquisition import AcqContext
+            providers.append(AcqContext.for_search(root, me, cfg))
         return cls(base, providers)
 
     # --- corrections --------------------------------------------------------------------------

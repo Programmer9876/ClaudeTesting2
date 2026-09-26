@@ -186,7 +186,7 @@ class HeuristicEvaluator:
 # Move ordering
 # ---------------------------------------------------------------------------
 def action_priors(state: GameState, actions: Sequence[Action], player: Optional[int] = None,
-                  belief=None, model=None, politics=None) -> List[float]:
+                  belief=None, model=None, politics=None, port_floor: bool = False) -> List[float]:
     """Prior desirability of each action (higher = try first).  Same length as ``actions``.
 
     ``model`` (an ``opponent_model.OpponentModel``) makes the trade plan and
@@ -194,7 +194,8 @@ def action_priors(state: GameState, actions: Sequence[Action], player: Optional[
     prediction); ``politics`` (a ``politics.PoliticalState``) weights robber
     targets by grudges / friendships and adds favour slack to the acceptance
     decision - the same inputs the search and the advice text use, so the
-    two never name different robber victims.
+    two never name different robber victims.  ``port_floor`` (the search's ``acq_floor``, off by default) drops
+    the player offers our own bank / port rate matches from the offer ordering (``trading.candidate_offers``).
     """
     if not actions:
         return []
@@ -233,7 +234,8 @@ def action_priors(state: GameState, actions: Sequence[Action], player: Optional[
     if A.BANK_TRADE in kinds or A.PROPOSE_TRADE in kinds:
         needed = needed_vector(state, player)
         ctx["plan"] = {s["action"] for s in plan_trades(state, player, needed, belief, model=model, politics=politics)}
-        ctx["offers"] = set(candidate_offers(state, player, needed, belief, model=model, politics=politics))
+        ctx["offers"] = set(candidate_offers(state, player, needed, belief, model=model, politics=politics,
+                                             port_floor=port_floor))
     if A.DISCARD in kinds:
         ctx["discard"] = choose_discard(state, player, legal_actions=list(actions))
     if A.ACCEPT_TRADE in kinds and state.pending_trade is not None:

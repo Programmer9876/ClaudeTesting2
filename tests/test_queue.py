@@ -91,6 +91,11 @@ def _fake_args(effect, disc=None):
 # ---------------------------------------------------------------------------
 # the plan and intake
 # ---------------------------------------------------------------------------
+# Enabled rows whose honest promise is below what their budget can show: intake SHELVEs them at 0 games until the
+# user takes docs/PRIORITY_PLAN.md decision 1 (--no-intake or a larger promise_pp).
+BELOW_MDE = ("acq_breadth_bundle", "acq_floor_selfplay", "acq_floor_vrule@value")
+
+
 def test_every_current_plan_row_gets_area_polarity_tier(tmp_path):
     q = RQ.Queue(PLAN, str(tmp_path / "run"), snapshot=False, tunable_check=False, log=io.StringIO())
     q.refresh()
@@ -105,6 +110,9 @@ def test_every_current_plan_row_gets_area_polarity_tier(tmp_path):
             assert e.get("polarity") in RQ.POLARITIES and e.get("tier"), e["name"]
             for n in RQ.row_names(e):
                 tuning.find(n)                                  # epoch A runs on today's registry
+        if e["name"] in BELOW_MDE:          # plan decision 1: honest promises below the budget's MDE
+            assert rs.status == "SHELVED" and rs.reason.startswith("SHELVE(intake"), (e["name"], rs.reason)
+            continue
         assert rs.status not in ("REFUSED", "SHELVED", "BLOCKED"), (e["name"], rs.status, rs.reason)
     names = {e["name"] for e in q.plan.rows}
     assert "t2_counted_info@value" not in names                 # removed as redundant (the proof measured it)
@@ -142,6 +150,17 @@ def test_every_current_plan_row_gets_area_polarity_tier(tmp_path):
     assert order.index("t1_trades0_vrule@value") < order.index("t2_dump0@value") < order.index("t1_openings@value")
     assert RQ.AREAS.index("diversification") == RQ.AREAS.index("trades") + 1 < RQ.AREAS.index("ports")
     assert order.index("demand_flat_pyeval@vf") < order.index("shadow_robber") < order.index("t1_depth2@value")
+    # trades (step 3): acq.progress stopped at Stage 0; the calibration's native check gates its politics screen and
+    # the rejection-streak fallback; the (A)-only breadth fallback is not triggered (injected offers were accepted)
+    for n in ("acq_progress_stage0b@value", "acq_progress@value", "acq_breadth_proposals5"):
+        assert q.plan.row(n)["enabled"] is False and q.plan.row(n)["requires"]
+    assert q.rows["acq_calib"].design == "politics" and q.plan.row("acq_calib")["after"]["row"] == \
+        "acq_calib_native@value" == q.plan.row("acq_reject_streak_native@value")["after"]["row"]
+    assert q.rows["acq_calib_native@value"].design == "estimate" and q.plan.row("acq_calib_native@value")["trades"] \
+        == "native" and q.rows["acq_calib_reject_streak"].status == "DEFERRED"
+    assert q.plan.row("acq_breadth_bundle")["tunable"] == "search.acq_breadth" and q.rows["acq_flow_fit"].status == \
+        "ELIGIBLE" and q.plan.row("acq_floor_vrule@value")["trades"] == "value"
+    assert RQ.is_player_trade(q.plan.row("acq_floor_selfplay")) and RQ.is_politics(q.plan.row("acq_calib"))
 
 
 def test_campaign_py_loads_queue_plan_and_skips_queue_kinds(tmp_path):

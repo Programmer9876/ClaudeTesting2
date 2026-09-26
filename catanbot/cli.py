@@ -731,13 +731,23 @@ def recommend_for_state(state: GameState, me: int, args, parsed: Optional[dict] 
     if paths_w > 0.0:   # --paths W: win-path races in the search (catanbot/winpaths.py); off by default
         cfg.paths = 1
         cfg.paths_w = paths_w
+    floor_w = getattr(args, "trade_floor", None)
+    floor_token = None
+    if floor_w is not None:   # --trade-floor W: player-trade premium over your bank / port rate; off by default
+        from . import tuning
+        cfg.acq_floor = 1
+        floor_token = tuning.apply({"acquisition.W_PREMIUM": float(floor_w)})
     rng = random.Random(getattr(args, "seed", 0) or 0)
-    if tracker is not None:
-        pub = tracker.public_view(state)
-        results, sinfo = run_search(state, me, evaluator, cfg, args, model, politics, rng,
-                                    sampler=lambda r: tracker.determinize(pub, r))
-    else:
-        results, sinfo = run_search(state, me, evaluator, cfg, args, model, politics, rng)
+    try:
+        if tracker is not None:
+            pub = tracker.public_view(state)
+            results, sinfo = run_search(state, me, evaluator, cfg, args, model, politics, rng,
+                                        sampler=lambda r: tracker.determinize(pub, r))
+        else:
+            results, sinfo = run_search(state, me, evaluator, cfg, args, model, politics, rng)
+    finally:
+        if floor_token is not None:
+            tuning.restore(floor_token)
     report["search_seconds"] = sinfo["seconds"]
     report["search"] = sinfo
     if sinfo["budget_hit"]:
@@ -1332,6 +1342,10 @@ def _add_recommend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--paths", type=float, default=0.0, metavar="W",
                    help="search with the win-path race term at weight W (0 = off, the default; see docs/STRATEGY.md "
                         "'Win-path races'); the 'Win paths' advice section is shown either way")
+    p.add_argument("--trade-floor", type=float, default=None, metavar="W",
+                   help="never recommend proposing or accepting a player trade that does not beat your own bank / port "
+                        "rate for the same cards by W x the partner's gain x their danger (0 = ties go to the bank); "
+                        "the advice says why (off by default; see docs/STRATEGY.md 'Acquisition')")
 
 
 def build_parser() -> argparse.ArgumentParser:

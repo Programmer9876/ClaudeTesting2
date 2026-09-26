@@ -1,5 +1,5 @@
 {
- "notes": "Test queue plan (docs/QUEUE.md; docs/PRIORITY_PLAN.md step 1). Epoch A = today's code: the existing campaign rows re-expressed with area / polarity / tier / promise / design, the A/A and smoke rows, the CRN dice pilot, the zero-game robber and paths shadows, the diversification rows (openings, resource demand; docs/ABLATIONS.md 'Regrouping', 2026-09-26). Rows of features not built yet are present with enabled:false and a 'requires' note. Run with scripts/run_queue.py; campaign.py can read this file too (it runs only the enabled kind:catanatron rows, legacy style).",
+ "notes": "Test queue plan (docs/QUEUE.md; docs/PRIORITY_PLAN.md step 1). Epoch A = today's code: the existing campaign rows re-expressed with area / polarity / tier / promise / design, the A/A and smoke rows, the CRN dice pilot, the zero-game robber and paths shadows, the diversification rows (openings, resource demand; docs/ABLATIONS.md 'Regrouping', 2026-09-26). Rows of features not built yet are present with enabled:false and a 'requires' note. Run with scripts/run_queue.py; campaign.py can read this file too (it runs only the enabled kind:catanatron rows, legacy style). Step 3 (trades, 2026-09-26): the trade rows are enabled for epoch B1 (they need the new tunables, so they wait as BLOCKED until --bump-code --areas trades); acq.progress stopped at its Stage 0 audit; the zero-game gates ran from the working tree (scripts/acq_audit.py, acq_mechanism.py, acq_flow_fit.py, decision_shadow.py).",
  "defaults": {
   "workers": 3,
   "reuse": true,
@@ -209,7 +209,7 @@
     "metric": "bank_4to1",
     "direction": "-"
    },
-   "requires": "step 3: search.acq (catanbot acquisition provider on the shared corrections hub)",
+   "requires": "acq.progress Stage 0 FAILED its pre-registered rule (scripts/acq_audit.py, 2026-09-26, real code, C++ evaluator; A/A 0 changed): on 300 trade-legal T1 proof positions acq=2 changed 8.0% of decisions (<= 7 cards 15/150, > 7 cards 9/150), 0 END_TURN flips above 7 cards, 1.12-1.15x ms, but only 1 of its 13 bank trade -> END_TURN flips at <= 7 cards was waitable (P(roll the bought card before our next turn) >= 0.5; required >= 50%); T2 replication: 0 of 6. The delays are the conversion credit's, not production's. A fail stops the feature (design): no games; re-screen once only on top of an adopted port setting that raises our port ownership.",
    "notes": "acq.progress Stage 0b: 200 seeds of acq=2 plus an A/A with acq_w=0 (a second row once built). Mechanism gate: 4:1 trades per game fall by >= 0.3, END_TURN with > 7 cards does not rise, discards + steals rise by <= 0.5 cards per game."
   },
   {
@@ -240,27 +240,25 @@
     "metric": "bank_4to1",
     "direction": "-"
    },
-   "requires": "step 3 (epoch B1)",
-   "notes": "Screen on the epoch-B1 value default arm. Expected +0.5 to +1.5 pp (below the MDE): intake will SHELVE it at 0 games unless the user overrides (decision 1 of the plan) or a reducer (CRN / CV) lifts the power."
+   "requires": "acq.progress Stage 0 FAILED its pre-registered rule (scripts/acq_audit.py, 2026-09-26, real code, C++ evaluator; A/A 0 changed): on 300 trade-legal T1 proof positions acq=2 changed 8.0% of decisions (<= 7 cards 15/150, > 7 cards 9/150), 0 END_TURN flips above 7 cards, 1.12-1.15x ms, but only 1 of its 13 bank trade -> END_TURN flips at <= 7 cards was waitable (P(roll the bought card before our next turn) >= 0.5; required >= 50%); T2 replication: 0 of 6. The delays are the conversion credit's, not production's. A fail stops the feature (design): no games; re-screen once only on top of an adopted port setting that raises our port ownership.",
+   "notes": "Screen on the epoch-B1 value default arm (C++ evaluator). Expected +0.5 to +1.5 pp (below the MDE): with promise 1.5 intake would SHELVE it at 0 games anyway (power 0.16) unless the user overrides (decision 1 of the plan). Stopped at Stage 0 (see requires)."
   },
   {
    "name": "acq_breadth_bundle",
-   "enabled": false,
    "kind": "selfplay",
    "area": "trades",
    "polarity": "new",
    "promise_pp": 2,
    "tier": "t1",
    "priority": 6,
-   "tunable": "search.acq_shapes",
+   "tunable": "search.acq_breadth",
    "values": [
     1
    ],
    "games": 2400,
    "players": 4,
    "base_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
-   "requires": "step 3 (search.acq_shapes) and a bundle candidate: ablate.py runs one tunable per call, so the bundle (trade_proposals=5 + acq_shapes=1) needs a bundle tunable or an ablate.py request to its owner",
-   "notes": "acq.breadth bundle: 100-game mechanism check first (injected offers accepted?), then a seqtest screen over 2,400 self-play games in 240-game chunks (looks at multiples of 480)."
+   "notes": "acq.breadth bundle as one switch (search.acq_breadth=1: >= 5 proposal candidates per node = search.trade_proposals 5, plus the injected mixed-give 2-for-1 offers = search.acq_shapes 1; ablate.py runs one tunable per call). Self-play only (player trades are inert vs Catanatron). Mechanism check (scripts/acq_mechanism.py, 2026-09-26, 8 paired self-play games per switch, seeds 7700-7707): injected mixed-give offers accepted 2/14 with acq_shapes=1 and 2/6 with acq_breadth=1 (3 executed) -> (B) kept, the bundle runs and the (A)-only fallback is not triggered. Zero-game shadow (scripts/decision_shadow.py, 4 self-play games, 3,458 main / trade decisions, A/A 0): bundle 9.1% changed (trade_proposals=5 alone 8.8%, acq_shapes=1 alone 0.4%), 1.17x ms per decision (1.30x in the mechanism games). Seqtest screen over 2,400 games in 240-game chunks. Intake: power 0.42 at +2 pp -> SHELVE(intake) at 0 games unless the user overrides (plan decision 1: --no-intake or a larger promise_pp)."
   },
   {
    "name": "acq_breadth_proposals5",
@@ -278,21 +276,18 @@
    "games": 2400,
    "players": 4,
    "base_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
-   "parent": "acq_breadth_bundle",
-   "fallback": "simpler",
-   "requires": "the bundle row (its trigger is the bundle's mechanism check: (B) gets 0 accepts)",
-   "notes": "acq.breadth (A) alone, the simpler fallback."
+   "requires": "(A)-only fallback of acq_breadth_bundle: it replaces the bundle only when the mechanism check finds 0 accepted injected offers (plan row 7; design moderate fallback). Not triggered: 4 of 20 accepted (scripts/acq_mechanism.py, 2026-09-26). Enable (with the bundle disabled) only if a larger check finds none.",
+   "notes": "acq.breadth (A) alone (search.trade_proposals=5), the simpler fallback. Not a 'parent' fallback on purpose: after a SHELVEd bundle the design keeps 3 proposals (no further rows)."
   },
   {
    "name": "acq_breadth_confirm@value",
-   "enabled": false,
    "area": "trades",
    "polarity": "new",
    "tier": "t3",
    "priority": 8,
    "interpreter": "py330",
    "opponent": "value",
-   "tunable": "search.acq_shapes",
+   "tunable": "search.acq_breadth",
    "values": [
     1
    ],
@@ -302,19 +297,17 @@
     "count": 2000,
     "base": 200000
    },
-   "requires": "an ADOPT of acq.breadth",
-   "notes": "Follow-up: value-rule confirmation (one-sided 0.05)."
+   "notes": "Follow-up: value-rule confirmation (one-sided 0.05), only after the bundle ADOPTs with Holm p < 0.05 in t1; report as 'vs value-rule responders'."
   },
   {
    "name": "acq_breadth_noharm_3p",
-   "enabled": false,
    "kind": "selfplay",
    "area": "trades",
    "polarity": "measure",
    "noharm": true,
    "tier": "t3",
    "priority": 8,
-   "tunable": "search.acq_shapes",
+   "tunable": "search.acq_breadth",
    "values": [
     1
    ],
@@ -327,12 +320,34 @@
      "ADOPT"
     ]
    },
-   "requires": "an ADOPT of acq.breadth",
    "notes": "3p no-harm check on the 1-candidate-vs-2-defaults half of the seat patterns (DDC, DCD, CDD): FAILS if the one-sided harm p < 0.05."
   },
   {
+   "name": "acq_calib_native@value",
+   "area": "trades",
+   "polarity": "measure",
+   "tier": "smoke",
+   "priority": 8.8,
+   "interpreter": "py330",
+   "opponent": "value",
+   "tunable": "opponent_model.CALIB_RATE",
+   "values": [
+    1.0
+   ],
+   "trades": "native",
+   "seeds": {
+    "count": 40,
+    "base": 0
+   },
+   "design": "estimate",
+   "mechanism": {
+    "metric": "offers_made",
+    "direction": "-"
+   },
+   "notes": "acq.calib mechanism gate, native part (behaviour only, tier smoke = outside every Holm family): 40 seeds vs value with --trades native (Catanatron's bots never accept); pass = under 10 offers a game for the candidate (mechanism readout offers_made; default ~59), 0 adapter errors; report s per game. Self-play part (Brier of P(any accept) < 0.2): PASSED in the zero-game smoke (scripts/acq_mechanism.py, 8 games: 0.153 calibrated vs 0.310 default, predicted 0.29 vs realised 0.17; proposals 49.6 a seat-game both; 1.03x ms)."
+  },
+  {
    "name": "acq_calib",
-   "enabled": false,
    "kind": "selfplay",
    "area": "trades",
    "polarity": "new",
@@ -345,27 +360,100 @@
    "games": 1200,
    "players": 4,
    "base_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
-   "requires": "step 3 (opponent_model.CALIB_RATE) and its mechanism gate (Brier < 0.2, < 10 offers a game vs never-accepting bots)",
-   "notes": "POLITICS RULE: the one pre-registered 1,200-game self-play screen; SIGNIFICANT only with Holm p < 0.05 in the politics tier, else INCONCLUSIVE and deferred to human testing."
+   "notes": "POLITICS RULE: the one pre-registered 1,200-game self-play screen, after the native behaviour check (acq_calib_native@value; stop it by hand if the candidate still offers >= 10 a game there). SIGNIFICANT only with Holm p < 0.05 in the politics tier (7 rows with it), else INCONCLUSIVE and deferred to human testing with its Brier and compute numbers. No value-rule row.",
+   "after": {
+    "row": "acq_calib_native@value"
+   }
+  },
+  {
+   "name": "acq_reject_streak_native@value",
+   "area": "trades",
+   "polarity": "measure",
+   "tier": "smoke",
+   "priority": 9.9,
+   "interpreter": "py330",
+   "opponent": "value",
+   "tunable": "opponent_model.REJECT_STREAK",
+   "values": [
+    3
+   ],
+   "trades": "native",
+   "seeds": {
+    "count": 40,
+    "base": 0
+   },
+   "design": "estimate",
+   "mechanism": {
+    "metric": "offers_made",
+    "direction": "-"
+   },
+   "after": {
+    "row": "acq_calib_native@value"
+   },
+   "notes": "acq.calib fallback (simpler): the rejection-streak rule's 40-game behaviour-only check (offers a game vs never-accepting bots, s per game), then straight to the deferred-to-human list (row acq_calib_reject_streak). Runs after the calibration's native check whatever it shows (40 seeds; the queue cannot read an offers-per-game gate). Self-play smoke: 39.6 vs 48.2 proposals a seat-game, 0.87x ms."
   },
   {
    "name": "acq_calib_reject_streak",
-   "enabled": false,
    "kind": "human",
    "area": "trades",
    "tier": "politics",
    "priority": 10,
-   "requires": "step 3 (opponent_model.REJECT_STREAK)",
-   "notes": "Fallback of acq.calib (simpler, if its calibration gate fails): a 40-game behaviour-only check, then straight to the deferred-to-human list (no strength games)."
+   "notes": "Deferred to human testing at once (politics rule, plan decision 4: no bot harness reacts to it beyond the behaviour check acq_reject_streak_native@value). opponent_model.REJECT_STREAK=3.",
+   "tunable": "opponent_model.REJECT_STREAK"
   },
   {
    "name": "acq_flow_fit",
-   "enabled": false,
    "kind": "command",
    "area": "trades",
    "priority": 11,
-   "requires": "step 3 (acquisition.py flow table)",
-   "notes": "Offline replay: fit on 1,000 T1 proof games, validate on T2; 0 games."
+   "notes": "acq.flow Stage 0 (0 games, pure replay, working tree): fit on the 1,000 T1 proof games, validate on the 400 T2 games; PASS = catanbot/acquisition.py's FLOW_R / FLOW_W equal the refit (exit 3 otherwise). 2026-09-26: 4:1 table 5.04/4.23/3.01/1.59/0.56 at t 0/20/40/60/80 (design 5.0/4.3/3.0/1.6/0.55); T2 MAE per resource per game: give split 0.69 (flat shares 1.27), R(t) w_r at t=0/40 0.96/0.76 (flat 1.37/1.00). Consumed by ports.flow_provider (step 4).",
+   "interpreter": "py321",
+   "cwd": "repo",
+   "est_cpu_h": 0.001,
+   "cmd": [
+    "{python}",
+    "{root}/scripts/acq_flow_fit.py",
+    "--check",
+    "--json",
+    "{dir}/acq_flow_fit.json"
+   ]
+  },
+  {
+   "name": "acq_floor_selfplay",
+   "kind": "selfplay",
+   "area": "trades",
+   "polarity": "new",
+   "promise_pp": 2,
+   "tier": "t1",
+   "priority": 12,
+   "tunable": "search.acq_floor",
+   "values": [
+    1
+   ],
+   "games": 2400,
+   "players": 4,
+   "base_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+   "notes": "Player-trade premium (search.acq_floor, acquisition.W_PREMIUM 1.0; user direction 2026-09-26; trade economics, not a politics-rule term): a player trade we propose or accept must beat our best bank / port alternative for the same cards in win probability by W x partner's gain x danger multiplier; ties go to the bank. Where players trade: self-play. Zero-game: shadow 1.6% of 3,458 main / trade decisions changed (25 accept -> reject, 13 proposal -> proposal, 5 proposal -> bank trade), 1.21x ms; mechanism smoke: the default's trades fail the rule in 0.6% of proposals and 6.7% of accepts, 0 with the flag; trades dominated by the own port's card count: 0 in both arms. Also an advisor rule: catanbot recommend --trade-floor W. Intake: power 0.42 at +2 pp -> SHELVE(intake) unless the user overrides (plan decision 1)."
+  },
+  {
+   "name": "acq_floor_vrule@value",
+   "area": "trades",
+   "polarity": "new",
+   "promise_pp": 2,
+   "tier": "t1",
+   "priority": 12.5,
+   "interpreter": "py330",
+   "opponent": "value",
+   "tunable": "search.acq_floor",
+   "values": [
+    1
+   ],
+   "trades": "value",
+   "seeds": {
+    "count": 2000,
+    "base": 0
+   },
+   "notes": "Player-trade premium vs value-rule responders (their seats accept by a value rule, so our proposals do get accepted; report as 'vs value-rule responders'). C++ evaluator; its epoch-B1 trading-on default arm. Intake: power ~0.38 at +2 pp (D prior 0.25) -> SHELVE(intake) unless the user overrides (plan decision 1)."
   },
   {
    "name": "ports_gate_f1@vf",
@@ -434,7 +522,7 @@
     "base": 0
    },
    "design": "estimate",
-   "requires": "steps 3-4 (acq.flow + ports.flow_provider)",
+   "requires": "step 4 (ports.flow_provider; the acq.flow function and table landed in step 3)",
    "notes": "Gate cell 3 (C++ evaluator, its own 300-seed base arm). Never stacked with F1 modes 1/2."
   },
   {

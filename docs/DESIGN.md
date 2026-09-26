@@ -756,10 +756,11 @@ no `needs_python_evaluator`).  They share one wrapper instead of wrapping each o
 
 * **Providers.**  An object with `corrections(state) -> per-seat points` (`None` / all zeros = nothing),
   optionally `adjust_priors(state, legal, priors)` (chained in provider order when its `priors` attribute is
-  true) and `stats`.  Today: winpaths' `PathsContext` (unchanged) and `conversion.ConversionContext`
-  (`search.conv`, docs/STRATEGY.md "Conversion cost").  Steps 3-5 of the plan add acq.progress, the ports flow
-  provider and robber_eval here.  `CorrectionHub.for_search(base, root, me, cfg)` builds them in a fixed order:
-  winpaths (through `PathsEvaluator.for_search`, the same constructor as before) first, then conversion.
+  true) and `stats`.  Today: winpaths' `PathsContext` (unchanged), `conversion.ConversionContext`
+  (`search.conv`, docs/STRATEGY.md "Conversion cost") and `acquisition.AcqContext` (`search.acq`, section 17).
+  Steps 4-5 of the plan add the ports flow provider and robber_eval here.  `CorrectionHub.for_search(base, root,
+  me, cfg)` builds them in a fixed order: winpaths (through `PathsEvaluator.for_search`, the same constructor as
+  before) first, then conversion, then acquisition.
 * **Values.**  `CorrectionHub.evaluate(states, players)` has the evaluator interface.  Per distinct state the
   providers' corrections are summed in list order.  A `HeuristicEvaluator` base returns
   `softmax((static_values(s) + sum C) / T)[player]` for corrected leaves; blended and other bases get
@@ -777,7 +778,7 @@ no `needs_python_evaluator`).  They share one wrapper instead of wrapping each o
   leaf, the lookahead's greedy opponents, the reduced sub-search leaves), `_counter_filter` (rank_counters) and
   the political trade options; `_future_values` takes the native C++ lookahead only when `_value_ev()` is the
   bare base (C++ cannot see a correction).  `search()` builds the hub after the single-legal-action return and
-  outside the setup phases when a field of `_HUB_FIELDS` (`conv`) is set; `paths = 1` alone keeps
+  outside the setup phases when a field of `_HUB_FIELDS` (`conv`, `acq`) is set; `paths = 1` alone keeps
   `winpaths.PathsEvaluator` (`self._paths`), so winpaths' values stay bit-identical to the pre-hub code
   (digests pinned in tests/test_corrections.py: fixed-seed games and 24 fixed-position searches with paths 0
   and 1, spots, depth 2).  `_candidate_priors` chains the hub's `adjust_priors` (winpaths' nudges when
@@ -799,5 +800,45 @@ no `needs_python_evaluator`).  They share one wrapper instead of wrapping each o
   return `seat_events: {name: result}` (absent without observers, so default results are unchanged);
   `paired_stats` copies it into the game's record.  `conversion.EconomyObserver` is registered as "economy"
   (bank trades by ratio, settlements / cities built, first-build turns, resource types after setup).
-  scripts/ablate.py does not pass observers yet (a request to its owner).
+  scripts/ablate.py does not pass observers yet (a request to its owner).  `acquisition.TradeObserver` is
+  registered as "trades" (proposals, mixed-give proposals, answers, trades executed, and how many of them the
+  trading seat's own bank / port rate matched).
+
+## 17. Trades area: search hooks (`catanbot/acquisition.py`; off by default)
+
+docs/PRIORITY_PLAN.md step 3; docs/STRATEGY.md "Acquisition".  `SearchConfig` fields `acq`, `acq_w`, `acq_self`,
+`acq_shapes`, `acq_breadth`, `acq_floor` (spec keys of the same names; all 0 / default = the old search; none reaches
+C++, `native_level_dict` is unchanged).  With all of them off `Searcher` runs none of the code below and the bot
+never imports the module (fresh-interpreter test; pinned digests of tests/test_corrections.py and
+tests/test_counteroffers.py, also with every key spelled out and as ParamBots with the new weights overridden).
+
+* **acq.progress** (`acq` 1 / 2): `AcqContext` is a hub provider (section 16): our seat's correction
+  `acq_w (E - P)`, `P` = static's own `_progress_to_build` from the same targets and arithmetic (so 0.0 exactly when
+  nothing is credited: the fast path), no correction above 7 cards.  Memos per search: production tails by
+  (seat, buildings, robber hex, horizon), targets by (seat, its piece counts and roads, every seat's buildings, dev
+  deck empty).  `reduced_config` copies `acq`, `acq_w`, `acq_self`.  Cost 1.12-1.15x ms per trade-legal decision
+  (about 40 hub evaluations, 33 corrected, 1.6 tail and 10 target misses per decision).
+* **acq.breadth** (`acq_shapes`; `acq_breadth` = the bundle): `_inject_shapes` appends `acquisition.mixed_offers`
+  to our main-phase node's legal list and priors after `_candidate_priors` (35 x stage, 55 x stage for the best
+  when no plan proposal exists), before the ordering; they compete for the node's proposal slots, the expand limit
+  and the per-turn cap like any proposal.  `acq_breadth` raises the node's proposal slots to `max(trade_proposals,
+  5)` (x stage) and turns the injection on; `reduced_config` passes it as `acq_shapes` only (the sub-search keeps one
+  proposal).  The injected shapes are legal for `E.apply` (both engines), `selfplay._valid_extra_action` and the
+  Catanatron adapter (`_offer_action`), which already accept any disjoint, affordable offer.
+* **Player-trade premium** (`acq_floor`, `acquisition.W_PREMIUM`): `_floor_answers` (PHASE_TRADE_RESPONSE, after
+  the counter filter: ACCEPT and our kept counters) and `_floor_proposals` (the first `max_trades +
+  FLOOR_WINDOW` proposals of a main-phase node by prior, the chain's second leg and the political options) call
+  `_floor_check`: one batched evaluation, with the search's `_value_ev()`, of the trade's state (our seat, and the
+  partner's seat before / after) against every `acquisition.bank_plans` state for the same cards; a trade passes only
+  when `V_trade > max V_bank + W_PREMIUM x partner's gain x danger_multiplier(partner)`.  No bank plan = the rule does
+  not apply.  The partner of a proposal is its likeliest accepter (as `_trade_outcomes`).  Failing proposals free
+  their slot for the next one; the reason becomes the explanation of REJECT or of the replacing bank trade.
+  `_candidate_priors` passes `port_floor=True` to `heuristic.action_priors` -> `trading.candidate_offers`, which then
+  drops offers our own bank / port rate matches for certain.  Cost 1.21x ms per decision (self-play shadow).
+* **acq.calib** (`opponent_model.CALIB_RATE`, `CALIB_PRIOR`, `REJECT_STREAK`; module constants read at call time,
+  so ParamBot scopes them to candidate seats): `OpponentModel.predict_accept` is `accept_terms` (the unchanged raw
+  logit and can-pay) plus one hook; `observe` (ACCEPT / REJECT of a non-counter offer, before `note_accept`) calls
+  `_calibrate`, which recomputes the raw logit with the observer's own belief and politics (`SearchBot.observe`
+  passes them) and updates `acquisition.AcceptCalibrator` (created lazily, so a model with both switches at 0
+  keeps no state; not in `to_dict`; a new model per game in the search bot).
 

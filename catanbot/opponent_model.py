@@ -38,6 +38,11 @@ from .state import GameState, PHASE_GAME_OVER, TradeOffer
 DECAY = 0.9          # per observation of the same statistic
 VALUE_LR = 0.12      # learning rate for implied valuations
 SURPRISE_DECAY = 0.85
+# acq.calib (catanbot/acquisition.py AcceptCalibrator; docs/PRIORITY_PLAN.md step 3, politics rule).  Off by default:
+# with CALIB_RATE = REJECT_STREAK = 0 predict_accept is exactly the uncalibrated value and no state is kept.
+CALIB_RATE = 0.0     # online recalibration rate of predict_accept from observed answers (0 = off)
+CALIB_PRIOR = 0.0    # starting shared intercept of the calibration (read only with CALIB_RATE > 0)
+REJECT_STREAK = 0    # fallback rule: after this many rejections in a row a seat's P(accept) is 0 until it accepts
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +348,7 @@ class OpponentModel:
     def __init__(self, state: Optional[GameState] = None, track_surprise: bool = False):
         self.profiles: Dict[str, OpponentProfile] = {}
         self.track_surprise = track_surprise
+        self.calibrator = None       # acquisition.AcceptCalibrator, created only with CALIB_RATE / REJECT_STREAK on
         if state is not None:
             self.attach(state)
 
@@ -362,12 +368,14 @@ class OpponentModel:
         return self.profile(_pname(state, i))
 
     def observe(self, state_before: GameState, action: Action, player: int,
-                predicted: Optional[Action] = None) -> None:
+                predicted: Optional[Action] = None, belief: Optional[HandBelief] = None, politics=None) -> None:
         """Update the acting player's profile from a public action.
 
         ``state_before`` is the state the action was taken in (needed for
         the pending offer and hand sizes).  ``predicted`` is our model's top
         choice for that decision, if known (feeds the surprise statistic).
+        ``belief`` / ``politics`` are the observer's own (read only by the acq.calib calibration, off by default,
+        so that it recalibrates the same logit the search predicts with).
         """
         prof = self.profile_of(state_before, player)
         kind = action[0]
@@ -378,6 +386,8 @@ class OpponentModel:
         elif kind in (A.ACCEPT_TRADE, A.REJECT_TRADE):
             offer = state_before.pending_trade
             if offer is not None:
+                if (CALIB_RATE or REJECT_STREAK) and offer.origin is None:    # acq.calib: before note_accept
+                    self._calibrate(state_before, player, offer, kind == A.ACCEPT_TRADE, belief, politics)
                 prof.note_accept(offer.give, offer.get, kind == A.ACCEPT_TRADE)
                 if offer.origin is not None:          # the current player answered a counter-offer
                     prof.note_counter_answer(kind == A.ACCEPT_TRADE)
@@ -500,12 +510,26 @@ class OpponentModel:
         ``politics`` (a ``politics.PoliticalState``) adds a bounded favour
         slack: friends accept slightly unfavourable deals, the visible leader
         gets a premium demanded - never enough to make an unfair deal pass.
+        With acq.calib on (``CALIB_RATE`` / ``REJECT_STREAK``, off by default) the probability is recalibrated
+        per opponent from their observed answers (``acquisition.AcceptCalibrator``).
         """
+        logit, can_pay = self.accept_terms(state, j, receives, pays, proposer, belief, politics)
+        if logit is None:
+            return 0.0
+        prob = 1.0 / (1.0 + math.exp(-logit))
+        if CALIB_RATE or REJECT_STREAK:              # acq.calib (off by default): the raw logit in, one hook
+            prob = self._calibrated(state, j, logit, prob)
+        return max(0.0, min(1.0, prob * can_pay))
+
+    def accept_terms(self, state: GameState, j: int, receives: Sequence[int], pays: Sequence[int],
+                     proposer: Optional[int] = None, belief: Optional[HandBelief] = None,
+                     politics=None) -> Tuple[Optional[float], float]:
+        """``(raw logit, can_pay)`` of :meth:`predict_accept` (``(None, 0.0)`` when they cannot pay)."""
         p = state.players[j]
         # Can they pay at all?
         if p.hand_known:
             if any(p.resources[r] < pays[r] for r in range(5)):
-                return 0.0
+                return None, 0.0
             can_pay = 1.0
         elif belief is not None:
             can_pay = 1.0
@@ -513,7 +537,7 @@ class OpponentModel:
                 if pays[r] > 0:
                     can_pay *= belief.probability_has(j, r, pays[r])
             if can_pay <= 0.0:
-                return 0.0
+                return None, 0.0
         else:
             hands = expected_opponent_hands(state, me=proposer)
             n = p.hand_size
@@ -521,11 +545,11 @@ class OpponentModel:
             for r in range(5):
                 if pays[r] > 0:
                     if n <= 0:
-                        return 0.0
+                        return None, 0.0
                     q = min(1.0, hands[j][r] / n)
                     can_pay *= max(0.0, 1.0 - (1.0 - q) ** n) if pays[r] == 1 else max(0.0, q ** pays[r])
             if can_pay <= 0.0:
-                return 0.0
+                return None, 0.0
         prof = self.profile_of(state, j)
         if not p.hand_known and any(prof.short):
             # They recently asked for these in a counter-offer: less likely to hold them (card-counting hint).
@@ -561,8 +585,38 @@ class OpponentModel:
             if lead == proposer:
                 pvp = state.public_vp(proposer) + expected_hidden_vp(state, proposer)
                 logit -= 0.6 * max(0.0, pvp - 5.0)
-        prob = 1.0 / (1.0 + math.exp(-logit))
-        return max(0.0, min(1.0, prob * can_pay))
+        return logit, can_pay
+
+    # --- acq.calib (catanbot/acquisition.py; runs only with CALIB_RATE / REJECT_STREAK on) -----------------------
+    def _calibrator(self):
+        if self.calibrator is None:
+            from .acquisition import AcceptCalibrator
+            self.calibrator = AcceptCalibrator(CALIB_PRIOR)
+        return self.calibrator
+
+    def _calibrated(self, state: GameState, j: int, logit: float, prob: float) -> float:
+        cal = self._calibrator()
+        name = _pname(state, j)
+        if REJECT_STREAK and cal.excluded(name, REJECT_STREAK):
+            return 0.0
+        return cal.prob(name, logit) if CALIB_RATE else prob
+
+    def _calibrate(self, state: GameState, j: int, offer: TradeOffer, accepted: bool,
+                   belief: Optional[HandBelief], politics) -> None:
+        """One observed answer of responder ``j`` to ``offer`` (hands as at the proposal): the rejection streak and,
+        with ``CALIB_RATE``, one calibration step on the raw logit computed *before* note_accept updates j's profile
+        - used only when j's hand is exact or its can-pay probability is at least 0.9."""
+        cal = self._calibrator()
+        name = _pname(state, j)
+        if REJECT_STREAK:
+            cal.note_answer(name, accepted)
+        if not CALIB_RATE:
+            return
+        logit, can_pay = self.accept_terms(state, j, offer.give, offer.get, proposer=offer.proposer, belief=belief,
+                                           politics=politics)
+        if logit is None or (not state.players[j].hand_known and can_pay < 0.9):
+            return
+        cal.update(name, logit, accepted, CALIB_RATE)
 
     def predict_counter_accept(self, state: GameState, j: int, original: Optional[TradeOffer],
                                receives: Sequence[int], pays: Sequence[int], counterer: Optional[int] = None,

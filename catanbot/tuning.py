@@ -850,3 +850,4 @@ def evaluator_mode() -> str:
 from .openings import register_tunables as _register_openings; _register_openings(TUNABLES)  # noqa: E402,E702
 from .winpaths import register_tunables as _register_winpaths; _register_winpaths(TUNABLES)  # noqa: E402,E702
 from .conversion import register_tunables as _register_conversion; _register_conversion(TUNABLES)  # noqa: E402,E702
+from .acquisition import register_tunables as _register_acquisition; _register_acquisition(TUNABLES)  # noqa: E402,E702

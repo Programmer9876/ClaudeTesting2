@@ -246,11 +246,13 @@ def plan_trades(state: GameState, player: int, target_cost: Sequence[int],
 
 def candidate_offers(state: GameState, player: int, needed: Sequence[int],
                      belief: Optional[HandBelief] = None, max_offers: int = 6,
-                     model: Optional[OpponentModel] = None, politics=None) -> List[Action]:
+                     model: Optional[OpponentModel] = None, politics=None, port_floor: bool = False) -> List[Action]:
     """Bounded list of promising PROPOSE_TRADE actions (1:1 and 2:1) for the search.
 
     With ``model`` the offers are ordered by ``model.rank_offers`` (P(accept)
     from the opponents' profiles x our gain, ``politics`` adds favour slack).
+    ``port_floor`` (off by default; the search's ``acq_floor``) drops an offer that our own bank / port rate
+    matches for certain (a 2-for-1 of a resource we hold a 2:1 port for: ``acquisition.dominated_by_bank``).
     """
     p = state.players[player]
     hand = p.resources
@@ -283,6 +285,9 @@ def candidate_offers(state: GameState, player: int, needed: Sequence[int],
             continue
         seen.add(a)
         out.append(a)
+    if port_floor and out:
+        from .acquisition import dominated_by_bank
+        out = [a for a in out if not dominated_by_bank(state, player, a[1], a[2])]
     if model is not None and out:
         ranked = model.rank_offers(state, player, out, needed, belief, politics=politics)
         out = [d["action"] for d in ranked if d["p_accept"] > 0.05] or out

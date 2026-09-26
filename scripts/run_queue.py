@@ -97,8 +97,9 @@ POLITICS_NAMES = {"trading.feed_leader_guard", "opponent_model.stage_late_drop",
 # Terms that act only through player-to-player trades: against Catanatron they need --trades value/fair/native
 # (3.3), else self-play (C++ evaluator only).
 PLAYER_TRADE_PREFIXES = ("trading.", "politics.", "coalitions.", "opponent_model.")
-PLAYER_TRADE_NAMES = {"search.trade_proposals", "search.acq_shapes", "search.counters", "search.counter_margin",
-                      "search.counter_aggr", "search.respond_lookahead"}
+PLAYER_TRADE_NAMES = {"search.trade_proposals", "search.acq_shapes", "search.acq_breadth", "search.acq_floor",
+                      "acquisition.W_PREMIUM", "search.counters", "search.counter_margin", "search.counter_aggr",
+                      "search.respond_lookahead"}
 # Python-evaluator tunables (static_value / placement are mirrored in C++): self-play on them is refused.
 PYEVAL_NAMES = {"heuristic.EXPOSURE_WEIGHT", "placement.RESOURCE_DEMAND", "placement.PLACEMENT_BLOCK_WEIGHT",
                 "placement.PLACEMENT_ROBBER_Q"}

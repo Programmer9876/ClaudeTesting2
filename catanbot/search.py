@@ -51,7 +51,7 @@ from .placement import road_targets, score_city, vertex_production
 from .politics import PoliticalState, political_trade_options
 from .robber import best_robber_move, hex_damage, should_play_knight
 from .state import (GameState, PHASE_DISCARD, PHASE_GAME_OVER, PHASE_MAIN, PHASE_ROBBER, PHASE_ROLL,
-                    PHASE_SETUP_ROAD, PHASE_SETUP_SETTLEMENT, PHASE_TRADE_RESPONSE, PHASE_TRADE_SELECT)
+                    PHASE_SETUP_ROAD, PHASE_SETUP_SETTLEMENT, PHASE_TRADE_RESPONSE, PHASE_TRADE_SELECT, TradeOffer)
 from .trading import plan_trades, should_accept
 
 
@@ -98,6 +98,16 @@ class SearchConfig:
     # every provider field 0 the hub is never built (paths = 1 alone keeps winpaths.PathsEvaluator).  Budgeted for
     # depth 1; at depth >= 2 an active hub makes _future_values take the Python path.  Never reaches C++.
     conv: int = 0                   # 1 = conversion cost of our missing resources (catanbot/conversion.py)
+    # Trades area (catanbot/acquisition.py, docs/STRATEGY.md "Acquisition"; docs/PRIORITY_PLAN.md step 3).  Off by
+    # default: with acq = 0 its hub provider is never built, and with acq_shapes = acq_breadth = acq_floor = 0 no
+    # acquisition code runs in _candidates.  None of these fields reaches C++ (native_level_dict is unchanged).
+    acq: int = 0                    # acq.progress: 1 = bank / port conversions in our hand's progress, 2 = + production
+    acq_w: float = 1.0              # value weight of the acq.progress correction (0 = an exact A/A)
+    acq_self: int = 1               # 1 = our own seat only; 0 = every seat with a known hand (self-play variant)
+    acq_shapes: int = 0             # acq.breadth (B): 1 = inject mixed-give 2-for-1 proposals into our main-phase nodes
+    acq_breadth: int = 0            # 1 = the acq.breadth bundle: >= 5 proposal candidates per node and acq_shapes on
+    acq_floor: int = 0              # 1 = a player trade must beat our bank / port alternative by a premium
+    #                                 (acquisition.W_PREMIUM x partner's gain x danger multiplier; ties go to the bank)
     # Counter-offers and out-of-turn trade analysis (docs/STRATEGY.md "Counter-offers").  Off by default: with
     # counters = 0 COUNTER_TRADE is never a candidate (it only exists under the rules flag
     # GameState.allow_counters anyway) and with respond_lookahead = 0 an answer to an offer is valued exactly as
@@ -143,7 +153,7 @@ _ROLL_ORDER = sorted(B.ROLL_PROB.items(), key=lambda kv: -kv[1])
 # SearchConfig fields whose leaf corrections need the hub (catanbot/corrections.py; CorrectionHub.for_search
 # builds their providers).  paths is not one of them: paths = 1 alone keeps winpaths.PathsEvaluator, and it joins
 # the hub as a provider only next to one of these.
-_HUB_FIELDS = ("conv",)
+_HUB_FIELDS = ("conv", "acq")
 
 # Node budget one leaf of the depth >= 3 lookahead needs for its reduced sub-search (``reduced_config``'s floor).
 # ``_future_values`` runs the sub-search for every leaf or for none (``REDUCED_SEARCH_MIN_NODES`` x leaves must be
@@ -166,6 +176,8 @@ def reduced_config(cfg: SearchConfig, depth: int, budget: int) -> SearchConfig:
 
     Shared by the Python path (``_reduced_search_values``) and the native one (one entry per lookahead level).
     ``budget`` is the node budget left per leaf; the sub-search gets at least ``REDUCED_SEARCH_MIN_NODES`` nodes.
+    The acq.breadth bundle (``acq_breadth``) reaches the sub-search as ``acq_shapes`` only: it keeps its single
+    proposal candidate.
     """
     return SearchConfig(depth=depth, beam=max(2, cfg.beam // 3), expand=max(4, cfg.expand // 2),
                         max_actions_per_turn=4, roll_samples=min(cfg.roll_samples, 5),
@@ -178,7 +190,9 @@ def reduced_config(cfg: SearchConfig, depth: int, budget: int) -> SearchConfig:
                         opponent_proposals=0, dump_candidates=min(2, cfg.dump_candidates),
                         native_future=cfg.native_future, paths=cfg.paths, paths_w=cfg.paths_w,
                         paths_crowd=cfg.paths_crowd, paths_priors=cfg.paths_priors, paths_spots=cfg.paths_spots,
-                        conv=cfg.conv, counters=cfg.counters, counter_candidates=cfg.counter_candidates,
+                        conv=cfg.conv, acq=cfg.acq, acq_w=cfg.acq_w, acq_self=cfg.acq_self,
+                        acq_shapes=1 if (cfg.acq_shapes or cfg.acq_breadth) else 0, acq_floor=cfg.acq_floor,
+                        counters=cfg.counters, counter_candidates=cfg.counter_candidates,
                         counter_aggr=cfg.counter_aggr, counter_margin=cfg.counter_margin,
                         respond_lookahead=cfg.respond_lookahead)
 
@@ -467,7 +481,11 @@ class Searcher:
         """
         cfg = self.config
         model = self.model if cfg.use_opponent_model else None
-        priors = list(action_priors(state, legal, me, self.belief, model=model, politics=self.politics))
+        if cfg.acq_floor:      # candidate_offers drops the offers our own bank / port rate matches (acq_floor)
+            priors = list(action_priors(state, legal, me, self.belief, model=model, politics=self.politics,
+                                        port_floor=True))
+        else:
+            priors = list(action_priors(state, legal, me, self.belief, model=model, politics=self.politics))
         idx = {a: i for i, a in enumerate(legal)}
         stage_f = trade_stage_factor(state)
         if state.phase == PHASE_MAIN:
@@ -533,6 +551,138 @@ class Searcher:
             self._political_reasons.setdefault(d["action"], d["reason"])
         return rest + [d["action"] for d in keep]
 
+    # --- trades area (catanbot/acquisition.py; every method below runs only with its switch on) -------------------
+    def _inject_shapes(self, state: GameState, legal: List[Action], priors: List[float], me: int,
+                       stage_f: float) -> Tuple[List[Action], List[float]]:
+        """acq.breadth (B): mixed-give 2-for-1 proposals (``acquisition.mixed_offers``, ranked by ``p_any`` from
+        :meth:`_accept_probability`, as ``_trade_outcomes``) appended to our main-phase node's candidates with prior
+        35 x stage (55 x stage for the best one when no legal proposal is in the trade plan); they then compete for
+        the node's proposal slots, the expand limit and the per-turn cap like any proposal."""
+        if state.trades_this_turn >= self.trade_cap(state) or not any(a[0] == A.PROPOSE_TRADE for a in legal):
+            return legal, priors
+        from .acquisition import mixed_offers
+        inj = mixed_offers(state, me, self._accept_probability)
+        if not inj:
+            return legal, priors
+        plan_has = any(priors[i] >= 55.0 * stage_f - 1e-9 for i, a in enumerate(legal) if a[0] == A.PROPOSE_TRADE)
+        legal = list(legal)
+        priors = list(priors)
+        for k, (p_any, a, _j) in enumerate(inj):
+            if a in legal:
+                continue
+            legal.append(a)
+            priors.append((55.0 if k == 0 and not plan_has else 35.0) * stage_f)
+            self._political_reasons.setdefault(a, f"mixed 2-for-1 offer: {p_any:.0%} that someone accepts")
+        return legal, priors
+
+    def _floor_check(self, state: GameState, me: int, items) -> Dict[Action, Tuple[bool, str, tuple]]:
+        """acq_floor: ``{key: (ok, reason, bank cost)}`` for player trades ``(key, give, get, partner, answering)``
+        in which our seat gives ``give`` and receives ``get``.  ``ok`` when the trade's leaf value (the search's own
+        evaluator: hub or base, our seat) beats the best bank / port plan for the same ``get``
+        (``acquisition.bank_plans``) by ``W_PREMIUM x partner's gain x danger_multiplier(partner)``; ties go to the
+        bank; no bank plan (the bank lacks the cards or our hand cannot pay the ratio) = ok, the rule does not
+        apply.  One batched evaluation per call."""
+        from . import acquisition as Q
+        out: Dict[Action, Tuple[bool, str, tuple]] = {}
+        plans: Dict[tuple, list] = {}
+        todo = []
+        for key, give, get, j, answering in items:
+            g = tuple(get)
+            if g not in plans:
+                plans[g] = Q.bank_plans(state, me, g)
+            if not plans[g] or j is None or j < 0 or j == me:
+                out[key] = (True, "", ())
+                continue
+            todo.append((key, tuple(give), g, j, answering))
+        if not todo:
+            return out
+        states: List[GameState] = []
+        players: List[int] = []
+
+        def add(s: GameState, p: int) -> int:
+            states.append(s)
+            players.append(p)
+            return len(states) - 1
+
+        base_j: Dict[int, int] = {}
+        bank_idx: Dict[tuple, list] = {}
+        rows = []
+        for key, give, g, j, answering in todo:
+            if j not in base_j:
+                base_j[j] = add(state, j)
+            if g not in bank_idx:
+                bank_idx[g] = [(c, add(Q.bank_state(state, me, c, g), me)) for c in plans[g]]
+            sp = Q.trade_state(state, me, j, give, g)
+            rows.append((key, g, j, answering, add(sp, me), add(sp, j)))
+        vals = self._value_ev().evaluate(states, players)
+        danger: Dict[int, tuple] = {}
+        for key, g, j, answering, i_me, i_j in rows:
+            cost, v_b = max(((c, float(vals[i])) for c, i in bank_idx[g]), key=lambda t: t[1])
+            if j not in danger:
+                danger[j] = Q.danger_of(state, j, self.belief)
+            mult, wp = danger[j]
+            prem = Q.trade_premium(float(vals[i_j]) - float(vals[base_j[j]]), mult)
+            ok = float(vals[i_me]) > v_b + prem
+            out[key] = (ok, "" if ok else Q.floor_reason(state, me, j, cost, g, wp, answering), cost)
+        return out
+
+    def _floor_proposals(self, state: GameState, actions: Sequence[Action], me: int,
+                         legal: Sequence[Action]) -> set:
+        """acq_floor: the proposals of ``actions`` that beat our bank / port alternative (partner: the likeliest
+        accepter among the responders who can pay, as ``_trade_outcomes``).  The bank trade that replaces the
+        first dropped proposal, when legal, carries the reason as its explanation."""
+        items = []
+        for a in actions:
+            give, get = a[1], a[2]
+            probs: Dict[int, float] = {}
+            offer = TradeOffer(me, list(give), list(get))
+            for j in range(state.num_players):
+                if j == me:
+                    continue
+                pj = state.players[j]
+                if pj.hand_known and any(pj.resources[r] < get[r] for r in range(5)):
+                    continue
+                probs[j] = self._accept_probability(state, j, offer, me)
+            items.append((a, give, get, max(probs, key=probs.get) if probs else -1, False))
+        res = self._floor_check(state, me, items)
+        ok = {a for a in actions if res.get(a, (True, "", ()))[0]}
+        for a in actions:
+            if a in ok:
+                continue
+            _ok, why, cost = res[a]
+            gives = [g for g in range(5) if cost[g]]
+            gets = [r for r in range(5) if a[2][r]]
+            if len(gives) == 1 and len(gets) == 1 and sum(a[2]) == 1:
+                bank = (A.BANK_TRADE, gives[0], gets[0])
+                if bank in legal:
+                    self._political_reasons.setdefault(bank, "instead of a player trade: " + why)
+            break
+        return ok
+
+    def _floor_answers(self, state: GameState, legal: List[Action], me: int) -> List[Action]:
+        """acq_floor for an offer (or a counter-offer) we answer: ACCEPT / our counters stay only above the bank /
+        port premium (the alternative: our own conversion on our next turn, or now when it is our turn)."""
+        po = state.pending_trade
+        if po is None or E.acting_player(state) != me or po.proposer == me:
+            return legal
+        answering = state.current != me
+        items = []
+        if (A.ACCEPT_TRADE,) in legal:
+            items.append(((A.ACCEPT_TRADE,), po.get, po.give, po.proposer, answering))
+        for a in legal:
+            if a[0] == A.COUNTER_TRADE:
+                items.append((a, a[1], a[2], state.current, answering))
+        if not items:
+            return legal
+        res = self._floor_check(state, me, items)
+        keep = [a for a in legal if res.get(a, (True, "", ()))[0]]
+        if not keep or len(keep) == len(legal):
+            return legal
+        why = res.get((A.ACCEPT_TRADE,))
+        if why is not None and not why[0]:
+            self._political_reasons.setdefault((A.REJECT_TRADE,), "rather " + why[1])
+        return keep
+
     def _candidates(self, state: GameState, me: int, force_end: bool,
                     line: Optional[Sequence[Action]] = None) -> List[Action]:
         cfg = self.config
@@ -541,6 +691,8 @@ class Searcher:
             return []
         if state.allow_counters and state.phase == PHASE_TRADE_RESPONSE:
             legal = self._counter_filter(state, legal, me)
+        if cfg.acq_floor and state.phase == PHASE_TRADE_RESPONSE:
+            legal = self._floor_answers(state, legal, me)     # acq_floor: accept only above the bank / port premium
         if force_end and (A.END_TURN,) in legal:
             return [(A.END_TURN,)]
         if len(legal) == 1:
@@ -556,20 +708,32 @@ class Searcher:
                 legal = safe
         priors = self._candidate_priors(state, legal, me)
         stage_f = trade_stage_factor(state)
+        if (cfg.acq_shapes or cfg.acq_breadth) and state.phase == PHASE_MAIN:
+            legal, priors = self._inject_shapes(state, legal, priors, me, stage_f)    # acq.breadth (B)
         order = sorted(range(len(legal)), key=lambda i: -priors[i])
         out: List[Action] = []
         n_trades = 0
         n_discards = 0
         # Per node: fewer proposal candidates late in the game (but at least one while proposals
         # are enabled); per turn: the documented cap (4 early, 2 late).
-        max_trades = max(1 if cfg.trade_proposals > 0 else 0, int(round(cfg.trade_proposals * stage_f)))
+        n_props = max(cfg.trade_proposals, 5) if cfg.acq_breadth else cfg.trade_proposals   # acq.breadth bundle: (A)
+        max_trades = max(1 if n_props > 0 else 0, int(round(n_props * stage_f)))
         if state.trades_this_turn >= self.trade_cap(state):
             max_trades = 0
+        floor_ok = None
+        if cfg.acq_floor and max_trades > 0 and state.phase == PHASE_MAIN:
+            # acq_floor: the node's proposal slots go to offers that beat our bank / port alternative; the first
+            # max_trades + FLOOR_WINDOW proposals by prior are checked (one batch), later ones are not tried.
+            from .acquisition import FLOOR_WINDOW
+            window = [legal[i] for i in order if legal[i][0] == A.PROPOSE_TRADE][:max_trades + FLOOR_WINDOW]
+            floor_ok = self._floor_proposals(state, window, me, legal)
         for i in order:
             a = legal[i]
             k = a[0]
             if k == A.PROPOSE_TRADE:
                 if n_trades >= max_trades:
+                    continue
+                if floor_ok is not None and a not in floor_ok:
                     continue
                 n_trades += 1
             elif k == A.DISCARD:
@@ -586,7 +750,8 @@ class Searcher:
         if line and self._chain_next and max_trades > 0:
             last = next((a for a in reversed(line) if a[0] == A.PROPOSE_TRADE), None)
             nxt = self._chain_next.get(last) if last is not None else None
-            if nxt is not None and nxt in legal and nxt not in out:
+            if nxt is not None and nxt in legal and nxt not in out \
+                    and (not cfg.acq_floor or self._floor_proposals(state, [nxt], me, legal)):
                 out.insert(0, nxt)
                 self._political_reasons.setdefault(nxt, "exploit: second leg of the intermediary deal")
         # Political options: trades that let a trailing player take an award off the
@@ -597,6 +762,8 @@ class Searcher:
                 ev = self._value_ev()
                 for opt in political_trade_options(state, me, ev, self.politics, model=self.model)[:2]:
                     a = opt["action"]
+                    if cfg.acq_floor and a[0] == A.PROPOSE_TRADE and not self._floor_proposals(state, [a], me, legal):
+                        continue
                     if a not in out:
                         out.append(a)
                     self._political_reasons[a] = opt["reason"]
