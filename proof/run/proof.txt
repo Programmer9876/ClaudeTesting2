@@ -1,0 +1,54 @@
+Strength proof (docs/PROOF_PROTOCOL.md, pre-registered 2026-09-25)
+bot "search:depth=1,beam=4,expand=8,evaluator=heuristic"; trades off; PYTHONHASHSEED=0; turn-cap games count as losses
+
+test opponent   fmt       games  wins   rate  null p one-sided          CP 95 %          CP 99 %  VP ours/opp  cap err/fb/crash  protocol
+T1   value      1v3   1000/1000   628  0.628  0.25   3.80e-140   [0.597, 0.658]   [0.588, 0.667]  8.76/6.00      0        0/0/0  ok
+T2   alphabeta  1v3    400/400    218  0.545  0.25    2.90e-36   [0.495, 0.595]   [0.479, 0.610]  8.47/6.18      0        0/0/0  ok
+T3   sameturn   1v3    400/400    218  0.545  0.25    2.90e-36   [0.495, 0.595]   [0.479, 0.610]  8.50/6.10      0        0/0/0  ok
+T4   value      2v2   1000/1000   836  0.836  0.50   2.50e-109   [0.812, 0.858]   [0.804, 0.865]  7.89/5.95      0        0/0/0  ok
+T5   alphabeta  2v2    400/400    323  0.807  0.50    3.17e-37   [0.765, 0.845]   [0.752, 0.856]  7.87/6.12      0        0/0/0  ok
+T6   sameturn   2v2    400/400    315  0.787  0.50    1.85e-32   [0.744, 0.827]   [0.730, 0.838]  7.76/6.07      0        0/0/0  ok
+R1   vf         1v3   1000/1000   278  0.278  0.25      0.0232   [0.250, 0.307]   [0.242, 0.316]  7.44/7.32      0        0/0/0  ok
+R2   ab         1v3    400/400    103  0.258  0.25      0.3831   [0.215, 0.303]   [0.203, 0.318]  7.09/7.25      0        0/0/0  ok
+  (err = adapter + observe errors, fb = illegal-action fallbacks, crash = crashed attempts)
+
+T1 by seat (one-sided p vs 0.25): seat0 171/250 = 0.684 (p 5.17e-47), seat1 149/250 = 0.596 (p 5.48e-31), seat2 151/250 = 0.604 (p 2.69e-32), seat3 157/250 = 0.628 (p 2.13e-36)
+T2 by seat (one-sided p vs 0.25): seat0 52/100 = 0.520 (p 6.58e-9), seat1 55/100 = 0.550 (p 1.54e-10), seat2 54/100 = 0.540 (p 5.59e-10), seat3 57/100 = 0.570 (p 1.03e-11)
+T3 by seat (one-sided p vs 0.25): seat0 54/100 = 0.540 (p 5.59e-10), seat1 55/100 = 0.550 (p 1.54e-10), seat2 51/100 = 0.510 (p 2.13e-8), seat3 58/100 = 0.580 (p 2.51e-12)
+T4 by arrangement (C = catanbot, turn order): CCoo 147/167 = 0.880, CoCo 132/167 = 0.790, CooC 150/167 = 0.898, oCCo 130/167 = 0.778, oCoC 135/166 = 0.813, ooCC 142/166 = 0.855
+T5 by arrangement (C = catanbot, turn order): CCoo 58/67 = 0.866, CoCo 50/67 = 0.746, CooC 57/67 = 0.851, oCCo 47/67 = 0.701, oCoC 54/66 = 0.818, ooCC 57/66 = 0.864
+T6 by arrangement (C = catanbot, turn order): CCoo 57/67 = 0.851, CoCo 51/67 = 0.761, CooC 52/67 = 0.776, oCCo 53/67 = 0.791, oCoC 49/66 = 0.742, ooCC 53/66 = 0.803
+R1 by seat (one-sided p vs 0.25): seat0 91/250 = 0.364 (p 4.14e-5), seat1 69/250 = 0.276 (p 0.1896), seat2 63/250 = 0.252 (p 0.4951), seat3 55/250 = 0.220 (p 0.8797)
+R1 two-sided exact p vs 0.25: 0.0445
+R2 by seat (one-sided p vs 0.25): seat0 38/100 = 0.380 (p 0.0027), seat1 25/100 = 0.250 (p 0.5383), seat2 18/100 = 0.180 (p 0.9624), seat3 22/100 = 0.220 (p 0.7886)
+R2 two-sided exact p vs 0.25: 0.7291
+
+Holm-Bonferroni over T1-T6 at family alpha 0.01 (claim 1):
+  1. T1 p =  3.80e-140  threshold alpha/6 =  0.001667  adjusted p =  2.28e-139  reject
+  2. T4 p =  2.50e-109  threshold alpha/5 =     0.002  adjusted p =  1.25e-108  reject
+  3. T5 p =   3.17e-37  threshold alpha/4 =    0.0025  adjusted p =   1.27e-36  reject
+  4. T2 p =   2.90e-36  threshold alpha/3 =  0.003333  adjusted p =   8.70e-36  reject
+  5. T3 p =   2.90e-36  threshold alpha/2 =     0.005  adjusted p =   8.70e-36  reject
+  6. T6 p =   1.85e-32  threshold alpha/1 =      0.01  adjusted p =   1.85e-32  reject
+Holm-Bonferroni over T1-T6 at family alpha 5.7e-7 (claim 2):
+  1. T1 p =  3.80e-140  threshold alpha/6 =   9.50e-8  adjusted p =  2.28e-139  reject
+  2. T4 p =  2.50e-109  threshold alpha/5 =   1.14e-7  adjusted p =  1.25e-108  reject
+  3. T5 p =   3.17e-37  threshold alpha/4 =   1.42e-7  adjusted p =   1.27e-36  reject
+  4. T2 p =   2.90e-36  threshold alpha/3 =   1.90e-7  adjusted p =   8.70e-36  reject
+  5. T3 p =   2.90e-36  threshold alpha/2 =   2.85e-7  adjusted p =   8.70e-36  reject
+  6. T6 p =   1.85e-32  threshold alpha/1 =   5.70e-7  adjusted p =   1.85e-32  reject
+
+CLAIM 1 - better than Catanatron's strong bots: PASS
+  [pass] results of T1, T2, T3, T4, T5, T6 complete and as pre-registered - opponent, format, engine, seeds, seats, spec, trades off, PYTHONHASHSEED=0, games 0..N-1
+  [pass] T1-T6 reject their nulls at family-wise alpha = 0.01 (Holm) - max Holm-adjusted p = 1.85e-32
+CLAIM 2 - ready for (supervised) human testing: PASS
+  [pass] results of T1, T2, T3, T4, T5, T6, R1, R2 complete and as pre-registered - opponent, format, engine, seeds, seats, spec, trades off, PYTHONHASHSEED=0, games 0..N-1
+  [pass] T1-T6 reject their nulls at family-wise alpha = 5.7e-7 (Holm) - max Holm-adjusted p = 1.85e-32
+  [pass] effect size: lower 99 % Clopper-Pearson bound >= 0.35 (T1-T3) / >= 0.55 (T4-T6) - T1 0.588; T2 0.479; T3 0.479; T4 0.804; T5 0.752; T6 0.730
+  [pass] seat robustness: every seat of T1-T3 above 0.25 (one-sided exact p < 0.05)
+  [pass] zero adapter errors, illegal-action fallbacks and crashes over all proof games
+  [pass] R1 / R2: 1v3 win rate not significantly below 0.25 (two-sided exact p > 0.01) - R1 0.278 (p = 0.0445); R2 0.258 (p = 0.7291)
+
+exact pure-Python statistics; scipy cross-check: max relative difference 7.1e-13
+markdown: /tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/proof/run/PROOF.md
+json: /tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/proof/run/proof.json

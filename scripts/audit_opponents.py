@@ -35,9 +35,9 @@ CHANCE_TYPES = {"ROLL"}
 
 
 def _files(run: str, test: str, sub: str, pattern: str) -> List[str]:
-    """``<run>/<sub>/<test>/pattern`` (proof output layout) or ``<run>/<test>/pattern`` (archive)."""
+    """``<run>/<sub>/<test>/pattern`` (proof output layout) or the archive's ``<run>/<test>/{results,logs}/``."""
     out = sorted(glob.glob(os.path.join(run, sub, test, pattern)))
-    return out or sorted(glob.glob(os.path.join(run, test, pattern)))
+    return out or sorted(glob.glob(os.path.join(run, test, "results" if sub == "json" else sub, pattern)))
 
 
 def load(run: str, test: str) -> Tuple[Dict[int, dict], Dict[int, dict], set]:

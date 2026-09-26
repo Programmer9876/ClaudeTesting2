@@ -4,6 +4,42 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 00:40 UTC - strength proof: claims 1 and 2 PASS
+
+The pre-registered proof (docs/PROOF_PROTOCOL.md) finished T1-T6 and R1-R2:
+5,000 games, 0 errors / fallbacks / crashes / turn-cap games, and all 5,000
+replay action for action.
+
+| test | opponent | format | our wins | one-sided p | 99 % CI lower end |
+|---|---|---|---|---|---|
+| T1 | 3x ValueFunction | 1v3 (fair 25 %) | 628/1000 = 62.8 % | 3.8e-140 | 0.588 |
+| T2 | 3x AlphaBeta | 1v3 | 218/400 = 54.5 % | 2.9e-36 | 0.479 |
+| T3 | 3x SameTurnAlphaBeta | 1v3 | 218/400 = 54.5 % | 2.9e-36 | 0.479 |
+| T4 | 2x ValueFunction | 2v2 (fair 50 %) | 836/1000 = 83.6 % | 2.5e-109 | 0.804 |
+| T5 | 2x AlphaBeta | 2v2 | 323/400 = 80.8 % | 3.2e-37 | 0.752 |
+| T6 | 2x SameTurnAlphaBeta | 2v2 | 315/400 = 78.8 % | 1.9e-32 | 0.730 |
+| R1 | 3x our stronger ValueFunction stand-in | 1v3 | 278/1000 = 27.8 % | (two-sided 0.045) | - |
+| R2 | 3x our stronger AlphaBeta stand-in | 1v3 | 103/400 = 25.8 % | (two-sided 0.73) | - |
+
+* **Claim 1** (better than Catanatron's strong bots): PASS; the largest
+  Holm-adjusted p-value is 1.85e-32.
+* **Claim 2** (ready for supervised human testing): PASS on every condition.
+  * T1-T6 significant at 5.7e-7; they also clear a strict one-sided
+    5-sigma, 2.87e-7.
+  * Effect sizes above the registered floors.
+  * Every seat above 25 %: the worst seat p-value is 2.1e-8.
+  * Zero errors.
+  * Not significantly below 25 % against our stronger stand-ins.
+* **Readiness for human testing also needs claims 3 and 4** (amendments 2
+  and 3).  T7-T11 started at 00:25 UTC from the amendment-5 snapshot.
+* **Evidence archived** in `proof/` (README, sha256 manifest).  The registered
+  analysis re-run on the archived copy prints output identical to the run's.
+  Written up in docs/PROOF.md; skeptic's Q&A in docs/SCRUTINY.md.
+* **Against the stand-ins** our bot is about even (27.8 % and 25.8 %).  In
+  both, the first seat did best (36-38 %).  So a stronger version of the
+  same bots is roughly our level.  This is the headroom to watch as
+  Catanatron-style opponents get stronger.
+
 ## 2026-09-25 23:00 UTC - counteroffers and out-of-turn offer analysis built (off by default)
 
 * **Counteroffers** (Colonist rule, `allow_counters`, off by default): when

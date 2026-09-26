@@ -5,23 +5,22 @@ beats Catanatron's strong bots, and is ready for supervised human testing
 (docs/PROOF_PROTOCOL.md).  Every answer below says what the evidence is and how
 to re-check it.
 
-**Status (2026-09-25 23:45 UTC):**
-- T1-T5 are finished.  T6 is at 250 of 400 games.  R1-R2 and T7-T11 are queued.
-- Every number below is **interim**, read from the run's raw output.  The
-  verdict comes only from `scripts/prove_strength.py` on the complete
-  registered data (docs/PROOF.md, once written).
-- `RUN` below means the proof output directory: the session scratchpad
-  `.../scratchpad/proof/run` now; the archived `proof/` directory of this
-  repository once the run is finished and archived.
+**Status (2026-09-26 00:25 UTC):**
+- T1-T6 and R1-R2 are finished, and **claims 1 and 2 PASS** (docs/PROOF.md).
+- T7-T11 (Colonist information and the mixed table; claims 3 and 4, needed
+  for readiness) are running.
+- The T1-T6 numbers below are final.
+- `RUN` below is the archived evidence, `proof/` in this repository
+  (proof/README.md).
 
-| test | opponent (Catanatron 3.3.0) | format | games so far | our wins | interim one-sided p | lower end of 99 % CI |
+| test | opponent (Catanatron 3.3.0) | format | games | our wins | one-sided p | lower end of 99 % CI |
 |---|---|---|---|---|---|---|
 | T1 | ValueFunction x3 | 1v3 (fair share 25 %) | 1000/1000 | 628 (62.8 %) | 3.8e-140 | 0.588 |
 | T2 | AlphaBeta x3 | 1v3 | 400/400 | 218 (54.5 %) | 2.9e-36 | 0.479 |
 | T3 | SameTurnAlphaBeta x3 | 1v3 | 400/400 | 218 (54.5 %) | 2.9e-36 | 0.479 |
 | T4 | ValueFunction x2 | 2v2 (fair share 50 %) | 1000/1000 | 836 (83.6 %) | 2.5e-109 | 0.804 |
 | T5 | AlphaBeta x2 | 2v2 | 400/400 | 323 (80.8 %) | 3.2e-37 | 0.752 |
-| T6 | SameTurnAlphaBeta x2 | 2v2 | 250/400 | 196 (78.4 %) | 2.1e-20 | 0.710 |
+| T6 | SameTurnAlphaBeta x2 | 2v2 | 400/400 | 315 (78.8 %) | 1.9e-32 | 0.730 |
 
 Registered pass lines, from the protocol:
 - Claim 1: Holm family-wise alpha = 0.01.
@@ -118,9 +117,9 @@ No.
 
 - **The limit that matters:** AlphaBeta and SameTurnAlphaBeta stop a search
   after 20 s of wall time.  Their slowest single decision in each test was
-  6.5 s (T2), 16.3 s (T3), 7.7 s (T5) and 5.9 s (T6).  No decision reached
-  the cutoff, so load never cut a search short.  T3's 16.3 s is the closest
-  call; the final report will list any decision at 20 s or more.
+  6.5 s (T2), 16.3 s (T3), 7.7 s (T5) and 5.9 s (T6).  No decision in any
+  of the 5,000 games reached the cutoff, so load never cut a search short.
+  T3's 16.3 s was the closest call.
 - **Which side used more time:**
 
   | test | our bot, s per game (all its decisions) | each opponent seat, s per game |
@@ -195,11 +194,12 @@ No.
 - Every move goes through Catanatron's `Game.execute` with
   `validate_action=True`, which raises on any move not in Catanatron's
   legal list.
-- So far there have been zero adapter errors, zero illegal-action fallbacks
-  and zero crashes over T1-T6.
+- Over all 5,000 games of T1-T6 and R1-R2 there were zero adapter errors,
+  zero illegal-action fallbacks and zero crashes.
 - `scripts/replay_catanatron.py --check` re-executes every logged game in a
   fresh engine and checks every action, final VP, winner and a full-state
-  fingerprint.
+  fingerprint.  All 5,000 games pass, both from the run's logs and from the
+  archived copy.
 - Claim 2 requires zero errors, fallbacks and crashes over all proof games.
 
 ### Q9. Does it exploit trading?
@@ -259,10 +259,10 @@ No.
   games 0..N-1 of the registered seed; missing or extra games fail
   conformance.
 - A crashed game is re-run once with the same seed; a second crash counts as
-  a loss.  Turn-cap games count as losses.  So far: 0 crashes, 0 turn-cap
+  a loss.  Turn-cap games count as losses.  Final: 0 crashes, 0 turn-cap
   games.
-- There is no early stopping.  The interim numbers here are read for
-  monitoring only and change nothing.
+- There is no early stopping.  Interim numbers were read for monitoring
+  only and changed nothing.
 
 ### Q13. Six tests: isn't a multiple-comparisons correction needed?
 
@@ -282,9 +282,9 @@ got it wrong; this is the correction.
 - Used as a one-sided threshold, 5.7e-7 is 4.87 sigma: slightly *less*
   strict than one-sided 5 sigma, not stricter.
 - The registered number stays; changing it after registration is not
-  allowed.  The final report will also say whether each test passes 2.87e-7.
-- For scale, the interim p-values run from 3.8e-140 to 2.1e-20, far below
-  either line.
+  allowed.
+- Every test also passes the stricter 2.87e-7: the largest Holm-adjusted
+  p-value is 1.85e-32.
 
 ### Q15. Could seat order or turn order produce the result?
 
@@ -331,16 +331,16 @@ Yes.
 
 ### Q18. Where are the logs and result files?
 
-- Now: in the session scratchpad.
-- When the run finishes, they will be archived into this repository under
-  `proof/<test>/`:
-  - per-chunk result JSON;
-  - action logs sorted by game number, one gzip JSONL per chunk;
-  - `proof/README.md`.
-- Every archived game is re-checked with `replay --check` before the
-  commit.
+In this repository, under `proof/` (layout and commands in
+proof/README.md):
+- per-chunk result JSON;
+- action logs sorted by game number, one gzip JSONL per chunk;
+- console output, replay checks and the analysis;
+- a sha256 manifest.
 
-**Not archived yet:** until then the evidence lives only in this session.
+All 5,000 archived games were replay-checked before the commit.  The
+registered analysis re-run on the archived copy prints output identical to
+the run's own.  T7-T11 will be added the same way when they finish.
 
 ### Q19. Exactly which code played?
 
