@@ -56,6 +56,7 @@ What happens:
    --fix "port 3-7=ore"                      the same port named by its two vertices
    --fix "bank.ore=3"   --fix "deck=14"
    --fix "players=red,blue,orange,green"
+   --fix "blue.name=Kelsey"                  the name the game log uses (card counting, below)
    ```
 
    Vertex and edge ids are catanbot's fixed numbering (`--ids` prints it,
@@ -151,6 +152,151 @@ yet; any other file is refused rather than overwritten.  During self-play
 the bot maintains the same profiles automatically from the actions it
 observes.
 
+### Card counting from the game log (`--session`, `--game-log`)
+
+A single screenshot shows every player's hand *size* but not which cards
+they hold.  Colonist prints everything else that is public in its log panel
+(dice and production, builds, development-card buys and plays, bank / port
+and player trades, offers, Monopoly, Year of Plenty, robber steals, 7
+discards), so the advisor can count cards like a strong human: exactly,
+except for what is hidden from you - the card of a steal between two other
+players, the types of cards discarded on a 7 (only the count is shown) and
+unplayed development cards - which become probabilities.  Off by default:
+without these two options nothing changes.
+
+```bash
+# every screenshot during the game, read by the Claude-vision parser (it also transcribes the log panel)
+python -m catanbot analyze shot1.png --parser llm --me red --session game1.json
+python -m catanbot analyze shot2.png --parser llm --me red --session game1.json
+# log text you paste or type (any parser, or a saved / hand-written state)
+python -m catanbot analyze shot.png --me red --session game1.json --game-log log.txt
+python -m catanbot recommend --state saved.json --session game1.json --game-log - < log.txt
+```
+
+* `--session FILE` keeps the count across calls (created on the first call,
+  one file per game; a file of another game or another seat is refused, and
+  so is any JSON that is not a session).  With `--parser llm` the model also
+  transcribes the visible log entries into the parse (`log` field, saved by
+  `--save-state` and read again by `recommend --state`).
+* `--game-log FILE` reads log text, one entry per line, oldest first (`-` =
+  standard input).  It works with or without `--session`.  (The option is
+  not called `--log`: that one appends win estimates for `calibrate`.)
+* Every call sees a *window* of the log - the lines visible on this
+  screenshot, or whatever you pasted.  Windows may overlap, repeat, or
+  contain the whole log from the start: each is aligned with the entries
+  already counted (longest overlap of the window's head with the counted
+  tail; when repeated lines make that ambiguous, the alignment that agrees
+  with the hand sizes on screen wins) and only the new entries are counted.
+  A window that shares no entry with the counted log is counted whole with a
+  warning that entries may be missing; one that lies inside the counted log
+  (you scrolled up) adds nothing.
+* Start the session at the beginning of the game (the setup placements and
+  "received starting resources" lines in the first window): every hand then
+  starts empty and the count is exact.  A session started mid-game begins
+  from a production-weighted prior fitted to the hand sizes on screen (the
+  output says so: "Session started mid-game", hands marked "estimated") and
+  turns exact as the opponents spend their cards; with small hands (or a
+  visible bank that leaves few possibilities) the prior already covers every
+  possible hand and the count is exact from there.
+* After the new entries, the count is checked against the screenshot: your
+  own hand, every hand size and, when the parse carries it, the bank.  A
+  mismatch means a missed or misread log entry: it is reported and the count
+  is corrected without losing what it knows (a difference in hand size is
+  branched in as cards of unknown type drawn from the production prior, or
+  removed like a hidden discard; a payment the count says a player cannot
+  make is explained by the smallest unrecorded gain).
+* Player names: Colonist's log writes user names.  The Claude-vision parser
+  reports players by colour; the computer-vision parser only knows colours,
+  so tell it the names once with `--fix 'blue.name=Kelsey'` (the session
+  remembers them).  "You" / "you" is you.  An unknown name is reported and
+  its entries are skipped (the hand sizes on screen then correct the count).
+
+The advisor then samples the opponents' hands for the search from the count
+(`--samples` determinizations - the same code as the benchmark's
+`--info counted` mode) and prints a "Card count" section right after the
+recommended actions:
+
+```
+== Card count ==
+
+ Counting from the start of the game: 157 log entries (12 new), 2 hand hypothesis(es).
+ The search samples the opponents' hands from this count (4 determinization(s), --samples).
+  blue (Bob): no cards
+  orange (Carol): 1 wood, 2 ore certain; 1 card uncertain from hidden steals with green (Dave), blue (Bob): wood 88% / sheep 12%; most likely 2 wood, 2 ore (88%)
+  green (Dave): 2 sheep, 1 ore (exact, 3 cards)
+  ! 1 log line(s) not understood (skipped; extend the phrase table or retype them, see docs/USAGE.md): 'Happy settling'
+```
+
+"certain" is what the player holds in every hand still possible, the
+uncertain cards come with the probability of each resource, "most likely" is
+the single most probable hand.  `--json` adds a `card_count` object (the
+same per player, plus the warnings and counters).
+
+**The phrase table.**  Pasted text is read line by line through one table of
+regular expressions, `PHRASES` in `catanbot/colonist_log.py` (first match
+wins; extend or correct it there).  Written from the best available knowledge
+of Colonist's wording - it has not been checked against a live game, so
+compare it with yours:
+
+| event | accepted lines (examples) |
+|---|---|
+| setup | `Alice placed a Settlement` / `Alice placed a Road` (free), `Alice received starting resources wood brick ore` |
+| roll | `Alice rolled 5 3`, `Alice rolled 8`, `Alice rolled` (the value does not matter for counting) |
+| production | `Bob got 2 wood, 1 ore` (also `received`) |
+| build | `Alice built a Road` / `Settlement` / `City` (roads after Road Building are free) |
+| development card | `Bob bought Development Card`; `Bob used Knight` / `Road Building` / `Year of Plenty` / `Monopoly` / `Victory Point` (also `played`) |
+| Monopoly | `Bob stole 5 ore` (after `used Monopoly`), or `Bob used Monopoly and stole 5 ore` - the total; the split between the victims is inferred from the hand sizes |
+| Year of Plenty | `Bob took from bank wood ore`, or `Bob used Year of Plenty and took wood ore` |
+| bank / port trade | `Bob gave bank 4 wood and took 1 ore`, `Bob gave 3 wool and got 1 ore from bank`, `Bob traded 2 wool for 1 ore with bank` |
+| player trade | `Alice traded 1 wood for 1 ore with Bob` (Alice gave the wood, got the ore) |
+| offer / counter-offer | `Alice wants to give 1 wood for 1 ore`, `Bob counter-offered 1 ore for 2 wood` (hard evidence they hold what they offer; soft that they lack what they ask for) |
+| steal | `Carol stole a card from Bob` (hidden), `You stole ore from Bob`, `Bob stole wood from you` |
+| 7 discard | `Bob discarded 4 cards` (hidden), `You discarded 2 wood, 2 ore`; no cards at all = half the hand |
+| robber / turn | `Bob moved Robber to 6 wheat`; `Bob ended their turn`, `Bob's turn` |
+| ignored | Largest Army / Longest Road, `won the game`, `No player gets resources`, `accepted` / `rejected` / `cancelled`, `is selecting ...`, joined / left |
+
+Cards may be written as counts (`2 wood, 1 brick`), repeated words (`wood
+wood brick`), with multipliers (`2x wood`, `wood x2`), Colonist's names
+(`lumber`, `brick`, `wool`, `grain`, `ore`), or letters (upper case: `W`/`L`
+wood, `B`/`C` brick, `S` sheep, `G` wheat, `O` ore, `?` unknown: `WWB`);
+`a card` / `2 cards` / `?` are face-down cards.  Colonist draws cards as
+icons, so a copied log may lose them ("Bob got"): such lines are reported as
+unreadable and the hand sizes on screen correct the count; retype them
+(`Bob got 2 wood`) for an exact count.  Lines that match no phrase are
+reported (quoted) in the Card count section, once per session.
+
+**Assumptions to check against a real Colonist game** (the table is a best
+guess): the exact verbs (`got` vs `received`, `built a` vs `placed a` after
+setup, `bought Development Card`, `used <card>`, `took from bank`, `gave bank
+... and took ...`, `traded ... for ... with ...`, `wants to give ... for
+...`, the counter-offer wording, `moved Robber to`, `discarded`); whether a
+Monopoly is logged as one line or two and whether it shows the total or the
+amount per victim; whether Year of Plenty has its own "took" line; whether a
+third-party steal shows a card back and whether discards show their cards
+(if Colonist shows them, they are simply counted exactly); whether turn ends
+are logged at all; whether the log says "You" for you; whether a free Road
+Building road is logged differently; whether colons follow the verbs (all
+optional in the table).
+
+**Limitations.**  The count is only as good as the log it sees: a missed
+line is detected and repaired from the hand sizes, but the repair is a guess
+(production-weighted).  Several large hidden discards on one 7 can exceed
+the hypothesis cap (4096 joint hands) when the bank is not visible - the
+least likely hands are dropped; a visible bank resolves them exactly.  A
+Monopoly's split between victims is taken from the hand sizes on screen when
+the log only gives the total (ambiguous only if another unreadable entry
+follows in the same window).  The Claude-vision transcription can misread an
+icon: the alignment of two windows needs identical entries, so a misread
+line in the overlap may look like a gap (reported, then resynchronised).
+Development-card types stay a probability (the public pool: the 25-card deck
+minus every played card and your own); played types other than knights are
+only known from the log, so a mid-game session counts only the knights shown
+on screen.  The session does not validate turn order or legality.  Only the
+search uses the count (its determinizations); the Trading, Knight / robber
+and offer-response sections keep their own hand estimates, and `watch`
+prints its compact summary without the Card count section (the session is
+still updated).
+
 ### Live advisor while you play (`watch`)
 
 ```bash
@@ -198,8 +344,9 @@ parsed-screenshot dict (the format `--save-state` writes, documented in
 `catanbot/vision/schema.py`).  `--fix` corrections apply to the
 parsed-screenshot format only; with a full `GameState` they are refused
 (edit that JSON directly).  Every `analyze` option except the parser ones
-(`--me`, `--offer`, `--profiles`, `--event`, `--ids`, `--json`, `--log`, ...)
-works here too.
+(`--me`, `--offer`, `--profiles`, `--event`, `--ids`, `--json`, `--log`,
+`--session`, `--game-log`, ...) works here too; a parsed state saved with a
+`log` field (the Claude-vision parser's transcription) feeds `--session`.
 
 ## 3. Simulate, evaluate, train
 

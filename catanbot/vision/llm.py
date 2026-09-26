@@ -21,6 +21,10 @@ which the result is an ordinary parsed-screenshot dict (DESIGN §7) that goes
 through :func:`catanbot.vision.schema.validate` and
 :func:`catanbot.vision.schema.parsed_to_state`.
 
+With ``read_log=True`` (a card-counting session, :mod:`catanbot.colonist_log`) the prompt and the
+tool also ask for the visible game-log entries (the optional ``log`` field of the parse); by default
+the request is exactly the board / panel / hand transcription.
+
 The ``anthropic`` package is an optional dependency and is imported lazily;
 tests inject a fake client and never touch the network.  Nothing in this
 module prints: problems are either raised as :class:`RuntimeError` (no
@@ -142,8 +146,35 @@ def _hex_layout_text() -> str:
     return "\n".join(rows)
 
 
-def build_prompt() -> str:
-    """System prompt explaining Colonist.io conventions and catanbot's indexing."""
+#: Prompt section added with ``read_log=True``: transcribe the log panel into ``log``.
+LOG_PROMPT = """
+
+## Game log (card counting)
+Also transcribe the game log panel (the list of recent game events, newest at the bottom) into `log`:
+one object per visible log line, oldest first, exactly in the order shown. Card icons are resources:
+lumber = wood, brick, wool = sheep, grain = wheat, ore; a face-down card back is an unknown card (count
+it under "unknown"). Player names in the log are drawn in the player's colour: give `player` / `other`
+as that colour (the name as written only if the colour is unclear). Map the lines to kinds:
+- "X rolled [dice]" -> roll, value = the dice total
+- "X got [cards]" -> gain with cards; "X received starting resources [cards]" -> gain with setup: true
+- "X built a [road / settlement / city]" -> build with item; "X placed a ..." (setup) -> build, free: true
+- "X bought [development card]" -> buy_dev; "X used [card]" -> play_dev with item (knight,
+  road_building, year_of_plenty, monopoly, victory_point)
+- "X stole N [resource]" right after a Monopoly -> monopoly with resource and count (the total)
+- "X took from bank [cards]" (Year of Plenty) -> year_of_plenty with cards
+- "X gave bank [cards] and took [cards]" -> bank_trade: cards = given, get = received
+- "X traded [cards] for [cards] with Y" -> player_trade: cards = what X gave, get = what X got, other = Y
+- "X wants to give [cards] for [cards]" -> offer (cards = offered, get = asked); a counter-offer -> counter
+- "X stole [card] from Y" -> steal, other = Y, cards = the card if its face is shown, else {"unknown": 1}
+- "X discarded [cards]" -> discard with cards, or count when only a number is shown
+- "X moved Robber ..." -> robber; chat, awards and other messages -> other
+Put the line as displayed (icons as resource words) in `text`. Never invent lines; if the log panel is
+not visible, omit `log`."""
+
+
+def build_prompt(read_log: bool = False) -> str:
+    """System prompt explaining Colonist.io conventions and catanbot's indexing (``read_log``:
+    plus :data:`LOG_PROMPT`, the game-log transcription)."""
     layout = _hex_layout_text()
     colors = ", ".join(PLAYER_COLORS)
     resources = ", ".join(B.RESOURCE_NAMES[:5])
@@ -213,7 +244,7 @@ Fill the `confidence` object with a number from 0 to 1 for each of:
 
 Work carefully: first locate the five rows of hexes, then read the terrain and number of each
 hex in order, then the robber, then walk around the coast for ports, then every piece, then the
-player panel and the hand bar. Finally call `{TOOL_NAME}` exactly once."""
+player panel and the hand bar. Finally call `{TOOL_NAME}` exactly once.""" + (LOG_PROMPT if read_log else "")
 
 
 def _hex_ref_schema(kind: str, what: str) -> Dict[str, Any]:
@@ -236,16 +267,19 @@ def _hex_ref_schema(kind: str, what: str) -> Dict[str, Any]:
     }
 
 
-def build_tool_schema() -> Dict[str, Any]:
+def build_tool_schema(read_log: bool = False) -> Dict[str, Any]:
     """``input_schema`` of the report tool: :data:`PARSE_SCHEMA` with hex-relative pieces.
 
     Buildings become ``{hex, corner}``, roads and ports ``{hex, side}``, and a
     ``confidence`` object is added.  Draft-specific keys (``$schema``,
-    ``title``) are dropped because the API expects a plain object schema.
+    ``title``) are dropped because the API expects a plain object schema.  The optional
+    game ``log`` is only part of it with ``read_log`` (card counting).
     """
     schema = copy.deepcopy(S.PARSE_SCHEMA)
     schema.pop("$schema", None)
     schema.pop("title", None)
+    if not read_log:
+        schema["properties"].pop("log", None)
     schema["description"] = ("Everything visible on a Colonist.io game screenshot. Hexes 0..18 in "
                              "row order; buildings / roads / ports relative to a hex (see the system prompt).")
     props = schema["properties"]
@@ -280,14 +314,15 @@ def build_tool_schema() -> Dict[str, Any]:
     return schema
 
 
-def build_tool() -> Dict[str, Any]:
+def build_tool(read_log: bool = False) -> Dict[str, Any]:
     """Tool definition passed in ``tools=[...]`` to the Messages API."""
     return {
         "name": TOOL_NAME,
         "description": ("Report everything visible on the Colonist.io screenshot: the 19 hexes in "
                         "catanbot order, robber, ports, every player's pieces (relative to hexes), "
-                        "panel counters, the screen owner's hand and per-item confidence."),
-        "input_schema": build_tool_schema(),
+                        "panel counters, the screen owner's hand and per-item confidence."
+                        + (" Also the visible game-log entries." if read_log else "")),
+        "input_schema": build_tool_schema(read_log),
     }
 
 
@@ -599,7 +634,8 @@ def _call_model(client: Any, request: Dict[str, Any], forced: bool) -> Any:
 # ---------------------------------------------------------------------------
 def parse_with_claude(path_or_image: _ImageLike, me: Optional[str] = None, model: Optional[str] = None,
                       api_key: Optional[str] = None, client: Any = None, *, max_tokens: int = 16000,
-                      effort: Optional[str] = None, extra_instructions: Optional[str] = None) -> ParseResult:
+                      effort: Optional[str] = None, extra_instructions: Optional[str] = None,
+                      read_log: bool = False) -> ParseResult:
     """Parse a Colonist.io screenshot with Claude vision.
 
     Parameters
@@ -620,6 +656,9 @@ def parse_with_claude(path_or_image: _ImageLike, me: Optional[str] = None, model
         Passed to the API (``effort`` -> ``output_config.effort`` when given).
     extra_instructions:
         Optional text appended to the user message (e.g. "I am blue").
+    read_log:
+        Also transcribe the visible game log into ``parsed["log"]`` (card counting; normalised by
+        :func:`catanbot.colonist_log.events_from_json`, problems become warnings).
 
     Raises
     ------
@@ -640,14 +679,16 @@ def parse_with_claude(path_or_image: _ImageLike, me: Optional[str] = None, model
                  "Read every hex, number token, the robber, ports, all pieces and the player panel.")
     if me:
         user_text += f" The screen owner ('me') is the {me} player."
+    if read_log:
+        user_text += " Also transcribe every visible game-log line into `log`."
     if extra_instructions:
         user_text += " " + extra_instructions.strip()
     forced = _supports_forced_tool_choice(model)
     request: Dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
-        "system": build_prompt(),
-        "tools": [build_tool()],
+        "system": build_prompt(read_log) if read_log else build_prompt(),
+        "tools": [build_tool(read_log) if read_log else build_tool()],
         "tool_choice": ({"type": "tool", "name": TOOL_NAME} if forced
                         else {"type": "auto", "disable_parallel_tool_use": True}),
         "messages": [{
@@ -703,6 +744,15 @@ def parse_with_claude(path_or_image: _ImageLike, me: Optional[str] = None, model
         warnings.append(f"model reported me={model_me!r} which is not one of the detected players {colors}; "
                         f"assuming {colors[0]!r}")
         parsed["me"] = colors[0]
+    if read_log:
+        from ..colonist_log import events_from_json
+        if parsed.get("log") is None:
+            warnings.append("model did not transcribe the game log (not visible?): card counting only "
+                            "reconciles the hand sizes")
+        else:
+            events, log_warnings = events_from_json(parsed.get("log"))
+            parsed["log"] = [e.to_dict() for e in events]
+            warnings.extend("log: " + w for w in log_warnings)
     warnings.extend(S.validate(parsed))
     state = S.parsed_to_state(parsed)
     debug: Dict[str, Any] = {

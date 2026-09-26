@@ -615,12 +615,13 @@ def _compositions(k: int, w: Sequence[float], top: Optional[int] = None) -> List
 
 
 def _best_first(dists: Sequence[Sequence[Tuple[Tuple[int, ...], float]]], cap: int, accept,
-                max_scan: int) -> List[Tuple[Tuple[Tuple[int, ...], ...], float]]:
+                max_scan: int) -> Tuple[List[Tuple[Tuple[Tuple[int, ...], ...], float]], bool]:
     """The ``cap`` most likely joint hands of independent per-player distributions (each sorted,
-    most likely first) that pass ``accept`` - best-first over the product, at most ``max_scan``."""
+    most likely first) that pass ``accept`` - best-first over the product, at most ``max_scan``
+    examined.  Returns ``(joint hands with their probabilities, whether the product was exhausted)``."""
     k = len(dists)
     if any(not d for d in dists):
-        return []
+        return [], True
 
     def prob(idx):
         return math.prod(dists[i][idx[i]][1] for i in range(k))
@@ -642,7 +643,7 @@ def _best_first(dists: Sequence[Sequence[Tuple[Tuple[int, ...], float]]], cap: i
                 if nxt not in seen:
                     seen.add(nxt)
                     heapq.heappush(heap, (-prob(nxt), nxt))
-    return out
+    return out, not heap
 
 
 def _counter_to_dict(c: CardCounter) -> Dict[str, Any]:
@@ -763,9 +764,21 @@ class ColonistLogTracker(PublicBelief):
         for i, nm in enumerate(names):
             k = _norm(nm)
             if k and i < self.n and (k not in self.aliases or k == self.colors[i]):
+                if k not in self.aliases:
+                    self._rekey_tail(k, i)
                 self.aliases[k] = i
                 if k != self.colors[i]:
                     self.names[i] = str(nm)
+
+    def _rekey_tail(self, name: str, seat: int) -> None:
+        """A name learned late (``--fix COLOUR.name=``): the consumed entries that named it as an
+        unknown player get its seat, so the next windows still align with them."""
+        unknown = "?" + name
+        for idx, key in enumerate(getattr(self, "tail", ())):
+            parts = key.split("|")
+            if unknown in parts[1:3]:
+                parts[1:3] = [str(seat) if x == unknown else x for x in parts[1:3]]
+                self.tail[idx] = "|".join(parts)
 
     def seat_of(self, who: Optional[str]) -> Optional[int]:
         """Seat of a player as written in the log (name, colour, "you"); ``None`` if unknown."""
@@ -956,7 +969,7 @@ class ColonistLogTracker(PublicBelief):
     def _inside_tail(self, keys: List[str]) -> bool:
         tail = self.tail
         L = len(keys)
-        return any(tail[i:i + L] == keys for i in range(len(tail) - L + 1))
+        return any(tail[i] == keys[0] and tail[i:i + L] == keys for i in range(len(tail) - L + 1))
 
     def _net(self, events: Sequence[LogEvent]) -> Tuple[List[int], set, Optional[List[int]]]:
         """Hand-size change per seat over ``events`` (seats whose change is not readable in
@@ -990,7 +1003,9 @@ class ColonistLogTracker(PublicBelief):
                     setup = False
                 free = [0] * n
                 continue
-            if p is None:
+            if p is None or (ev.other is not None and o is None):
+                for j in range(n):               # an unknown player: whose hand changed is not known
+                    lost(j)
                 continue
             if k == "gain":
                 if ev.cards is not None:
@@ -1163,11 +1178,11 @@ class ColonistLogTracker(PublicBelief):
             d_bank = self._bank_net(events[s:])
             if d_bank is not None and min(self._window_bank[r] - d_bank[r] for r in range(5)) >= 0:
                 bank = [self._window_bank[r] - d_bank[r] for r in range(5)]
-        self.counter = self._prior(sizes, my_start, bank)
-        self.estimated = [j != self.me and sizes[j] > 0 for j in range(n)]
+        self.counter, complete = self._prior(sizes, my_start, bank)
+        self.estimated = [not complete and j != self.me and sizes[j] > 0 for j in range(n)]
         for j in range(n):
-            if self.estimated[j]:
-                self._mark(j, "the session started mid-game")
+            if j != self.me and sizes[j] > 0:
+                self._mark(j, "the mid-game start")
         # the entries before the stretch happened before the prior: consumed, not applied
         for key in keys[:s]:
             self.tail.append(key)
@@ -1175,12 +1190,17 @@ class ColonistLogTracker(PublicBelief):
         self._apply_all(events[s:], keys[s:], target)
 
     def _prior(self, sizes: Sequence[int], my_hand: Optional[Sequence[int]],
-               bank: Optional[Sequence[int]] = None) -> CardCounter:
+               bank: Optional[Sequence[int]] = None) -> Tuple[CardCounter, bool]:
         """Joint hand hypotheses for a mid-game start: every opponent's ``sizes[j]`` cards drawn
         from its production-weighted prior (:func:`catanbot.counting.hand_prior_weights`), the most
         likely combinations whose per-resource totals the 19-card decks allow.  With the ``bank``
-        (at that point) the totals are exact: the last opponent's hand is what the others leave."""
+        (at that point) the totals are exact: the last opponent's hand is what the others leave.
+        Returns ``(counter, complete)``: ``complete`` when no possible joint hand was cut (small
+        hands, or a bank that leaves few combinations) - the count is then exact Bayesian from here
+        on, else the hands stay "estimated"."""
         n = self.n
+        complete = all(math.comb(sizes[j] + 4, 4) <= self.PRIOR_TOP for j in range(n)
+                       if j != self.me or my_hand is None)
         dists: List[List[Tuple[Tuple[int, ...], float]]] = []
         weights: Dict[int, List[float]] = {}
         for j in range(n):
@@ -1205,12 +1225,14 @@ class ColonistLogTracker(PublicBelief):
                 h = [cols[r] - sum(x[r] for x in part) for r in range(5)]
                 return tuple(h) if min(h) >= 0 and sum(h) == sizes[last] else None
 
-            for part, w in _best_first([dists[j] for j in rest], 4 * cap, lambda part: forced(part) is not None,
-                                       max_scan=50 * cap):
+            found, exhausted = _best_first([dists[j] for j in rest], 4 * cap, lambda part: forced(part) is not None,
+                                           max_scan=50 * cap)
+            for part, w in found:
                 h = forced(part)
                 full = list(part)
                 full.insert(last, h)
                 joint.append((tuple(full), w * _multinomial(h, [x / tot_last for x in w_last])))
+            complete = complete and exhausted and len(joint) <= cap
             joint = sorted(joint, key=lambda jw: -jw[1])[:cap]
             if not joint:
                 self._warn("the bank on screen fits no estimate of the hands (a misread hand size or bank?): "
@@ -1220,7 +1242,8 @@ class ColonistLogTracker(PublicBelief):
             return all(sum(h[r] for h in joint) <= B.BANK_PER_RESOURCE for r in range(5))
 
         if not joint:
-            joint = _best_first(dists, cap, fits, max_scan=50 * self.PRIOR_JOINT)
+            joint, exhausted = _best_first(dists, cap, fits, max_scan=50 * self.PRIOR_JOINT)
+            complete = complete and exhausted
         c = CardCounter([[0] * 5] * n, max_hypotheses=self.max_hypotheses)
         joint = [(jt, w) for jt, w in joint if w > 0]
         if joint:
@@ -1228,9 +1251,10 @@ class ColonistLogTracker(PublicBelief):
             c.hyps = {jt: w / tot for jt, w in joint}
         else:   # nothing fits the decks (a misread size): the single most likely hand per player
             c.hyps = {tuple(d[0][0] for d in dists): 1.0}
+            complete = False
         c.size = [int(x) for x in sizes]
         c._marg = None
-        return c
+        return c, complete
 
     # --- the events -------------------------------------------------------------------
     def _seat(self, who: Optional[str], ev: LogEvent) -> Optional[int]:

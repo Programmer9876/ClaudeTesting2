@@ -60,6 +60,8 @@ catanbot/
   danger.py       distance-to-win model per player (win path, missing cards, rolls, turns)
   devcards.py     dev card buying / playing policy, monopoly & YOP timing
   counting.py     card counting: bank, dev deck, opponent hand beliefs
+  public_belief.py  what a card counter knows -> public / canonical / sampled views (shared by the trackers)
+  colonist_log.py   card counting from Colonist's game log: event schema, phrase table, session tracker
   inference.py    determinization of hidden information (sample full states)
   features.py     GameState -> numpy feature vector (perspective of a player)
   model.py        numpy MLP value network (train / predict / save / load)
@@ -685,3 +687,59 @@ Strategy and protocol: docs/STRATEGY.md "Counter-offers and out-of-turn trade an
   (20818e2; checked offline on six full games - depth 1 and 2, trade-heavy, heuristic, 3-player - and
   pinned in the tests on two short ones), with the new knobs spelled out too, and a default game
   never enters the counter code (every new function monkeypatched to raise).
+
+## 15. Card counting from the Colonist log (advisor `--session` / `--game-log`; off by default)
+
+User guide: docs/USAGE.md "Card counting from the game log"; code `catanbot/colonist_log.py`,
+`catanbot/public_belief.py`; tests `tests/test_colonist_log.py`.
+
+* **One belief, two front ends.**  `public_belief.PublicBelief` holds what a card counter hands the
+  bot - `public_view` (opponents `hand_known=False` / `dev_known=False` with exact sizes, the deck as
+  the public pool's expectation), `canonical_view`, `determinize` (a joint hypothesis of the
+  `CardCounter`, development cards dealt from the public pool, no opponent already holding a winning
+  number of VP cards) and the belief queries.  It was moved verbatim out of
+  `bench/public_info.PublicInfoTracker` (the benchmarks' `--info counted` mode, catanatron's action
+  log), which now derives from it (`new_devs_unplayable = API_33`), and
+  `colonist_log.ColonistLogTracker` derives from it for the advisor (Colonist's log).  Only the event
+  source differs.
+* **Events.**  `LogEvent` (kinds `EVENT_KINDS`; the JSON form is `vision.schema.LOG_ENTRY_SCHEMA`, the
+  optional `log` field of a parsed screenshot) come from pasted text through the ordered regex table
+  `PHRASES` + the card notation of `parse_cards`, or from the Claude-vision parser
+  (`parse_with_claude(read_log=True)` adds `LOG_PROMPT` and the `log` property; the default request
+  is byte-identical to before).  Players are strings, mapped to seats by the tracker (colour, name,
+  "you"; names learned from the screenshot and `--fix COLOUR.name=`).  Unknown lines and unreadable
+  cards are reported, never silently dropped.
+* **Windows and alignment.**  Each call brings windows (the screenshot's log, then the text).  The
+  tracker keeps the keys of the consumed card-relevant entries (`tail`, 5000); a window's new part
+  starts after the longest run where its head equals the tail's end (or where the whole tail
+  occurs in it: a re-pasted full log); candidates whose net hand-size change disagrees with the
+  screenshot are skipped (repeated lines).  No overlap: counted whole with a gap warning; a window
+  inside the tail: nothing.
+* **Start.**  A first window with setup placements / starting resources before any roll: every
+  hand starts empty (exact).  Otherwise the hands before the window's last stretch of fully
+  readable entries start from a production-weighted prior (`counting.hand_prior_weights`; the most
+  likely per-player hands, best-first joint combinations, conditioned on the bank when it is
+  visible) and the stretch is applied; hands stay `estimated` unless the prior enumerated every
+  possible joint hand.  A payment no estimated hypothesis can make re-draws the estimate (swaps
+  other prior cards for the missing ones) instead of blaming the log.
+* **Events on the counter.**  Public changes -> `observe_delta`; a hidden steal -> `observe_steal`;
+  a 7's hidden discards are deferred and resolved jointly with `observe_discards` and the bank right
+  after them (the screenshot's bank minus the public bank changes of the later entries) - Colonist's
+  simultaneous discards, as in `PublicInfoTracker`; Monopoly with only the total -> the per-victim
+  split whose hand sizes reach the screenshot's; offers / counters -> `observe_offer`.  A payment,
+  seen steal or shown discard no hypothesis allows is repaired with the smallest unrecorded gain;
+  after the window, `reconcile` takes our hand from the screen, branches a hand-size difference in as
+  unknown cards (production prior) or out like a hidden discard, filters by the bank when visible,
+  and takes the development-card counts from the screen (played types from the log, knights also
+  from the screen).  Everything repaired is reported, and only a Monopoly whose take no hypothesis
+  allows restarts the counter from its marginals (`CardCounter._reset`, reported); the other repairs
+  keep the uncertainty.
+* **Advisor.**  `cli.card_count_tracker` (only with `--session` / `--game-log`) updates the tracker
+  on the position as given, `run_search(..., sampler=...)` draws the `--samples` determinizations
+  from `tracker.determinize(tracker.public_view(state))` (the bank as what the sampled hands leave
+  unless visible), and `advice["card_count"]` / `report["card_count"]` print the section.
+* **Invariant (tested).**  Without the two options the advisor's text and JSON output are unchanged
+  (checked against the pre-change output; the tests monkeypatch the tracker to raise) and the Claude
+  request is byte-identical.  On engine games rendered by `LogRenderer` and fed in overlapping windows,
+  the true hands are always among the hypotheses and every hand no hidden steal / discard touched is
+  exact; with every hidden card revealed the count is exact throughout.
