@@ -4,6 +4,52 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 05:00 UTC - why our bot goes city-first (and the 4:1 habit)
+
+The user asked why the bot builds cities first, while strong humans expand
+with roads for resource diversity and so avoid bank trades.
+
+**Measured in the proof games** (T1, T2, R1; openings from 400 T1 games):
+
+| | our bot | Catanatron's bots |
+|---|---|---|
+| opening production, wheat + ore | 11.4 pips (wheat 6.3, ore 5.1) | 7.3 |
+| opening production, wood + brick | 6.8 | 8.1 |
+| opening production, sheep | 2.6 | 4.6 |
+| distinct resources produced after setup | 3.85 | 4.67 |
+| first settlement after setup, median round | 12 | 7-9 |
+| first city, median round (T1 / T2) | 8-9 | 11-13 |
+| settles before its first city | 35-41 % of games | 56-62 % |
+| extra settlements per game | 1.6 | 2.1 |
+| cities per game (T1) | 1.9 | 1.3 |
+
+So the bot plays an ore/wheat city strategy: few resource types, few
+settlements, and surplus wheat and ore traded 4:1 for wood, brick and sheep.
+That is where the 75-78 % 4:1 share and the low port share come from.
+
+**Why the code does this:**
+- Resource weights favour wheat and ore (`placement.RESOURCE_DEMAND`: 1.25 /
+  1.2 against 1.0 for wood and brick and 0.9 for sheep).
+- The search looks one turn ahead, so a road only earns the small reach
+  credit in the static value: 0.6 per spot buildable now, and 0.12 x the
+  best reachable spot / (1 + 0.9 x distance), about 0.6-0.9 points per
+  road.  A city earns its +1 VP at once.
+- Diversity earns 0.4 per resource type produced.
+
+It beats Catanatron, and ore/wheat cities is a real human strategy.  But
+here it is the default on every board, not a choice made per board, and
+against people who race for spots it may leak.
+
+**Test** (ports area, docs/ABLATIONS.md policy): the existing knobs first.
+- The `pips_diversity` and `standin_book` opening policies against the
+  setup-pick control.
+- `placement.RESOURCE_DEMAND` flat, and leaning to wood and brick.
+- Then a stronger multi-turn settlement-plan credit for roads, still to be
+  built.
+
+Each is read both by win rate against Catanatron and by the mechanism:
+diversity, round of the first settlement, 4:1 share, ports.
+
 ## 2026-09-26 04:30 UTC - strength proof complete: all four claims PASS, ready for supervised human testing
 
 T7-T11 finished at 04:10 UTC.  With T1-T6 and R1-R2 that is 7,600 games,
