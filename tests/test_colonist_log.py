@@ -673,3 +673,41 @@ def test_analyze_with_session_asks_the_llm_for_the_log(tmp_path, capsys, monkeyp
     assert cli.main(["analyze", str(img), "--parser", "llm"] + ARGS) == 0
     assert "Card count" not in capsys.readouterr().out
     assert calls == [True, False]
+
+
+# Colonist.io's own wordings, as an open-source Colonist log tracker (glasperfan/explorer) matches them:
+# colons after the verbs, card icons, "stole all of" for a Monopoly (no total), discards with their cards.
+COLONIST_WORDINGS = [
+    ("Bob got: 1 wood, 2 ore", dict(kind="gain", cards=[1, 0, 0, 0, 2])),
+    ("Bob gave bank: 4 wood and took 1 ore", dict(kind="bank_trade", cards=[4, 0, 0, 0, 0], get=[0, 0, 0, 0, 1])),
+    ("Bob wants to give: 1 wood for: 1 ore", dict(kind="offer", cards=[1, 0, 0, 0, 0], get=[0, 0, 0, 0, 1])),
+    ("Bob stole: 1 wood from: you", dict(kind="steal", cards=[1, 0, 0, 0, 0], other="you")),
+    ("Bob stole a card from: Carol", dict(kind="steal", cards=None, other="Carol")),
+    ("Bob discarded 2 wood, 2 ore", dict(kind="discard", cards=[2, 0, 0, 0, 2])),
+    ("Bob stole all of: 1 ore", dict(kind="monopoly", count=None, resource=B.ORE)),
+    ("Bob stole all of wool", dict(kind="monopoly", count=None, resource=B.SHEEP)),
+    ("Bob stole 5 ore", dict(kind="monopoly", count=5, resource=B.ORE)),
+    ("Giving out starting resources", dict(kind="ignored")),
+    ("Bob's turn to place", dict(kind="ignored")),
+]
+
+
+@pytest.mark.parametrize("line,want", COLONIST_WORDINGS)
+def test_colonist_wordings(line, want):
+    ev = L.parse_log_line(line)
+    for k, v in want.items():
+        assert getattr(ev, k) == v, (line, k, getattr(ev, k))
+    assert not ev.problem
+
+
+def test_monopoly_without_a_total_is_split_by_the_hand_sizes():
+    st = small_state([2, 3, 3], [0, 1, 0, 1, 0])
+    tr = L.ColonistLogTracker.for_state(st, 0)
+    tr.update([L.parse_log_text(SETUP)], st)
+    assert tr.counter.most_likely() == ((0, 1, 0, 1, 0), (0, 0, 2, 0, 1), (1, 0, 0, 1, 1))
+    # Colonist writes "stole all of [ore]" without the total: Carol's one ore moves to Bob
+    more = SETUP + "\nBob rolled 3 4\nBob used Monopoly\nBob stole all of: 1 ore"
+    st = small_state([2, 4, 2], [0, 1, 0, 1, 0])
+    tr.update([L.parse_log_text(more)], st)
+    assert tr.counter.num_hypotheses == 1 and not tr.warnings, tr.warnings
+    assert tr.counter.most_likely() == ((0, 1, 0, 1, 0), (0, 0, 2, 0, 2), (1, 0, 0, 1, 0))

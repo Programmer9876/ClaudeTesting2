@@ -288,6 +288,9 @@ PHRASES: Tuple[Phrase, ...] = (
     Phrase("play_dev", r"{A} (?:used|played) (?:an? |the )?{DEV}(?: card)?", "Bob used Knight"),
     Phrase("monopoly", r"{A} (?:stole|monopolized|monopolised)(?: all)? {N} {RES}(?: cards?)?"
                        r"(?: from (?:everyone|everybody|all players|all))?", "Bob stole 5 ore"),
+    # Colonist's own wording: "Bob stole all of: [ore card]" (no total; the tracker infers the split from the
+    # hand sizes).  The card icon reads as "1 ore", so a lone 1 before the resource is the icon, not a total.
+    Phrase("monopoly", r"{A} stole all of:?(?: 1)? {RES}(?: cards?)?", "Bob stole all of ore"),
     # --- robber --------------------------------------------------------------------------
     Phrase("steal", r"{A} stole:? {CARDS} from:? {B}", "Carol stole a card from Bob"),
     Phrase("robber", r"{A} (?:moved|placed|put) (?:the )?robber{REST}", "Bob moved Robber to 6 wheat"),
@@ -313,6 +316,8 @@ PHRASES: Tuple[Phrase, ...] = (
     Phrase("ignored", r"{A} (?:accepted|rejected|declined|cancelled|canceled|withdrew)\b.*", "Bob rejected the trade"),
     Phrase("ignored", r"{A} (?:is selecting|is choosing|is placing|is discarding|joined|left|reconnected|"
                       r"disconnected)\b.*", "Bob is selecting a player to steal from"),
+    Phrase("ignored", r"giving out starting resources.*", "Giving out starting resources"),
+    Phrase("ignored", r"{A}(?:'s)? turn to (?:place|roll|build|move|discard|steal)\b.*", "Bob's turn to place"),
     # --- production and other gains ------------------------------------------------------------
     Phrase("gain", r"{A} (?:got|received|gets|receives):? {CARDS}", "Bob got 2 wood, 1 ore"),
     # --- builds and purchases --------------------------------------------------------------------
@@ -394,7 +399,7 @@ def _event_from_match(ph: Phrase, m: "re.Match[str]", line: str) -> LogEvent:
         if ev.item is None:
             ev.problem = "development card not readable"
     elif kind == "monopoly":
-        ev.count = int(g["n"])
+        ev.count = int(g["n"]) if g.get("n") else None       # "stole all of [ore]": the total is not shown
         r = resource_from_name(g.get("res"))
         if r is None or r == B.DESERT:
             r = _CARD_WORDS.get((g.get("res") or "").lower())
