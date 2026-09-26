@@ -17,7 +17,8 @@ Everything lives in `scripts/` and is test tooling, not a bot behaviour, so noth
 | `scripts/run_queue.py` | the queue: intake, scheduler, snapshots, chunks, ledger, `QUEUE.md` (named so because a `scripts/queue.py` would shadow the stdlib `queue` module) |
 | `scripts/seqtest.py` | verdict engine: boundary tables, designs, operating characteristics, CV estimator |
 | `scripts/mechanics.py` | per-game mechanism metrics from the action log (also `--proof DIR` base rates) |
-| `scripts/decision_shadow.py` | zero-game decision shadow (default vs candidates on the same positions) |
+| `scripts/decision_shadow.py` | zero-game decision shadow (default vs candidates on the same positions; `settle` class and port picks; `--py-shadow`) |
+| `scripts/port_gate.py` | the ports mechanism gate's pre-registered PASS rule over the gate cells' paired games (read-only) |
 | `scripts/queue_plan.json` | the plan: epoch-A rows, plus disabled rows for features not built yet |
 | `ablate_catanatron.py` flags | `--mech`, `--crn dice`, `--default-only`; all off by default, and arm keys are unchanged when off |
 
@@ -95,7 +96,7 @@ At null, a screen or knockout row falsely ADOPTs about 2.1% of the time and uses
 
 The mechanism readout (`--mech`, scripts/mechanics.py) is a secondary endpoint and never ADOPTs a row. Metrics:
 - **Diversification / expansion:** `setup_distinct`, `distinct_produced`, `first_settle_round`, `first_city_round`, `settle_before_city`, `roads_built`, `settlements_built`, `longest_road` (held at the end).
-- **Ports and bank:** `port_settled`, `share_4to1`, bank trades.
+- **Ports and bank:** `port_settled`, `share_4to1`, `cards_saved` (4 x cards received - cards given), bank trades.
 - **Robber, steals and cards:** robber on the leader, rolls with the robber on us, cards lost to blocks, `robber_income_share` (cards lost / (produced + lost)), steals, discards, Monopoly haul.
 - **Knights and dev cards:** `knights_played`, `knights_held_end`, `largest_army` (held at the end), dev cards bought and held.
 
@@ -241,11 +242,35 @@ The enabled rows are the existing campaign rows, re-expressed:
   started before step 3 ignores that list and SHELVEs them at intake: restart it after the bump.  acq.progress is disabled (it failed its Stage 0 audit) and the (A)-only breadth fallback is not
   triggered (injected offers were accepted).  `acq_flow_fit` is a zero-game command row run from the working tree.
 - **diversification:** openings (pips_diversity, standin_book and the setup_pick control) vs value and vf, and flat resource demand, with the milder registry vector as its fallback. The port gap is an expansion / diversity gap. Disabled until built: `expansion_reach_credit`, `ports_conversion_cost` (conv=1) and the `div_lr_bundle`.
-- **ports (port access only):** the port gate cells, the best-cell row and spot_want, all disabled until built; SPOT_LEADER is deferred to human testing.
+- **ports (port access only; step 4, epoch B2 after `--bump-code --areas ports`):** the mechanism gate (next section)
+  and one best-cell screen per cell behind it; `ports_spot_want@value` stays disabled (step 7, after winpaths Stage 5)
+  and SPOT_LEADER is deferred to human testing.
 - **robber:** a 40-game zero-game shadow that gates the prior-only rows, plus the knockouts and new-direction rows.
 - **politics:** four vrule rows and two 1,200-game self-play screens, all fixed-N, in one politics tier.
 - **other:** search vs heuristic (estimates), depth 2, the cheaper-search knockouts, and win-path rows gated by their own shadow.
 - **tier-3 AlphaBeta confirmations:** gated automatically.
+
+### Ports gate (step 4)
+
+The design's one cheap mechanism gate (docs/PRIORITY_PLAN.md "Ports"), all in area ports, run in this order:
+
+| row | what |
+|---|---|
+| `ports_gate_f1@vf` | F1 `placement.PORT_MODEL=1`, 300 seeds vs 3.2.1 vf, Python evaluator (`estimate`, tier `smoke`) |
+| `ports_gate_f2@vf` | F2 P3' (`heuristic.PORT_STATIC_GENERIC=0.8` + `placement.PORT_GENERIC_ONCE=1`), same default arm |
+| `ports_gate_flow@vf` | the flow provider (`ports.FLOW_KAPPA`), C++ evaluator, its own default arm |
+| `ports_gate_mode3_trigger` | command: PASS when F1 raised cards saved (> 2 se) but failed the settlement guard |
+| `ports_gate_f1_mode3@vf` | the milder F1 mode 3 (`PORT_MODEL=3`), only after the trigger PASSes |
+| `ports_gate` | command (`scripts/port_gate.py`): PASS when a cell passes the pre-registered rule |
+| `ports_gate_pick_<cell>` | command: PASS for the passing cell with the largest gain in cards saved |
+| `ports_best_<cell>@vf` | the one 2,000-seed screen (fresh seeds 300..), only after its pick PASSes (in `screen_once`) |
+
+Pre-registered PASS: cards saved vs 4:1 (`cards_saved` = 4 x cards received - cards given; a `mech` metric) up by at
+least 1.1 a game and settlements a game not lower by 0.15 or more, with at least 90 % of the 300 seeds paired.  The
+milder fallback and the best-cell choice are command rows because the built-in `milder` rule needs a REJECT / SHELVE
+verdict, which an estimate row never gives, and `after` conditions read only a verdict's top-level numbers.  A gate
+FAIL (the expected result) leaves every downstream row NOT TRIGGERED: the port valuation line is shelved with its
+knobs registered.
 
 Removed: `t2_counted_info` (the finished proof already measured counted vs full). Its numbers are the static counting headroom.
 
@@ -255,4 +280,4 @@ Rows of features not built yet are present with `enabled: false` and a `requires
 - about 32 CPU-h at null for the unconditional epoch-A rows (about 10.6 h wall on 3 cores);
 - about 30 CPU-h more for conditional rows at their caps (tier-3 confirmations, the milder demand vector).
 
-Tests: `tests/test_seqtest.py`, `tests/test_queue.py`, `tests/test_mechanics.py`, `tests/test_decision_shadow.py`. The golden files are in `tests/data/`. After a plan edit, regenerate `queue_explain_golden.txt` with `python3 -c "import tests.test_queue as t; t.write_explain_golden()"`.
+Tests: `tests/test_seqtest.py`, `tests/test_queue.py`, `tests/test_mechanics.py`, `tests/test_decision_shadow.py`, `tests/test_ports.py` (port_gate.py). The golden files are in `tests/data/`. After a plan edit, regenerate `queue_explain_golden.txt` with `python3 -c "import tests.test_queue as t; t.write_explain_golden()"`.
