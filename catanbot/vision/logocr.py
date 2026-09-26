@@ -332,6 +332,14 @@ def _assemble(lay: LL.PanelLayout, entry: LL.Entry, readings: Dict[int, D.RunRea
     return text.strip(), float(conf), dbg, notes
 
 
+def _symbolic_key(text: str, rows: int) -> str:
+    """Public entry key: what the entry shows (its canonical reading) and on how many rows - not its
+    pixels, so noise, JPEG blocks and scrolling do not change it; entries share a key only when they
+    read the same (the pixel hash stays the cache key)."""
+    norm = re.sub(r"\s+", " ", text.strip())
+    return hashlib.blake2b(f"{norm}|{rows}".encode(), digest_size=12).hexdigest()
+
+
 def _parse_ok(text: str) -> Tuple[Any, bool]:
     ev = L.parse_log_line(text) if text else None
     ok = ev is not None and ev.kind != "unknown" and not ev.problem
@@ -492,7 +500,7 @@ def read_log_panel(img: Any, box: Optional[Sequence[float]] = None, profile: Opt
         y1 = max(b.y1 for b in e.bands) + iy0
         lines.append(LogLine(text=text, event=ev, confidence=round(c, 4),
                              box=(float(lay.inner[0]), float(y0), float(lay.inner[2]), float(y1)),
-                             key=e.key, partial=e.partial, tokens=list(dbg)))
+                             key=_symbolic_key(text, len(e.bands)), partial=e.partial, tokens=list(dbg)))
     full = [ln.confidence for ln in lines if not ln.partial]
     conf = float(np.mean(full)) if full else 0.0
     dbg = {"ms": round(1000 * (time.perf_counter() - t0), 2), "em": lay.em, "xh": lay.xh, "pitch": lay.pitch,
