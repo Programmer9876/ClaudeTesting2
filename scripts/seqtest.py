@@ -1002,6 +1002,49 @@ def cv_design_boundaries(D: float, p: float, n_max: int, m: int, looks: int = K_
     return ts, boundaries_general(ts, alpha, "obf")
 
 
+def decide_cv(st: "LookStats", x: Sequence[float], d: Sequence[float], pool_mean: float, pool_m: int,
+              design: str, k: int, n_max: int, d_prior: float, **kw) -> "Verdict":
+    """A look of a row declared ``estimator: cv``: FAILED / NOOP exactly as the paired engine; otherwise the CV
+    statistic theta against the pre-declared CV boundaries (information fractions from the row's D prior, the
+    pool's mean and size), with REJECT and the early SHELVE as in the paired screen."""
+    base = decide(st, design, k, n_max, **{a: b for a, b in kw.items() if a != "power_fn"})
+    if base.final and base.verdict in ("FAILED", "NOOP"):
+        return base
+    dz = design_of(design)
+    r = cv_stat(x, d, pool_mean, pool_m)
+    se = math.sqrt(max(r["var"], 1e-12))
+    theta = r["theta"]
+    z = theta / se
+    ts, bounds = cv_design_boundaries(d_prior, pool_mean, n_max, pool_m, dz.looks)
+    last = k >= len(bounds)
+    t = ts[k - 1]
+    p_stage = stagewise_p(k, z, bounds, ts)
+    flags = ["cv"] + ([] if last else ["stopped early"])
+    promise = (kw.get("promise_pp") or 0) / 100.0 or None
+
+    def out(what, reason):
+        v = _final(dz, what, reason, k, st, z, flags, p_stage)
+        v.delta, v.se = _r(theta), _r(se)
+        return v
+
+    if z >= bounds[k - 1]:
+        if promise is not None and theta < promise / 2.0:
+            flags.append("small")
+        return out("ADOPT", "")
+    if (theta - dz.delta_min) / se <= -dz.reject[k - 1]:
+        return out("REJECT", "worse" if z <= -Z95 else "futile")
+    thr = math.sqrt(t) * (bounds[-1] - Z_CP * math.sqrt(1.0 - t)) if 1 < k < len(bounds) else None
+    if dz.early_shelve and thr is not None and z < thr:
+        return out("SHELVE", ("no gain" if theta <= 0 else "too small to prove") + f"; conditional power < {CP_FUTILITY:g}")
+    if last:
+        flags.remove("stopped early") if "stopped early" in flags else None
+        if promise is not None and theta + Z95 * se < promise:
+            flags.append("promise not met")
+        return out("SHELVE", ("no gain" if theta <= 0 else "too small to prove") + "; cap")
+    return Verdict(status="continue", look=k, pairs=st.ok, delta=_r(theta), se=_r(se), z=_r(z), p=_p(p_stage),
+                   design=dz.name, flags=["cv"], stats=st.summary())
+
+
 def simulate_cv(D: float, delta: float, p: float, m: int, n_max: int = 2000, rows: int = 2000, seed: int = 0,
                 paired: bool = False) -> Dict[str, float]:
     """ADOPT rate of the sequential CV screen (``paired=True``: the same data with the paired statistic and the

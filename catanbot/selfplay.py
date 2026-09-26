@@ -197,6 +197,8 @@ def make_bot(spec: str) -> Bot:
             paths_crowd=float(kw.get("paths_crowd", 1.0)),
             paths_priors=int(float(kw.get("paths_priors", 1))),
             paths_spots=int(float(kw.get("paths_spots", 0))),
+            # conversion cost through the leaf-correction hub (catanbot/conversion.py): off unless conv=1
+            conv=int(float(kw.get("conv", 0))),
             # counter-offers / out-of-turn trade analysis: off unless the spec says counter=1 / resp_la=1
             counters=int(float(kw.get("counter", 0))),
             counter_candidates=int(float(kw.get("counter_n", 2))),

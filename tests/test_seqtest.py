@@ -476,3 +476,25 @@ def test_expected_remaining_fixed_and_sequential():
     assert 0 < far <= 400
     assert SEQ.expected_remaining("screen", 400, 2000, z=4.0, look_done=1) < \
         SEQ.expected_remaining("screen", 400, 2000, z=0.8, look_done=1)
+
+
+def test_decide_cv_uses_pool_and_predeclared_boundaries():
+    import random as _r
+    rng = _r.Random(4)
+    n = 800
+    d = [1.0 if rng.random() < 0.3 else 0.0 for _ in range(n)]
+    x = []
+    for di in d:           # the candidate wins 12 pp more often when the default lost
+        u = rng.random()
+        x.append(0.0 if di else (1.0 if u < 0.40 else 0.0))
+    st = _look(n, plus=int(sum(1 for v in x if v > 0)), minus=0, diverged=int(sum(1 for v in x if v > 0)))
+    v = SEQ.decide_cv(st, x, d, 0.30, 8000, "screen", 2, 2000, 0.40)
+    assert v.verdict == "ADOPT" and "cv" in v.flags and v.z > SEQ.cv_design_boundaries(0.40, 0.30, 2000, 8000)[1][1]
+    # FAILED / NOOP pass through from the paired engine
+    bad = _look(n, plus=10, minus=10, codes=("a", "b"))
+    assert SEQ.decide_cv(bad, x, d, 0.30, 8000, "screen", 2, 2000, 0.40).label == "FAILED(code-mixed)"
+    # no effect: continue at look 1
+    x0 = [0.0] * 400
+    d0 = [1.0 if i % 3 == 0 else 0.0 for i in range(400)]
+    st0 = _look(400, known=400, diverged=40)
+    assert SEQ.decide_cv(st0, x0, d0, 0.33, 8000, "screen", 1, 2000, 0.40).status == "continue"

@@ -94,6 +94,10 @@ class SearchConfig:
     paths_crowd: float = 1.0        # crowding strength: scales the waste cost of fighting a crowded race (0 = none)
     paths_priors: int = 1           # with paths = 1: race-aware move-ordering nudges (dev buys, Longest Road roads)
     paths_spots: int = 0            # with paths = 1: rescale the settlement-reach terms by our chance at contested spots
+    # Leaf corrections through the hub (catanbot/corrections.py, docs/DESIGN.md section 16).  Off by default: with
+    # every provider field 0 the hub is never built (paths = 1 alone keeps winpaths.PathsEvaluator).  Budgeted for
+    # depth 1; at depth >= 2 an active hub makes _future_values take the Python path.  Never reaches C++.
+    conv: int = 0                   # 1 = conversion cost of our missing resources (catanbot/conversion.py)
     # Counter-offers and out-of-turn trade analysis (docs/STRATEGY.md "Counter-offers").  Off by default: with
     # counters = 0 COUNTER_TRADE is never a candidate (it only exists under the rules flag
     # GameState.allow_counters anyway) and with respond_lookahead = 0 an answer to an offer is valued exactly as
@@ -136,6 +140,11 @@ class _Node:
 
 _ROLL_ORDER = sorted(B.ROLL_PROB.items(), key=lambda kv: -kv[1])
 
+# SearchConfig fields whose leaf corrections need the hub (catanbot/corrections.py; CorrectionHub.for_search
+# builds their providers).  paths is not one of them: paths = 1 alone keeps winpaths.PathsEvaluator, and it joins
+# the hub as a provider only next to one of these.
+_HUB_FIELDS = ("conv",)
+
 # Node budget one leaf of the depth >= 3 lookahead needs for its reduced sub-search (``reduced_config``'s floor).
 # ``_future_values`` runs the sub-search for every leaf or for none (``REDUCED_SEARCH_MIN_NODES`` x leaves must be
 # left in ``max_nodes`` after the opponents' turns): a partial set, valued one turn deeper than the rest, would
@@ -169,7 +178,7 @@ def reduced_config(cfg: SearchConfig, depth: int, budget: int) -> SearchConfig:
                         opponent_proposals=0, dump_candidates=min(2, cfg.dump_candidates),
                         native_future=cfg.native_future, paths=cfg.paths, paths_w=cfg.paths_w,
                         paths_crowd=cfg.paths_crowd, paths_priors=cfg.paths_priors, paths_spots=cfg.paths_spots,
-                        counters=cfg.counters, counter_candidates=cfg.counter_candidates,
+                        conv=cfg.conv, counters=cfg.counters, counter_candidates=cfg.counter_candidates,
                         counter_aggr=cfg.counter_aggr, counter_margin=cfg.counter_margin,
                         respond_lookahead=cfg.respond_lookahead)
 
@@ -233,7 +242,8 @@ class Searcher:
         self._chain_next: Dict[Action, Action] = {}   # first step of an intermediary deal -> its second step
         self._arb_cache: Dict[tuple, list] = {}        # arbitrage deals per (hands, trades) within one search
         self._shift = 0.0            # mean(future - static) of the lookahead set, applied to static leaves
-        self._paths = None           # winpaths.PathsEvaluator of the current search (config.paths = 1 only)
+        self._paths = None           # winpaths.PathsEvaluator of the current search (config.paths = 1 alone)
+        self._corr = None            # corrections.CorrectionHub of the current search (a hub provider switched on)
         self._counter_rank: Dict[Action, int] = {}     # counters kept by _counter_filter (config.counters = 1)
         # Native lookahead (C++): the evaluator's twin handle, or None -> the Python _future_values below.
         self._native_ev = None
@@ -265,6 +275,7 @@ class Searcher:
         self._chain_next = {}
         self._arb_cache = {}
         self._paths = None
+        self._corr = None
         self._counter_rank = {}
         if self._native_ev is not None and _accel.evaluator_key(self.evaluator) != self._native_key:
             # The net's arrays were replaced (set_params / load): rebuild the native twin.
@@ -276,9 +287,13 @@ class Searcher:
         if len(legal) == 1 and legal[0][0] != A.ROLL:
             v = float(self._eval([state], [me])[0])
             return [ScoredAction(legal[0], v, self.explain(state, legal[0], me), [legal[0]], v)]
-        if cfg.paths and state.phase not in (PHASE_SETUP_SETTLEMENT, PHASE_SETUP_ROAD):
-            from . import winpaths   # lazy: nothing of it is imported or run with paths = 0
-            self._paths = winpaths.PathsEvaluator.for_search(self.evaluator, state, me, cfg)
+        if state.phase not in (PHASE_SETUP_SETTLEMENT, PHASE_SETUP_ROAD):
+            if any(getattr(cfg, f) for f in _HUB_FIELDS):
+                from . import corrections   # lazy: nothing of it is imported or run with every provider off
+                self._corr = corrections.CorrectionHub.for_search(self.evaluator, state, me, cfg)
+            elif cfg.paths:
+                from . import winpaths   # lazy: nothing of it is imported or run with paths = 0
+                self._paths = winpaths.PathsEvaluator.for_search(self.evaluator, state, me, cfg)
         root = _Node(state, 1.0, [])
         finished: List[_Node] = []
         frontier = [root]
@@ -311,6 +326,10 @@ class Searcher:
             if not new_nodes:
                 break
             vals = self._eval([n.state for n in new_nodes], [me] * len(new_nodes))
+            if self._corr is not None and self._corr.chance and cfg.depth == 1:
+                # Leaf-chance hook: a finished leaf may become a mixture of hub values (depth 1 only; at depth >= 2
+                # the simulated opponents' turns play such events out).
+                vals = self._corr.leaf_chance([n.state for n in new_nodes], [n.finished for n in new_nodes], me, vals)
             for n, v in zip(new_nodes, vals):
                 n.static = float(v)
             unfinished = [n for n in new_nodes if not n.finished]
@@ -363,9 +382,15 @@ class Searcher:
             return True
         return False
 
+    def _value_ev(self):
+        """The evaluator of every leaf-value site (``_eval``, ``_counter_filter``, the political options): the
+        correction hub or ``winpaths.PathsEvaluator`` of the current search when one is active, else the base."""
+        if self._corr is not None:
+            return self._corr
+        return self.evaluator if self._paths is None else self._paths
+
     def _eval(self, states: Sequence[GameState], players: Sequence[int]):
-        ev = self.evaluator if self._paths is None else self._paths
-        return ev.evaluate(list(states), list(players))
+        return self._value_ev().evaluate(list(states), list(players))
 
     def _apply(self, state: GameState, action: Action) -> GameState:
         self.nodes += 1
@@ -470,6 +495,8 @@ class Searcher:
                         priors[i] = max(priors[i], 62.0 - k)                     # plan bank trades sit at 60
         if self._paths is not None and cfg.paths_priors:
             priors = self._paths.ctx.adjust_priors(state, legal, priors)
+        elif self._corr is not None:
+            priors = self._corr.adjust_priors(state, legal, priors)   # providers' hooks (winpaths': paths_priors)
         if state.phase == PHASE_TRADE_RESPONSE and self._counter_rank:
             for i, a in enumerate(legal):          # our ranked counters (_counter_filter) are always expanded
                 k = self._counter_rank.get(a)
@@ -493,7 +520,7 @@ class Searcher:
         if not cfg.counters or cfg.counter_candidates <= 0:
             return rest
         from .counteroffers import rank_counters     # lazy: never imported while counters = 0
-        ev = self.evaluator if self._paths is None else self._paths
+        ev = self._value_ev()
         model = self.model if cfg.use_opponent_model else None
         try:
             ranked = rank_counters(state, me, counters, evaluator=ev, model=model, belief=self.belief,
@@ -567,7 +594,7 @@ class Searcher:
         if (state.phase == PHASE_MAIN and state.free_roads == 0
                 and any(a[0] == A.PROPOSE_TRADE for a in legal)):
             try:
-                ev = self.evaluator if self._paths is None else self._paths
+                ev = self._value_ev()
                 for opt in political_trade_options(state, me, ev, self.politics, model=self.model)[:2]:
                     a = opt["action"]
                     if a not in out:
@@ -851,7 +878,7 @@ class Searcher:
         # Common random numbers: the same roll sequences for every state.
         rng = random.Random(self._rng.random())
         seqs = [[rng.randint(1, 6) + rng.randint(1, 6) for _ in range(3 * 4)] for _ in range(n_samples)]
-        if self._native_ev is not None and self._paths is None and states:   # C++ cannot see the win-path term
+        if self._native_ev is not None and self._value_ev() is self.evaluator and states:   # C++ sees no correction
             out = self._native_future_values(states, me, depth, seqs)
             if out is not None:
                 return out

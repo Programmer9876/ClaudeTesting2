@@ -6,7 +6,6 @@ bank-depletion rule, setup yield, builds, trades, steals, discards, Monopoly, Ye
 """
 import glob
 import importlib.util
-import json
 import os
 import subprocess
 import sys

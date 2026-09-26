@@ -37,7 +37,6 @@ import copy
 import hashlib
 import importlib.util
 import json
-import math
 import os
 import re
 import resource
@@ -242,6 +241,11 @@ def is_aa(e: Dict[str, Any]) -> bool:
 
 
 def design_of(e: Dict[str, Any]) -> str:
+    kind = e.get("kind") or ("human" if e.get("route") == "human" else "catanatron")
+    if kind in ("command", "human"):
+        return "gate" if kind == "command" else "human"
+    if kind == "pool":
+        return "pool"
     if e.get("design"):
         return e["design"]
     if e.get("confirms"):
@@ -332,11 +336,12 @@ def lint(plan: Plan, e: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     name = e["name"]
     if e.get("area") not in AREAS:
         err.append(f"area must be one of {AREAS} (got {e.get('area')!r})")
-    if e["kind"] not in ("command", "human") and e.get("polarity") not in POLARITIES:
+    if e["kind"] not in ("command", "human", "pool") and e.get("polarity") not in POLARITIES:
         err.append(f"polarity must be one of {POLARITIES} (got {e.get('polarity')!r})")
     if not e.get("tier") and e["kind"] in ("catanatron", "selfplay"):
         warn.append(f"no tier: defaults to t{int(e['priority']) // 10} for the Holm family")
     if e.get("polarity") == "new" and e.get("promise_pp") is None and e.get("tier") != "smoke" \
+            and not e.get("bundle_of") \
             and e["kind"] in ("catanatron", "selfplay") and design_of(e) not in ("politics", "confirm"):
         err.append("a new row needs promise_pp (the effect it is expected to deliver, in pp)")
     if e.get("design") and e["design"] not in SEQ.DESIGNS:
@@ -384,6 +389,9 @@ def lint(plan: Plan, e: Dict[str, Any]) -> Tuple[List[str], List[str]]:
                 err.append("fallback ladders are at most 2 deep")
     if e.get("confirms") and plan.row(e["confirms"]) is None:
         err.append(f"confirms {e['confirms']!r}: no such row")
+    for m in e.get("bundle_of") or []:
+        if plan.row(m) is None:
+            err.append(f"bundle_of: no row {m!r}")
     if e.get("estimator") == "cv" and d_prior(e) < 0.15:
         warn.append("estimator cv on a low-divergence row gains nothing (variance ratio >= 0.92)")
     return err, warn
@@ -428,7 +436,11 @@ def intake(q: "Queue", e: Dict[str, Any], power_check: bool = True) -> Intake:
     if e.get("polarity") != "new" or it.design not in ("screen",) or e.get("tier") == "smoke" \
             or e["kind"] not in ("catanatron", "selfplay"):
         return it
-    promise = float(e["promise_pp"])
+    members = [q.plan.row(m) for m in e.get("bundle_of") or []]
+    members = [m for m in members if m is not None]
+    # a bundle row: promise = the sum of its members' promises, D = the largest member D (unless given)
+    promise = float(e["promise_pp"]) if e.get("promise_pp") is not None else \
+        sum(float(m.get("promise_pp") or 0.0) for m in members)
     area = e.get("area")
     if area == "counting" and e["kind"] == "catanatron":
         hr = headroom_upper_pp(q, "counting")
@@ -446,6 +458,8 @@ def intake(q: "Queue", e: Dict[str, Any], power_check: bool = True) -> Intake:
                 promise = cap
     it.promise = promise
     D = d_prior(e) if e["kind"] == "catanatron" else 1.0      # 2v2 self-play: almost every game is decided
+    if members and e.get("d_prior") is None and e["kind"] == "catanatron":
+        D = max([D] + [d_prior(m) for m in members])
     n_max = e["seeds"]["count"] if e["kind"] == "catanatron" else int(e.get("games") or e["seeds"]["count"])
     unit = 1.0 if e["kind"] == "catanatron" else 0.5
     it.d = D
@@ -851,7 +865,7 @@ def cpu_prior(e: Dict[str, Any]) -> float:
 
 def default_class(e: Dict[str, Any]) -> str:
     """Rows whose default arms are the same games (shared within an epoch)."""
-    if e["kind"] != "catanatron":
+    if e["kind"] not in ("catanatron", "pool"):
         return f"{e['kind']}:{e['name']}"
     def_spec = e.get("def_spec") or e.get("base_spec") or DEFAULT_SEARCH_SPEC
     return _jdump([e.get("interpreter"), e.get("opponent"), e.get("opponent_params"), e.get("trades") or "off",
@@ -1463,6 +1477,18 @@ class Queue:
             fail = self._cv_check(rs, st, idx, run)
             if fail:
                 return SEQ._final(SEQ.design_of(design), "FAILED", fail, j + 1, st, 0.0)
+            pool = self.pool_for(e)
+            if pool is not None:
+                xs, ds = [], []
+                for s in range(rs.base, rs.base + looks[j]):
+                    c, d = idx.pair(run, s)
+                    if c is not None and c.get("status") == "ok" and d.get("status") == "ok":
+                        xs.append(float(int(bool(c.get("won"))) - int(bool(d.get("won")))))
+                        ds.append(1.0 if d.get("won") else 0.0)
+                if len(xs) >= 3:
+                    return SEQ.decide_cv(st, xs, ds, float(pool["mean"]), int(pool["m"]), design, j + 1, rs.n_max,
+                                         d_prior(e), aa=is_aa(e), needs=needs_mode(e),
+                                         promise_pp=self._promise_for(rs) if e.get("polarity") == "new" else None)
         k = j + 1
         if design == "politics":
             k = 1
@@ -1984,7 +2010,12 @@ class Queue:
         area = rs.area
         kids = [r for r in self.rows.values() if r.e.get("parent") == rs.name]
         conf = [r for r in self.rows.values() if r.e.get("confirms") == rs.name]
+        if rs.status == "DEFERRED":
+            return "deferred to human testing (no games)"
         if rs.design == "politics" or (verdict == "SCREENED"):
+            if verdict is None:
+                return "politics: one fixed-N screen, " + ("running" if rs.status == "RUNNING" else
+                                                           rs.reason or "queued")
             if holm_p is None:
                 return "politics: label after the tier completes"
             lab = "SIGNIFICANT" if holm_p < 0.05 else "INCONCLUSIVE"
@@ -2065,7 +2096,7 @@ class Queue:
                 mtxt = "; ".join(f"{k} {m['diff']:+.2f}+-{(m.get('diff_se') or 0):.2f}" for k, m in mech.items()
                                  if m.get("diff") is not None)[:160]
                 label = v.get("label") or (rs.status if rs.status not in ("ELIGIBLE", "RUNNING") else
-                                           ("open" if c.looks_done else rs.status.lower()))
+                                           ("open" if c.looks_done else "queued"))
                 if v.get("flags"):
                     label += " [" + ", ".join(v["flags"]) + "]"
                 p = v.get("p") if v else last.get("p")
@@ -2170,7 +2201,9 @@ class Queue:
     # -- explain / simulate ---------------------------------------------------------------------------------------------
     def explain(self, simulate: bool = True) -> str:
         """The full order with CPU hours at the cap and at null, and the null verdict timeline per area."""
-        L = [f"Queue plan {self.plan.path} ({self.plan.sha}): {len(self.plan.rows)} rows; order = area (harness, "
+        shown = os.path.relpath(self.plan.path, ROOT) if os.path.abspath(self.plan.path).startswith(ROOT) \
+            else self.plan.path
+        L = [f"Queue plan {shown} ({self.plan.sha}): {len(self.plan.rows)} rows; order = area (harness, "
              "trades, ports, robber, counting, politics, other), headroom first, priority, plan order.",
              "CPU-s per game and arm from the design's priors (value 1.77, value+pyeval 5.5, trades 3.0, vf 1.15, "
              "vf+pyeval 3.3, alphabeta 23, counted 7.2 / 3.9, depth 2 x2.4, self-play 10.8 per game); default arms "
@@ -2194,7 +2227,7 @@ class Queue:
                                                                    e.get("after"))
             status = rs.status + (f": {rs.reason}" if rs.reason else "")
             D = d_prior(e) if e["kind"] == "catanatron" else (1.0 if e["kind"] == "selfplay" else float("nan"))
-            s_g = cpu_prior(e) if e["kind"] != "command" else float("nan")
+            s_g = cpu_prior(e) if e["kind"] in ("catanatron", "selfplay", "pool") else float("nan")
             counts = rs.status in ("ELIGIBLE", "RUNNING") or (rs.status == "WAITING" and not gated)
             if counts:
                 cum += null_h
@@ -2205,7 +2238,7 @@ class Queue:
             L.append(f"{i:>3} {rs.area:9} {rs.name[:34]:34} {e['kind']:10} {rs.design:9} "
                      f"{'' if D != D else f'{D:.2f}':>5} {n:>5} {len(rs.cands):>4} "
                      f"{'' if s_g != s_g else f'{s_g:.2f}':>5} {cap_h:>9.2f} {null_h:>10.2f} "
-                     f"{cum if counts else float('nan'):>8.2f}  {status[:90]}")
+                     f"{f'{cum:.2f}' if counts else '-':>8}  {status[:90]}")
         L.append("")
         L.append("Null verdict timeline per area (CPU-h if every enabled, unconditional row is null; wall-h at 3 "
                  "cores = CPU-h / 3):")

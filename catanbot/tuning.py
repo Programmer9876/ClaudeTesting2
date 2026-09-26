@@ -591,11 +591,28 @@ def paired_jobs(games: int, seed: int, num_players: int) -> List[Tuple[str, int]
     return [(seat_pattern(num_players, g), game_seed(seed, g)) for g in range(games)]
 
 
+# Per-seat event observers of self-play games (docs/PRIORITY_PLAN.md step 2, ``shared.seat_events``): name ->
+# ``factory(num_seats)``, an object with ``on_action(state, action, player)`` - called for every action before it
+# is applied (the state is mutated in place afterwards, so it must not be kept) - and ``result()`` -> a picklable,
+# JSON-able value (per-seat lists by convention).  Registered by the modules that own the metrics (robber and trade
+# counters, knight-kick metrics; ``conversion.EconomyObserver`` as "economy").  play_paired_game runs only the
+# observers a caller names, so default results are unchanged; they come back under "seat_events".
+SEAT_OBSERVERS: Dict[str, Callable[[int], Any]] = {}
+
+
+def register_seat_observer(name: str, factory: Callable[[int], Any]) -> None:
+    """Make ``factory`` available to :func:`play_paired_game` / :func:`run_paired` as ``observers=[name]``."""
+    SEAT_OBSERVERS[name] = factory
+
+
 def play_paired_game(base_spec: str, overrides: Dict[str, Any], pattern: str, seed: int,
-                     max_turns: int = 400, allow_counters: bool = False) -> Dict[str, Any]:
+                     max_turns: int = 400, allow_counters: bool = False,
+                     observers: Sequence[str] = ()) -> Dict[str, Any]:
     """One game: seats marked 'C' get ``ParamBot(base bot, overrides)``, seats 'D' the bare base bot
     (wrapped too, so decision times are measured identically).  Returns a picklable summary.
-    ``allow_counters`` plays the game under the counter-offer rules variant (``GameState.allow_counters``)."""
+    ``allow_counters`` plays the game under the counter-offer rules variant (``GameState.allow_counters``).
+    ``observers`` names registered seat observers (:data:`SEAT_OBSERVERS`); their results are returned as
+    ``seat_events`` ({name: result}), and the key is absent when none is named."""
     from .agents.param_bot import ParamBot
     from .selfplay import make_bot, play_game
     bots = []
@@ -612,8 +629,16 @@ def play_paired_game(base_spec: str, overrides: Dict[str, Any], pattern: str, se
         elif action[0] == A.ACCEPT_TRADE and state.pending_trade is not None and state.pending_trade.origin is not None:
             taken[state.pending_trade.proposer] += 1
 
+    obs = [(name, SEAT_OBSERVERS[name](len(pattern))) for name in observers]
+    hooks = ([count_counters] if allow_counters else []) + [o.on_action for _, o in obs]
+
+    def on_every(state, action, player):
+        for h in hooks:
+            h(state, action, player)
+
     res = play_game(bots, rng=random.Random(seed), seed=seed, max_turns=max_turns, allow_counters=allow_counters,
-                    on_action=count_counters if allow_counters else None)
+                    on_action=(hooks[0] if len(hooks) == 1 else on_every) if hooks else None)
+    events = {"seat_events": {name: o.result() for name, o in obs}} if obs else {}
     return {
         "seed": seed, "pattern": pattern, "winner": res.winner, "vps": list(res.vps), "turns": res.turns,
         "actions": res.actions, "duration": res.duration,
@@ -624,22 +649,26 @@ def play_paired_game(base_spec: str, overrides: Dict[str, Any], pattern: str, se
         "pid": os.getpid(),
         "allow_counters": bool(allow_counters),
         "seat_counters": made, "seat_counters_taken": taken,
+        **events,
     }
 
 
 def _paired_worker(args) -> Dict[str, Any]:
     base_spec, overrides, pattern, seed, max_turns = args[:5]
     allow_counters = bool(args[5]) if len(args) > 5 else False
-    return play_paired_game(base_spec, overrides, pattern, seed, max_turns, allow_counters=allow_counters)
+    observers = tuple(args[6]) if len(args) > 6 else ()
+    return play_paired_game(base_spec, overrides, pattern, seed, max_turns, allow_counters=allow_counters,
+                            observers=observers)
 
 
 def run_paired(base_spec: str, overrides: Dict[str, Any], games: int, seed: int, num_players: int,
                workers: int = 1, max_turns: int = 400,
                progress: Optional[Callable[[int, int, Dict[str, Any]], None]] = None,
-               allow_counters: bool = False) -> List[Dict[str, Any]]:
+               allow_counters: bool = False, observers: Sequence[str] = ()) -> List[Dict[str, Any]]:
     """Play ``games`` paired games (identical seeds for every call with the same ``seed``); ``allow_counters``
-    plays every game under the counter-offer rules variant."""
-    args = [(base_spec, dict(overrides), pattern, gseed, max_turns, allow_counters)
+    plays every game under the counter-offer rules variant; ``observers`` names seat observers
+    (:data:`SEAT_OBSERVERS`) whose results each game returns as ``seat_events``."""
+    args = [(base_spec, dict(overrides), pattern, gseed, max_turns, allow_counters, tuple(observers))
             for pattern, gseed in paired_jobs(games, seed, num_players)]
     out: List[Dict[str, Any]] = []
     if workers <= 1 or len(args) <= 1:
@@ -735,6 +764,7 @@ def paired_stats(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             "seat_decisions": list(r["seat_decisions"]),
             "seat_ms_mean": [_mean(ms) for ms in seat_ms], "seat_ms_p95": [_p95(ms) for ms in seat_ms],
             "seat_overhead_ms": [1000.0 * x for x in overhead],
+            **({"seat_events": r["seat_events"]} if "seat_events" in r else {}),
         })
     delta = _mean(diffs) if diffs else float("nan")
     if G > 1:
@@ -819,3 +849,4 @@ def evaluator_mode() -> str:
     return "python (catanbot_core not built)"
 from .openings import register_tunables as _register_openings; _register_openings(TUNABLES)  # noqa: E402,E702
 from .winpaths import register_tunables as _register_winpaths; _register_winpaths(TUNABLES)  # noqa: E402,E702
+from .conversion import register_tunables as _register_conversion; _register_conversion(TUNABLES)  # noqa: E402,E702

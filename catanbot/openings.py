@@ -46,6 +46,11 @@ heuristic bot's temperature means the same thing as with the current scorer):
 * ``setup_pick`` - the current heuristic ranking forced (no search).  A control: identical to the
   default for the heuristic bot; for the search bot it measures what the search adds to the
   opening, so a ``denial`` result can be read against it.
+* ``conversion`` - ``placement.setup_pick`` minus ``CONV_WEIGHT`` x the change of our conversion cost
+  (catanbot/conversion.py: missing resources bought at 4:1 / 3:1 / 2:1 over the rolls left, in static
+  points) if we settle the spot, the spot's port included; road = ``setup_road_pick``'s per-edge score
+  with the same term on the spot two edges away.  The setup counterpart of ``search.conv`` (the hub
+  passes setup leaves through).  ``conversion:W`` sets the weight.
 
 The tunable is registered by ``catanbot/tuning.py`` (``register_tunables``): a weight-kind
 tunable whose single target ``openings.CONTROL.policy`` is a property - reading it returns the
@@ -86,6 +91,10 @@ PD_SCARCITY_CLIP = (0.6, 1.6)   # board scarcity (mean pips / pips) clipped, the
 
 # --- denial constants -----------------------------------------------------------------------
 DENIAL_WEIGHT = 1.0             # value of one point of the next picker's best-spot drop ("denial:W" overrides)
+
+# --- conversion constants -------------------------------------------------------------------
+CONV_WEIGHT = 1.25              # setup-score units per static point of conversion cost ("conversion:W" overrides):
+#                                 static pays ~0.8 points per demand-weighted pip, the spot score ~1 unit per pip
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +434,73 @@ def denial_road(state: GameState, player: int, settlement: int, weight: Optional
 
 
 # ---------------------------------------------------------------------------
+# conversion
+# ---------------------------------------------------------------------------
+def conversion_points(state: GameState, player: int, vertices: Sequence[int]) -> Dict[int, float]:
+    """Static points by which ``player``'s conversion cost changes if they settle each of ``vertices``:
+    ``conversion.KAPPA_CONV x R x (c(own + v) - c(own))`` with the port at ``v`` (negative = a saving)."""
+    from . import conversion as C    # lazy: only this policy needs it
+    shares = C.need_shares()
+    p = state.players[player]
+    s0, cs = sorted(p.settlements), sorted(p.cities)
+    base = C.cost_per_roll(state, s0, cs, shares)
+    scale = C.KAPPA_CONV * C.rolls_left(state)
+    return {v: scale * (C.cost_per_roll(state, sorted(s0 + [v]), cs, shares) - base) for v in vertices}
+
+
+def conversion_pick(state: GameState, player: int, k: int = 5, weight: Optional[float] = None) -> List[Tuple[int, float]]:
+    w = CONV_WEIGHT if weight is None else weight
+    base = _SETUP_PICK(state, player, k=B.NUM_VERTICES)
+    pts = conversion_points(state, player, [v for v, _ in base])
+    return _ranked([(v, s - w * pts[v]) for v, s in base], k)
+
+
+def conversion_road_scores(state: GameState, player: int, settlement: int,
+                           weight: Optional[float] = None) -> Dict[int, float]:
+    """``current_road_scores`` with each spot two edges away scored ``spot score - w x conversion points``."""
+    w = CONV_WEIGHT if weight is None else weight
+    settlement = _settlement_of(state, player, settlement)
+    occ = state.occupied_vertices()
+    eocc = state.occupied_edges()
+    own_prod = P.player_production(state, player, ignore_robber=True)
+    scarcity = P.resource_scarcity(state)
+    bctx = P.BlockContext(state, player, scarcity)
+    spots: Dict[int, List[int]] = {}
+    for e in B.VERTEX_EDGES[settlement]:
+        if e in eocc:
+            continue
+        a, b = B.EDGE_VERTICES[e]
+        u = b if a == settlement else a
+        if u in occ:
+            continue
+        spots[e] = []
+        for e2 in B.VERTEX_EDGES[u]:
+            if e2 in eocc or e2 == e:
+                continue
+            a2, b2 = B.EDGE_VERTICES[e2]
+            x = b2 if a2 == u else a2
+            if P.is_free_vertex(occ, x) and x != settlement:
+                spots[e].append(x)
+    pts = conversion_points(state, player, sorted({x for xs in spots.values() for x in xs}))
+    out: Dict[int, float] = {}
+    for e, xs in spots.items():
+        s = 0.0
+        for x in xs:
+            s = max(s, P.score_settlement_spot(state, player, x, occ=occ, own_prod=own_prod, scarcity=scarcity,
+                                               block_ctx=bctx) - w * pts[x])
+        out[e] = s
+    return out
+
+
+def conversion_road(state: GameState, player: int, settlement: int, weight: Optional[float] = None) -> Tuple[int, float]:
+    settlement = _settlement_of(state, player, settlement)
+    scores = conversion_road_scores(state, player, settlement, weight)
+    if not scores:
+        return _SETUP_ROAD_PICK(state, player, settlement)
+    return _best_edge(scores, settlement)
+
+
+# ---------------------------------------------------------------------------
 # Policy table
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -452,31 +528,38 @@ POLICIES: Dict[str, OpeningPolicy] = {
                             "setup_pick + denying the next picker's favourite spot; road + road_block_values"),
     "setup_pick": OpeningPolicy("setup_pick", _control_pick, _control_road,
                                 "control: placement.setup_pick / setup_road_pick forced (no search)"),
+    "conversion": OpeningPolicy("conversion", conversion_pick, conversion_road,
+                                "setup_pick + the conversion-cost change of the spot (ports included); road alike"),
 }
-CANDIDATES = ["standin_book", "pips_diversity", "denial", "setup_pick"]
+CANDIDATES = ["standin_book", "pips_diversity", "denial", "setup_pick", "conversion"]
 
 
 _PARAMETRIC: Dict[str, OpeningPolicy] = {}
 
 
+_WEIGHTED = {"denial": (denial_pick, denial_road), "conversion": (conversion_pick, conversion_road)}
+
+
 def policy(name: str) -> OpeningPolicy:
-    """The policy called ``name``; ``denial:W`` is denial with ``DENIAL_WEIGHT = W`` (e.g. ``denial:2``)."""
+    """The policy called ``name``; ``denial:W`` is denial with ``DENIAL_WEIGHT = W`` (e.g. ``denial:2``),
+    ``conversion:W`` conversion with ``CONV_WEIGHT = W``."""
     pol = POLICIES.get(name) or _PARAMETRIC.get(name)
     if pol is not None:
         return pol
     base, sep, arg = str(name).partition(":")
-    if sep and base == "denial":
+    if sep and base in _WEIGHTED:
         try:
             w = float(arg)
         except ValueError:
             w = float("nan")
         if not (0.0 <= w < float("inf")):
-            raise ValueError(f"denial weight must be a number >= 0, got {name!r}")
-        pol = OpeningPolicy(name, partial(denial_pick, weight=w), partial(denial_road, weight=w),
-                            f"denial with weight {w:g}")
+            raise ValueError(f"{base} weight must be a number >= 0, got {name!r}")
+        pick, road = _WEIGHTED[base]
+        pol = OpeningPolicy(name, partial(pick, weight=w), partial(road, weight=w), f"{base} with weight {w:g}")
         _PARAMETRIC[name] = pol
         return pol
-    raise ValueError(f"unknown opening policy {name!r}; known: {POLICY_DEFAULT}, {', '.join(POLICIES)}, denial:W")
+    raise ValueError(f"unknown opening policy {name!r}; known: {POLICY_DEFAULT}, {', '.join(POLICIES)}, denial:W, "
+                     f"conversion:W")
 
 
 def choose(state: GameState, legal_actions: Sequence[A.Action], name: Optional[str] = None) -> Optional[A.Action]:
@@ -637,7 +720,8 @@ def register_tunables(registry: Dict[str, object]) -> None:
         description="opening (setup-phase) policy for both bots: standin_book = the Catanatron stand-ins' book, "
                     "pips_diversity, denial = setup_pick + deny the next picker's favourite (denial:W sets its weight, "
                     "default 1), setup_pick = the "
-                    "heuristic ranking forced without search (control); implemented by patching "
+                    "heuristic ranking forced without search (control), conversion = setup_pick + the conversion-cost "
+                    "change of the spot (catanbot/conversion.py; conversion:W, default 1.25); implemented by patching "
                     "heuristic.setup_pick / setup_road_pick and SearchBot.decide (catanbot/openings.py)")
     registry[t.name] = t
 
