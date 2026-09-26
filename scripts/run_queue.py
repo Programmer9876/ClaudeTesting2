@@ -99,7 +99,8 @@ POLITICS_NAMES = {"trading.feed_leader_guard", "opponent_model.stage_late_drop",
 PLAYER_TRADE_PREFIXES = ("trading.", "politics.", "coalitions.", "opponent_model.")
 PLAYER_TRADE_NAMES = {"search.trade_proposals", "search.acq_shapes", "search.acq_breadth", "search.acq_floor",
                       "acquisition.W_PREMIUM", "search.counters", "search.counter_margin", "search.counter_aggr",
-                      "search.respond_lookahead"}
+                      "search.respond_lookahead", "acquisition.OFFER_COST", "acquisition.OFFER_LEAK",
+                      "acquisition.OFFER_REPEAT"}
 # Python-evaluator tunables (static_value / placement are mirrored in C++): self-play on them is refused.
 PYEVAL_NAMES = {"heuristic.EXPOSURE_WEIGHT", "placement.RESOURCE_DEMAND", "placement.PLACEMENT_BLOCK_WEIGHT",
                 "placement.PLACEMENT_ROBBER_Q"}

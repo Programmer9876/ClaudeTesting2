@@ -523,6 +523,23 @@ the registered results without changing them:
 1. our bot with development-card purchases off, against AlphaBeta;
 2. an AlphaBeta patched to count its own hidden points and to score a won game as a win.
 
+*Update 2026-09-26 21:30 UTC:* both checks are built, off by default, and queued (docs/QUEUE.md).
+- **Check 1** is the tunable `devcards.buy` (off: `BUY_DEV` is removed from our bot's own choices; its model of
+  the opponents still expects them to buy).  Row `devcheck_nodev@alphabeta`: 1,000 seeds on a fresh block,
+  paired against the default bot.  A smoke run bought 0 cards against the default's 64.
+- **Check 2** is `alphabeta_fixvp` (`catanbot/bench/patched_alphabeta.py`).  It is **our patch, not
+  Catanatron's player**, and is labelled so in every log and report.  It is Catanatron 3.3's AlphaBeta with only
+  its value function changed, through Catanatron's own hook (`use_value_function`):
+  - its own points count its Victory Point cards (`ACTUAL_VICTORY_POINTS`, same weight as public points);
+  - a finished game scores +1e16 if it won and -1e16 if it lost.
+  Everything else is Catanatron's defaults.  Rows `devcheck_fixvp_t2_*` replay test T2's exact protocol (seed
+  900001, games 0-399, 1 of ours against 3), so each game pairs by seed with T2's, and a final row checks every
+  replay log.
+- Default play is unchanged: with both changes in, 24/24 games are identical to the queue's previous code epoch
+  with full information, 12/12 with Colonist information and 16/16 with player trades on.
+- If the default bot has changed since the proof, check 2 also needs stock AlphaBeta on the same seeds, to
+  separate the patch's effect from ours.  The registered T2 result stays as registered.
+
 ### Q23. Are discards public?  The Colonist-information tests treated them as hidden. (2026-09-26)
 
 On a 7, Colonist shows which cards each player discarded (the user, a regular Colonist player, confirms it).
