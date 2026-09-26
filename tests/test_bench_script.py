@@ -592,3 +592,293 @@ def test_analyze_1v1_registration_statistics_and_statement(tmp_path, capsys):
     an.main(["--test", f"H1={write('H1', 240, tweak)}"])
     text = capsys.readouterr().out
     assert "NOT THE REGISTERED DATA" in text and "opponent_params" in text and "game 5: catanbot seat" in text
+
+
+# ---------------------------------------------------------------------------
+# --our-seats 3 (3v1) and --our-seats 2 --mixed-opponents A,B (2v2-mixed); docs/BENCH_MULTI_PROTOCOL.md.
+# Games here use the protocol's smoke seeds only (424901, 425001, 425101).
+# ---------------------------------------------------------------------------
+PAIR = ["random", "weighted"]      # two presets present on every catanatron version, fast
+
+
+def test_three_v_one_seats_rotate_the_lone_opponent():
+    from collections import Counter
+    for g in range(8):
+        seats = bench.our_seats_for(g, 3)
+        assert len(seats) == 3 and g % 4 not in seats and seats == bench.ARRANGEMENTS_3V1[g % 4]
+        assert bench.arrangement_index(g, 3) == g % 4
+    opp = Counter(next(s for s in range(4) if s not in bench.our_seats_for(g, 3)) for g in range(400))
+    assert opp == {0: 100, 1: 100, 2: 100, 3: 100}
+    assert bench.match_format(3) == "3v1" and bench.match_format(2, mixed=True) == "2v2-mixed"
+    assert [bench.seat_pattern(a) for a in bench.ARRANGEMENTS_3V1] == ["oCCC", "CoCC", "CCoC", "CCCo"]
+    assert bench.plan_games(7, range(5, 7), our_seats=3) == [(5, bench.game_seed(7, 5), (0, 2, 3)),
+                                                             (6, bench.game_seed(7, 6), (0, 1, 3))]
+    with pytest.raises(ValueError):
+        bench.our_seats_for(0, 4)
+    # the older formats' seatings and tags are untouched
+    assert [bench.our_seats_for(g, 2) for g in range(6)] == list(bench.ARRANGEMENTS_2V2)
+    assert bench.match_format(1) == "1v3" and bench.match_format(2) == "2v2" and bench.match_format(1, mixed=True) == "1v3-mixed"
+    assert bench.arrangement_index(7, 2) == 1 and bench.arrangement_index(7, 2, mixed=True) == 7
+
+
+def test_two_v_two_mixed_placements_cycle_through_all_twelve():
+    from collections import Counter
+    names = ["value", "alphabeta"]
+    for start in (0, 5, 17, 396):
+        games = range(start, start + 12)
+        lineups = [bench.mixed_lineup_2v2(g, names) for g in games]
+        assert len(set(lineups)) == 12                                   # the 12 placements, once each
+        for g, lu in zip(games, lineups):
+            assert tuple(s for s, x in enumerate(lu) if x == bench.CATANBOT) == bench.our_seats_for(g, 2)
+            opp = [x for x in lu if x != bench.CATANBOT]
+            assert opp == (names if (g // 6) % 2 == 0 else names[::-1])  # turn order of the two presets
+            assert bench.lineup_for(g, names, 2) == lu
+        seats = Counter((nm, s) for lu in lineups for s, nm in enumerate(lu))
+        assert all(seats[(nm, s)] == 3 for nm in names for s in range(4))  # each preset in each seat 3 times
+        assert all(seats[(bench.CATANBOT, s)] == 6 for s in range(4))
+    assert bench.lineup_for(3, ["a", "b", "c"], 1) == bench.mixed_lineup(3, ["a", "b", "c"])
+    assert bench.lineup_for(3, None, 2) is None
+    with pytest.raises(ValueError):
+        bench.mixed_lineup_2v2(0, ["value", "alphabeta", "sameturn"])
+
+
+def test_three_v_one_games_results_logs_and_replay(tmp_path, capsys):
+    import gzip
+    import json
+    out = tmp_path / "3v1.json"
+    logs = tmp_path / "logs"
+    rc = bench.main(["--our-seats", "3", "--game-range", "1:3", "--opponent", "weighted", "--spec", SMALL,
+                     "--seed", "424901", "--rerun-crashes", "--log-actions", str(logs), "--verbose", "--json", str(out)])
+    text = capsys.readouterr().out
+    assert rc == 0 and "== 3x catanbot" in text and "vs 1x WeightedRandomPlayer (weighted)" in text
+    assert "the 3v1 null is 75%" in text and "opp by seat :" in text and "0 errors, 0 fallbacks" in text
+    s = json.loads(out.read_text())
+    assert s["format"] == "3v1" and s["our_seats"] == 3 and s["null_win_rate"] == 0.75 and "players" not in s
+    assert s["opp_null_win_rate"] == 0.25 and s["game_range"] == [1, 3] and s["crash_attempts"] == 0
+    assert s["opp_wins"] == sum(r["opp_won"] for r in s["results"])
+    assert s["wins"] + s["opp_wins"] + s["no_winner"] == s["games"] == 2
+    assert s["opp_by_seat"] == {str(k): {"wins": int(s["results"][k - 1]["opp_won"]) if k in (1, 2) else 0,
+                                         "games": 1 if k in (1, 2) else 0} for k in range(4)}
+    assert set(s["by_arrangement"]) == {"oCCC", "CoCC", "CCoC", "CCCo"}
+    for r in s["results"]:
+        g = r["game"]
+        assert r["format"] == "3v1" and r["opp_seat"] == g % 4 and r["opponent"] == "weighted"
+        assert r["our_seats"] == [x for x in range(4) if x != g % 4] and r["arrangement"] == g % 4
+        assert r["won"] == (r["winner_seat"] in r["our_seats"]) and r["opp_won"] == (r["winner_seat"] == g % 4)
+        assert len(r["our_vps"]) == 3 and len(r["opp_vps"]) == 1 and len(r["timing"]["opp_seat_s"]) == 1
+        assert set(r["stats_by_seat"]) == {str(x) for x in r["our_seats"]}
+    (path,) = list(logs.iterdir())
+    assert path.name == "weighted_3v1_seed424901_g00001-00003.jsonl.gz"
+    recs = [json.loads(line) for line in gzip.open(path, "rt")]
+    replay = _load_script("replay_catanatron")
+    for rec in recs:
+        g = rec["game"]
+        assert rec["match"] == "3v1" and rec["our_seats"] == [x for x in range(4) if x != g % 4]
+        kinds = [p["kind"] for p in rec["players"]]
+        assert kinds.count("catanbot") == 3 and kinds[g % 4] == "opponent"
+        seeds = [p["bot_seed"] for p in rec["players"] if p["kind"] == "catanbot"]
+        assert len(set(seeds)) == 3 and seeds[0] == rec["seed"]           # independent bots, distinct seeds
+        ok, msg = replay.check_record(rec)
+        assert ok, msg
+
+
+def test_two_v_two_mixed_games_results_logs_and_replay(tmp_path, capsys):
+    import gzip
+    import json
+    out = tmp_path / "m.json"
+    logs = tmp_path / "logs"
+    rc = bench.main(["--our-seats", "2", "--mixed-opponents", ",".join(PAIR), "--game-range", "5:7", "--spec", SMALL,
+                     "--seed", "425101", "--log-actions", str(logs), "--verbose", "--json", str(out)])
+    text = capsys.readouterr().out
+    assert rc == 0 and "2v2-mixed" in text and "mixed wins  :" in text and "the 2v2 null is 50%" in text
+    assert "0 errors, 0 fallbacks" in text
+    s = json.loads(out.read_text())
+    assert s["format"] == "2v2-mixed" and s["opponents"] == PAIR and s["our_seats"] == 2 and s["null_win_rate"] == 0.5
+    assert s["opponent_class"] == "RandomPlayer+WeightedRandomPlayer" and "opp_wins" not in s
+    mx = s["mixed"]
+    assert sum(mx["wins"].values()) == s["games"] == 2 and mx["wins"]["catanbot"] == s["wins"]
+    assert set(mx["by_seat"]) == {"catanbot", *PAIR} and "positions" not in mx
+    assert sum(v["games"] for v in mx["placements"].values()) == 2
+    assert set(s["timing"]["opp_by_name"]) == set(PAIR)
+    for r in s["results"]:
+        g = r["game"]
+        assert r["format"] == "2v2-mixed" and r["arrangement"] == g % 12 and "relative" not in r
+        assert r["lineup"] == list(bench.mixed_lineup_2v2(g, PAIR)) and r["our_seats"] == list(bench.our_seats_for(g, 2))
+        w = r["winner_seat"]
+        assert r["winner_name"] == (r["lineup"][w] if w >= 0 else None)
+        assert r["won"] == (r["winner_name"] == bench.CATANBOT)
+        for nm in PAIR:
+            seat = r["lineup"].index(nm)
+            assert mx["by_seat"][nm][str(seat)]["games"] >= 1
+    (path,) = list(logs.iterdir())
+    assert path.name == "random_weighted_2v2-mixed_seed425101_g00005-00007.jsonl.gz"
+    recs = [json.loads(line) for line in gzip.open(path, "rt")]
+    replay = _load_script("replay_catanatron")
+    for rec in recs:
+        assert rec["match"] == "2v2-mixed" and rec["lineup"] == list(bench.mixed_lineup_2v2(rec["game"], PAIR))
+        assert [p.get("preset") or bench.CATANBOT for p in rec["players"]] == rec["lineup"]
+        ok, msg = replay.check_record(rec)
+        assert ok, msg
+
+
+def test_multi_seat_chunks_reproduce_one_run(tmp_path, capsys):
+    """Per-game seeds and seatings depend on the game index alone: chunks 0:1 + 1:3 == one run 0:3."""
+    import json
+
+    def run(extra, rng, name):
+        out = tmp_path / name
+        rc = bench.main(extra + ["--game-range", rng, "--spec", SMALL, "--seed", "425001", "--json", str(out)])
+        capsys.readouterr()
+        assert rc == 0
+        return {r["game"]: (r["our_seats"], r.get("lineup"), r["winner"], r["vps"], r["turns"], r["actions"])
+                for r in json.loads(out.read_text())["results"]}
+
+    for i, extra in enumerate((["--our-seats", "3", "--opponent", "weighted"],
+                               ["--our-seats", "2", "--mixed-opponents", ",".join(PAIR)])):
+        whole = run(extra, "0:3", f"w{i}.json")
+        parts = {**run(extra, "0:1", f"a{i}.json"), **run(extra, "1:3", f"b{i}.json")}
+        assert whole == parts and sorted(whole) == [0, 1, 2]
+
+
+def test_multi_seat_crashed_games_are_losses(monkeypatch):
+    def boom(job, opts):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(bench, "_play_one", boom)
+    r = bench.run_one((6, 5, SMALL, "weighted", 10, 7, "off", {}, {"our_seats": 3, "rerun_crashes": True}))
+    assert r["crashed"] and r["crashes"] == 2 and r["format"] == "3v1" and r["opp_seat"] == 2
+    assert r["opponent"] == "weighted" and r["opp_won"] is False and r["our_seats"] == [0, 1, 3]
+    assert r["our_vps"] == [0, 0, 0] and r["opp_vps"] == [0] and r["arrangement"] == 2 and r["pattern"] == "CCoC"
+    s = bench.summarize([r], SMALL, "weighted", 5)
+    assert s["format"] == "3v1" and s["wins"] == 0 and s["opp_wins"] == 0 and s["no_winner"] == 1
+    assert s["crashed_games"] == 1 and s["truncated"] == 0 and s["opp_by_seat"][2] == {"wins": 0, "games": 1}
+    m = bench.run_one((7, 5, SMALL, "random,weighted", 10, 7, "off", {},
+                       {"our_seats": 2, "mixed": PAIR, "rerun_crashes": True}))
+    assert m["crashed"] and m["format"] == "2v2-mixed" and m["arrangement"] == 7 and m["winner_name"] is None
+    assert m["lineup"] == list(bench.mixed_lineup_2v2(7, PAIR)) and "relative" not in m and m["our_vps"] == [0, 0]
+    s = bench.summarize([m], SMALL, "random,weighted", 5, mixed=PAIR)
+    assert s["format"] == "2v2-mixed" and s["mixed"]["wins"]["none"] == 1 and s["wins"] == 0
+    # the older formats' records gain no key
+    for opts in ({"our_seats": 1}, {"our_seats": 2}, {"our_seats": 1, "mixed": MIXED}, {"our_seats": 1, "players": 2}):
+        c = bench.run_one((3, 5, SMALL, "weighted", 10, 7, "off", {}, dict(opts, rerun_crashes=True)))
+        assert not {"format", "opp_seat", "opp_won", "opponent"} & set(c)
+        assert not {"opp_wins", "opp_by_seat", "no_winner"} & set(bench.summarize([c], SMALL, "weighted", 5,
+                                                                                 mixed=opts.get("mixed")))
+
+
+def test_multi_seat_option_validation(capsys):
+    for argv in (["--our-seats", "3", "--mixed-opponents", ",".join(MIXED)],
+                 ["--our-seats", "3", "--mixed-opponents", ",".join(PAIR)],
+                 ["--our-seats", "2", "--mixed-opponents", ",".join(MIXED)],
+                 ["--our-seats", "2", "--mixed-opponents", "random"],
+                 ["--players", "2", "--our-seats", "3"],
+                 ["--our-seats", "4"]):
+        with pytest.raises(SystemExit):
+            bench.main(argv)
+    rc = bench.main(["--games", "1", "--our-seats", "2", "--mixed-opponents", "random,nonsense"])
+    assert rc == 2 and "unknown opponent" in capsys.readouterr().err
+
+
+@needs_33
+def test_multi_seat_formats_against_catanatrons_value_player(capsys):
+    rc = bench.main(["--our-seats", "3", "--games", "1", "--opponent", "value", "--spec", SMALL, "--seed", "424901"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "vs 1x ValueFunctionPlayer (value)" in out and "catanatron 3.3" in out
+    assert "0 errors, 0 fallbacks" in out
+    rc = bench.main(["--our-seats", "2", "--mixed-opponents", "value,vp", "--games", "1", "--spec", SMALL,
+                     "--seed", "425101"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "ValueFunctionPlayer+VictoryPointPlayer" in out and "0 errors, 0 fallbacks" in out
+
+
+def test_analyze_multi_registration_statistics_and_holm(tmp_path, capsys):
+    """scripts/analyze_multi.py (the protocol's analysis) on synthetic chunks: wins recomputed from the
+    winner seat and the registered seating, the conservative 3v1 count (turn-cap / crashed games count
+    for the opponent), exact lower / upper tails, Holm over M1-M3 and the registration checks."""
+    import json
+    from fractions import Fraction
+    an = _load_script("analyze_multi")
+
+    def records(tid, not_ours, capped=0):
+        """``not_ours`` games not won by our seats (the first ``capped`` of them without a winner)."""
+        t = an.TESTS[tid]
+        out = []
+        for g in range(t.games):
+            lineup = an.registered_lineup(t, g)
+            ours = [s for s, nm in enumerate(lineup) if nm == "catanbot"]
+            theirs = [s for s, nm in enumerate(lineup) if nm != "catanbot"]
+            w = -1 if g < capped else theirs[g % len(theirs)] if g < not_ours else ours[g % len(ours)]
+            r = {"game": g, "seed": an.game_seed(t.seed, g), "our_seats": ours, "format": t.fmt,
+                 "colors": ["RED", "BLUE", "ORANGE", "WHITE"], "winner": None if w < 0 else "RED", "winner_seat": w,
+                 "won": False,      # ignored: recomputed from the winner seat
+                 "vps": [10 if s == w else 6 for s in range(4)], "turns": 70, "crashes": 0,
+                 "stats": {"errors": 0, "observe_errors": 0, "fallback": 0, "unmapped_top": 0}}
+            if t.fmt == "3v1":
+                r.update(opp_seat=g % 4, opponent=t.opponent)
+            else:
+                r["lineup"] = lineup
+            out.append(r)
+        return out
+
+    def meta(tid):
+        t = an.TESTS[tid]
+        m = {"format": t.fmt, "our_seats": 3 if t.fmt == "3v1" else 2, "null_win_rate": 0.75 if t.fmt == "3v1" else 0.5,
+             "opponent": t.opponent, "opponent_class": t.opponent_class, "opponent_params": {}, "catanatron": "3.3.0",
+             "spec": an.SPEC, "seed": t.seed, "trades": "off", "hash_seed": "0", "vps_to_win": 10, "discard_limit": 7,
+             "info": {"mode": "full"}}
+        m.update({"opp_null_win_rate": 0.25} if t.fmt == "3v1" else {"opponents": list(t.opponents)})
+        return m
+
+    def write(tid, not_ours, capped=0, tweak=None):
+        d = tmp_path / f"{tid}_{not_ours}_{capped}_{bool(tweak)}"
+        d.mkdir()
+        recs = records(tid, not_ours, capped)
+        for a, b in ((0, 200), (200, 400)):
+            m = meta(tid)
+            if tweak:
+                tweak(m, recs)
+            (d / f"g{a:05d}-{b:05d}.json").write_text(json.dumps({**m, "game_range": [a, b], "results": recs[a:b]}))
+        return str(d)
+
+    out = tmp_path / "a.json"
+    # M1: 60 games not won by us (55 opponent wins + 5 turn-cap games); M2: 90; M3: 170 not ours = 230 ours
+    rc = an.main(["--test", f"M1={write('M1', 60, capped=5)}", "--test", f"M2={write('M2', 90)}",
+                  "--test", f"M3={write('M3', 170)}", "--json", str(out), "--markdown", str(tmp_path / "a.md")])
+    text = capsys.readouterr().out
+    assert rc == 0 and "FAMILY (Holm over M1-M3, alpha 0.05): complete" in text
+    res = json.loads(out.read_text())
+    m1, m2, m3 = (res["analysis"][t] for t in ("M1", "M2", "M3"))
+    assert m1["registered"] and m1["deviations"] == [] and m1["count"] == 60 and m1["our_wins"] == 340
+    assert m1["wins"]["alphabeta"] == 55 and m1["no_winner"] == 5 and m1["turn_cap_games"] == 5
+    assert m1["by_seat"]["alphabeta"]["0"]["games"] == 100
+    assert m1["p_one_sided"]["fraction"] == str(an.PS.binom_cdf_exact(60, 400, Fraction(1, 4)))
+    # scipy.stats.binomtest(60, 400, 0.25, alternative="less").pvalue = 7.8008e-07; CP 95 % (0.116458, 0.188822)
+    assert abs(m1["p_one_sided"]["float"] - 7.800766112735117e-07) < 1e-15
+    assert abs(m1["ci95"][0] - 0.11645847860739882) < 1e-8 and abs(m1["ci95"][1] - 0.18882213648142618) < 1e-8
+    # binomtest(90, 400, 0.25, "less") = 0.135846; binomtest(230, 400, 0.5, "greater") = 0.0015645, CP (0.5249, 0.6240)
+    assert abs(m2["p_one_sided"]["float"] - 0.1358459093754855) < 1e-12 and m2["tail"] == "lower"
+    assert m3["count"] == 230 and m3["tail"] == "upper" and abs(m3["p_one_sided"]["float"] - 0.0015645080634072589) < 1e-12
+    assert abs(m3["ci95"][0] - 0.5248998335723469) < 1e-8 and abs(m3["ci95"][1] - 0.6239822512451211) < 1e-8
+    assert m3["wins"]["value"] + m3["wins"]["alphabeta"] == 170 and sum(v["games"] for v in m3["by_pattern"].values()) == 400
+    # Holm: M1 (7.8e-7 <= 0.05/3) and M3 (0.0016 <= 0.05/2) rejected, M2 (0.136 > 0.05) not
+    v = res["verdict"]["tests"]
+    assert v["M1"]["rejected"] and v["M3"]["rejected"] and not v["M2"]["rejected"]
+    assert "| M1 | 3v1 | AlphaBetaPlayer | 400 | 60 (not won by us) | 15.0% |" in (tmp_path / "a.md").read_text()
+    # a missing test enters with p = 1 (the family stays m = 3): M1 alone still needs p <= 0.05 / 3
+    an.main(["--test", f"M1={write('M1', 81)}"])
+    text = capsys.readouterr().out
+    assert "INCOMPLETE: M2, M3" in text and "M1: H0" in text and "REJECTED" in text      # 81 = the rejection point
+    an.main(["--test", f"M1={write('M1', 82)}"])
+    assert "M1: H0 (AlphaBetaPlayer wins >= 25% of the 3v1 games) NOT rejected" in capsys.readouterr().out
+
+    # deviations: a non-default parameter, the opponent in the wrong seat, a wrong M3 lineup -> not the registered data
+    def tweak(m, recs):
+        m["opponent_params"] = {"depth": "3"}
+        recs[5]["opp_seat"] = 0
+
+    def tweak3(m, recs):
+        recs[7]["lineup"] = recs[7]["lineup"][::-1]
+    an.main(["--test", f"M1={write('M1', 40, tweak=tweak)}", "--test", f"M3={write('M3', 100, tweak=tweak3)}"])
+    text = capsys.readouterr().out
+    assert "NOT THE REGISTERED DATA" in text and "opponent_params" in text and "game 5: opponent" in text
+    assert "game 7: lineup" in text and "registered data: NO" in text

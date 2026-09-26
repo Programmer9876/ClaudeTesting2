@@ -13,6 +13,8 @@ Usage::
     python3 scripts/bench_catanatron.py --games 24 --info counted [--info-samples 4] [--discards-public]
     python3 scripts/bench_catanatron.py --games 24 --mixed-opponents value,alphabeta,sameturn
     python3 scripts/bench_catanatron.py --players 2 --opponent alphabeta --game-range 0:40 --log-actions DIR
+    python3 scripts/bench_catanatron.py --our-seats 3 --opponent alphabeta --game-range 0:40 --log-actions DIR
+    python3 scripts/bench_catanatron.py --our-seats 2 --mixed-opponents value,alphabeta --game-range 0:40
 
 Every game seats one :class:`catanbot.bench.catanatron_adapter.CatanbotPlayer`
 (built from ``--spec``, see ``catanbot.selfplay.make_bot``) against three
@@ -90,6 +92,28 @@ Strength-proof options (``docs/PROOF_PROTOCOL.md``, ``scripts/run_proof.sh``):
   replay like the others.  Not with ``--our-seats 2`` or
   ``--mixed-opponents``.  The default ``--players 4`` leaves every 4-player
   format above exactly as it was (``docs/BENCH_1V1_PROTOCOL.md``).
+* ``--our-seats 3`` - 3v1 games: three independent catanbot seats (each its
+  own bot instance and bot seed, same ``--spec``, as in 2v2) and ONE opponent
+  seat; game ``g`` puts the opponent in seat ``g % 4``
+  (``ARRANGEMENTS_3V1[g % 4]`` are our seats), so every seat holds the
+  opponent in a quarter of the games.  Records and the summary carry
+  ``format: "3v1"``; a record adds ``opp_seat``, ``opponent`` (the preset) and
+  ``opp_won`` besides ``winner_seat`` and ``won`` (= one of our seats won);
+  the summary reports our combined rate against its null of 75 %
+  (``null_win_rate``) and the opponent's (``opp_wins``, ``opp_win_rate``,
+  ``opp_by_seat``) against its null of 25 % (``opp_null_win_rate``).  Action
+  logs are ``<opponent>_3v1_seed<S>_g<A>-<B>.jsonl.gz``
+  (``docs/BENCH_MULTI_PROTOCOL.md``).
+* ``--our-seats 2 --mixed-opponents A,B`` - 2v2-mixed games: two catanbot
+  seats and one copy of each of the two presets; game ``g`` uses placement
+  ``MIXED_2V2_PLACEMENTS[g % 12]``: our seats ``ARRANGEMENTS_2V2[g % 6]`` (as
+  in 2v2) and the presets in the other two seats in turn order ``A, B`` when
+  ``(g // 6) % 2 == 0``, else ``B, A``.  Records carry ``format:
+  "2v2-mixed"``, ``arrangement`` (``g % 12``), ``pattern``, ``lineup`` and
+  ``winner_name``; the summary (``format: "2v2-mixed"``, ``opponents``, null
+  50 %) reports wins, win rates, average VP and per-seat wins of each preset
+  and of our two seats combined (``mixed``).  Logs:
+  ``<A>_<B>_2v2-mixed_seed<S>_g<A>-<B>.jsonl.gz``.
 * ``--game-range A:B`` (or ``--game-offset A`` with ``--games N``) plays
   only games ``A .. B-1`` of the run with this ``--seed``: per-game seeds,
   seats and arrangements depend on the game index alone, so chunks that
@@ -123,8 +147,8 @@ games put every preset in every relative position equally often.  Every game
 records its ``lineup`` (preset per seat), ``relative`` order and
 ``winner_name``; the summary (``format: "1v3-mixed"``, ``opponents``) reports
 wins and average VP per preset besides catanbot's (``mixed``).  Composes with
-``--info``, ``--game-range`` chunks, ``--hash-seed`` and ``--log-actions``
-(1v3 only).
+``--info``, ``--game-range`` chunks, ``--hash-seed`` and ``--log-actions``.
+With ``--our-seats 2`` and two presets it is the 2v2-mixed format (above).
 """
 from __future__ import annotations
 
@@ -387,11 +411,18 @@ def game_seed(base_seed: int, g: int) -> int:
 ARRANGEMENTS_2V2: Tuple[Tuple[int, int], ...] = tuple(itertools.combinations(range(len(COLORS)), 2))
 #: Seed offset of the k-th catanbot seat of a game (the first keeps the game seed, as in 1v3).
 BOT_SEED_STRIDE = 7919
+#: The 4 placements of the three catanbot seats of a 3v1 game: index ``k`` = the opponent's seat
+#: (game ``g`` uses ``g % 4``, so each seat holds the opponent in a quarter of the games).
+ARRANGEMENTS_3V1: Tuple[Tuple[int, ...], ...] = tuple(tuple(s for s in range(len(COLORS)) if s != k)
+                                                      for k in range(len(COLORS)))
+#: Formats added after the 1v1 work; only their records carry a ``format`` key (the older ones stay byte-identical).
+MULTI_FORMATS = ("3v1", "2v2-mixed")
 
 
 def our_seats_for(g: int, our_seats: int = 1, players: int = len(COLORS)) -> Tuple[int, ...]:
     """Seats (turn-order positions, 0 moves first) catanbot plays in game ``g``: ``(g % 4,)``
-    in 1v3, ``ARRANGEMENTS_2V2[g % 6]`` in 2v2, ``(g % 2,)`` in 1v1 (``players=2``)."""
+    in 1v3, ``ARRANGEMENTS_2V2[g % 6]`` in 2v2 (also 2v2-mixed), ``ARRANGEMENTS_3V1[g % 4]`` in
+    3v1 (every seat but the opponent's ``g % 4``), ``(g % 2,)`` in 1v1 (``players=2``)."""
     if players == 2:
         if our_seats != 1:
             raise ValueError(f"a 2-player game has one catanbot seat, got our_seats={our_seats}")
@@ -402,16 +433,31 @@ def our_seats_for(g: int, our_seats: int = 1, players: int = len(COLORS)) -> Tup
         return (g % len(COLORS),)
     if our_seats == 2:
         return ARRANGEMENTS_2V2[g % len(ARRANGEMENTS_2V2)]
-    raise ValueError(f"our_seats must be 1 or 2, got {our_seats}")
+    if our_seats == 3:
+        return ARRANGEMENTS_3V1[g % len(ARRANGEMENTS_3V1)]
+    raise ValueError(f"our_seats must be 1, 2 or 3, got {our_seats}")
 
 
 def match_format(our_seats: int = 1, players: int = len(COLORS), mixed: bool = False) -> str:
-    """The format tag of a run / game record: ``1v3``, ``2v2``, ``1v3-mixed`` or ``1v1``."""
+    """The format tag of a run / game record: ``1v3``, ``2v2``, ``3v1``, ``1v3-mixed``, ``2v2-mixed``
+    or ``1v1``."""
     if players == 2:
         return "1v1"
     if mixed:
-        return "1v3-mixed"
+        return "2v2-mixed" if our_seats == 2 else "1v3-mixed"
+    if our_seats == 3:
+        return "3v1"
     return "2v2" if our_seats == 2 else "1v3"
+
+
+def arrangement_index(g: int, our_seats: int, mixed: bool = False) -> int:
+    """The ``arrangement`` of a multi-seat game: ``g % 6`` in 2v2 (``ARRANGEMENTS_2V2``), ``g % 12`` in
+    2v2-mixed (``MIXED_2V2_PLACEMENTS``), ``g % 4`` in 3v1 (``ARRANGEMENTS_3V1``: the opponent's seat)."""
+    if our_seats == 3:
+        return g % len(ARRANGEMENTS_3V1)
+    if mixed:
+        return g % (2 * len(ARRANGEMENTS_2V2))
+    return g % len(ARRANGEMENTS_2V2)
 
 
 def seat_pattern(seats: Sequence[int], n: int = len(COLORS)) -> str:
@@ -468,6 +514,38 @@ def mixed_lineup(g: int, names: Sequence[str]) -> Tuple[str, ...]:
     return tuple(lineup)
 
 
+#: The 12 placements of a 2v2-mixed game (``--our-seats 2 --mixed-opponents A,B``): ``(catanbot seats,
+#: order)`` with the seats of ``ARRANGEMENTS_2V2`` and order 0 = ``A, B`` / 1 = ``B, A`` in the two other
+#: seats (turn order); game ``g`` uses ``g % 12``, i.e. seats ``ARRANGEMENTS_2V2[g % 6]`` as in 2v2 and
+#: order ``(g // 6) % 2``.
+MIXED_2V2_PLACEMENTS: Tuple[Tuple[Tuple[int, int], int], ...] = tuple(
+    (pair, order) for order in range(2) for pair in ARRANGEMENTS_2V2)
+
+
+def mixed_lineup_2v2(g: int, names: Sequence[str]) -> Tuple[str, ...]:
+    """Who sits where in game ``g`` of a 2v2-mixed run (turn order): catanbot in both seats of
+    ``ARRANGEMENTS_2V2[g % 6]`` and the two presets ``names`` in the other seats, in the order
+    ``names`` when ``(g // 6) % 2 == 0`` and reversed otherwise.  Any 12 consecutive games play
+    the 12 placements once each."""
+    names = list(names)
+    if len(names) != len(COLORS) - 2:
+        raise ValueError(f"a 2v2-mixed game needs {len(COLORS) - 2} presets, got {names}")
+    pair, order = MIXED_2V2_PLACEMENTS[g % len(MIXED_2V2_PLACEMENTS)]
+    lineup: List[str] = [CATANBOT if s in pair else "" for s in range(len(COLORS))]
+    others = [s for s in range(len(COLORS)) if s not in pair]
+    for s, nm in zip(others, names if order == 0 else names[::-1]):
+        lineup[s] = nm
+    return tuple(lineup)
+
+
+def lineup_for(g: int, mixed: Optional[Sequence[str]], our_seats: int = 1) -> Optional[Tuple[str, ...]]:
+    """The preset per seat of game ``g`` of a mixed run (``None`` when not mixed): 1v3-mixed
+    (:func:`mixed_lineup`) or, with two catanbot seats, 2v2-mixed (:func:`mixed_lineup_2v2`)."""
+    if not mixed:
+        return None
+    return mixed_lineup_2v2(g, mixed) if our_seats == 2 else mixed_lineup(g, mixed)
+
+
 def parse_mixed(text: Optional[str]) -> Optional[List[str]]:
     """``"value,alphabeta,sameturn"`` -> the preset list (``None`` when not given)."""
     if not text:
@@ -495,9 +573,9 @@ def info_meta(opts: Optional[Dict[str, object]]) -> Dict[str, object]:
 
 def action_log_path(directory: str, opponent: str, our_seats: int, seed: int, indices: range,
                     fmt: Optional[str] = None) -> str:
-    """``DIR/<opponent>_<1v3|2v2|1v3-mixed|1v1>_seed<S>_g<A>-<B>.jsonl.gz`` for ``--log-actions``."""
+    """``DIR/<opponent>_<1v3|2v2|3v1|1v3-mixed|2v2-mixed|1v1>_seed<S>_g<A>-<B>.jsonl.gz`` for ``--log-actions``."""
     tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", opponent)
-    fmt = fmt or ("2v2" if our_seats == 2 else "1v3")
+    fmt = fmt or match_format(our_seats)
     return os.path.join(directory, f"{tag}_{fmt}_seed{seed}_g{indices.start:05d}-{indices.stop:05d}.jsonl.gz")
 
 
@@ -518,7 +596,8 @@ def run_one(job: tuple) -> Dict[str, object]:
     """Play game ``g`` of a batch; returns the summary dict plus adapter / trade / timing stats.
 
     ``job`` is ``(g, base_seed, spec, opponent, vps_to_win, discard_limit[, trades[, opponent_params[, opts]]])``
-    with ``opts`` an optional dict: ``our_seats`` (1 = 1v3, the default; 2 = 2v2), ``players``
+    with ``opts`` an optional dict: ``our_seats`` (1 = 1v3, the default; 2 = 2v2; 3 = 3v1), ``mixed``
+    (the ``--mixed-opponents`` presets: three with one catanbot seat, two with two), ``players``
     (4, the default; 2 = 1v1, catanbot in seat ``g % 2`` against one opponent), ``log``
     (attach the replayable record as ``res["_log"]``) and ``rerun_crashes`` (re-play a game
     that raises once with the same seed; a second crash returns a ``crashed`` loss record).
@@ -573,7 +652,7 @@ def _log_record(job: tuple, ours: Sequence[int], log: Dict[str, object]) -> Dict
     opp_params = job[7] if len(job) > 7 else None
     opts = (job[8] if len(job) > 8 else None) or {}
     mixed = opts.get("mixed")
-    lineup = mixed_lineup(g, mixed) if mixed else None
+    lineup = lineup_for(g, mixed, len(ours))
     seed = game_seed(base_seed, g)
     n_players = _players_of(opts)
     match = match_format(len(ours), n_players, bool(mixed))
@@ -601,7 +680,7 @@ def _play_one(job: tuple, opts: Dict[str, object]) -> Dict[str, object]:
     ours = our_seats_for(g, n_ours, n_players)
     seed = game_seed(base_seed, g)
     mixed = opts.get("mixed")
-    lineup = mixed_lineup(g, mixed) if mixed else None
+    lineup = lineup_for(g, mixed, n_ours)
     makers = {name: opponent_factory(resolve_opponent(name), opp_params, name)
               for name in (sorted(set(mixed)) if mixed else [opponent])}
     info_kw = info_kwargs(opts)
@@ -641,7 +720,7 @@ def _play_one(job: tuple, opts: Dict[str, object]) -> Dict[str, object]:
         res["unmapped_kinds"] = dict(me.unmapped_kinds)
     else:
         res["seat"] = None
-        res["arrangement"] = g % len(ARRANGEMENTS_2V2)
+        res["arrangement"] = arrangement_index(g, n_ours, bool(mixed))
         res["pattern"] = seat_pattern(ours)
         res["our_vps"] = [res["vps"][s] for s in ours]
         res["our_vp"] = sum(res["our_vps"]) / len(ours)
@@ -686,16 +765,33 @@ def _play_one(job: tuple, opts: Dict[str, object]) -> Dict[str, object]:
     if lineup:
         seat = ours[0]
         res["lineup"] = list(lineup)
-        res["relative"] = [lineup[(seat + k) % len(COLORS)] for k in (1, 2, 3)]
+        if n_ours == 1:
+            res["relative"] = [lineup[(seat + k) % len(COLORS)] for k in (1, 2, 3)]
         res["winner_name"] = lineup[res["winner_seat"]] if res["winner_seat"] >= 0 else None
         by_name = {name: {"all": [t for o, nm in zip(opps, opp_names) if nm == name for t in o.times],
                           "choice": [t for o, nm in zip(opps, opp_names) if nm == name for t in o.choice_times]}
                    for name in sorted(set(opp_names))}
         res["timing"]["opp_by_name"] = {name: timing_summary(ts["all"]) for name, ts in by_name.items()}
         res["_times_by_name"] = by_name
+    _add_multi_keys(res, g, ours, opponent, n_players, mixed)
     if log is not None:
         res["_log"] = _log_record(job, ours, log)
     return res
+
+
+def _add_multi_keys(res: Dict[str, object], g: int, ours: Sequence[int], opponent: str, n_players: int,
+                    mixed: Optional[Sequence[str]]) -> None:
+    """The keys only the 3v1 / 2v2-mixed records carry: ``format``, and in 3v1 the opponent's seat, preset
+    and whether it won (the older formats' records are left exactly as they were)."""
+    fmt = match_format(len(ours), n_players, bool(mixed))
+    if fmt not in MULTI_FORMATS:
+        return
+    res["format"] = fmt
+    if fmt == "3v1":
+        opp_seat = next(s for s in range(n_players) if s not in ours)
+        res["opp_seat"] = opp_seat
+        res["opponent"] = opponent
+        res["opp_won"] = int(res.get("winner_seat", -1)) == opp_seat and not res.get("crashed")
 
 
 def _crashed_result(job: tuple, opts: Dict[str, object], errors: List[str], partial) -> Dict[str, object]:
@@ -719,18 +815,20 @@ def _crashed_result(job: tuple, opts: Dict[str, object], errors: List[str], part
     }
     if n_players != len(COLORS):
         res["players"] = n_players
-    if n_ours == 2:
-        res["arrangement"] = g % len(ARRANGEMENTS_2V2)
+    if n_ours >= 2:
+        res["arrangement"] = arrangement_index(g, n_ours, bool(opts.get("mixed")))
         res["pattern"] = seat_pattern(ours)
-        res["our_vps"] = [0, 0]
+        res["our_vps"] = [0] * n_ours
         res["stats_by_seat"] = {}
     if opts.get("mixed"):
-        lineup = mixed_lineup(g, opts["mixed"])
+        lineup = lineup_for(g, opts["mixed"], n_ours)
         res["lineup"] = list(lineup)
-        res["relative"] = [lineup[(ours[0] + k) % len(COLORS)] for k in (1, 2, 3)]
+        if n_ours == 1:
+            res["relative"] = [lineup[(ours[0] + k) % len(COLORS)] for k in (1, 2, 3)]
         res["winner_name"] = None
     if info_kwargs(opts):
         res["info_stats"] = {k: 0 for k in INFO_STAT_KEYS}
+    _add_multi_keys(res, g, ours, job[3], n_players, opts.get("mixed"))
     if opts.get("log") and partial is not None:
         rec = dict(partial)
         rec["crashed"] = True
@@ -765,7 +863,12 @@ def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: 
     preset and for catanbot, games per preset and relative position); ``info`` is the
     information mode (:func:`info_meta`, default ``{"mode": "full"}``).  ``players`` (default:
     read from the records, 4 when they do not say) = 2 is the 1v1 format: ``format: "1v1"``,
-    ``players: 2``, ``by_seat`` over the two seats and a null of 50 %."""
+    ``players: 2``, ``by_seat`` over the two seats and a null of 50 %.  ``our_seats`` = 3 is the
+    3v1 format: ``format: "3v1"``, a null of 75 % for our seats together, ``by_arrangement`` per
+    opponent seat, and the opponent's ``opp_wins`` / ``opp_win_rate`` / ``opp_by_seat`` against
+    ``opp_null_win_rate`` 25 % (``no_winner``: turn-cap and crashed games).  ``our_seats`` = 2 with
+    ``mixed`` (two presets) is 2v2-mixed: ``format: "2v2-mixed"`` and the ``mixed`` table of
+    :func:`mixed_table_2v2`."""
     n = len(results)
     if our_seats is None:
         our_seats = max([len(r.get("our_seats") or [0]) for r in results] or [1])
@@ -781,7 +884,7 @@ def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: 
             if r["won"]:
                 by_seat[r["seat"]][0] += 1
     else:
-        by_arr = {seat_pattern(a): [0, 0] for a in ARRANGEMENTS_2V2}
+        by_arr = {seat_pattern(a): [0, 0] for a in (ARRANGEMENTS_3V1 if our_seats == 3 else ARRANGEMENTS_2V2)}
         for r in results:
             ours = r["our_seats"]
             for s_ in ours:
@@ -854,9 +957,9 @@ def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: 
                                           for r in results] or [0])
         out["info_stats"] = agg
     if mixed:
-        out["format"] = "1v3-mixed"
+        out["format"] = match_format(our_seats, players, True)
         out["opponents"] = list(mixed)
-        out["mixed"] = mixed_table(results, mixed)
+        out["mixed"] = mixed_table_2v2(results, mixed) if our_seats == 2 else mixed_table(results, mixed)
         by_name: Dict[str, Dict[str, List[float]]] = {}
         for r in results:
             for nm, ts in (r.get("_times_by_name") or {}).items():
@@ -866,8 +969,25 @@ def summarize(results: List[Dict[str, object]], spec: str, opponent: str, seed: 
         timing["opp_by_name"] = {nm: {"all": timing_summary(ts["all"]), "choice": timing_summary(ts["choice"]),
                                       "s_per_game": sum(ts["all"]) / n if n else 0.0}
                                  for nm, ts in by_name.items()}
-    if our_seats == 2:
+    if our_seats in (2, 3):
         out["by_arrangement"] = {k: {"wins": w, "games": g} for k, (w, g) in by_arr.items()}
+    if our_seats == 3:
+        # 3v1: our three seats together against a null of 75 %; the lone opponent against 25 %
+        out["format"] = match_format(our_seats, players)
+        out["null_win_rate"] = 0.75
+        opp_by_seat = {s: [0, 0] for s in range(seats)}
+        for r in results:
+            opp = [s for s in range(seats) if s not in r["our_seats"]]
+            for s_ in opp:
+                opp_by_seat[s_][1] += 1
+                if r["winner_seat"] == s_ and not r.get("crashed"):
+                    opp_by_seat[s_][0] += 1
+        opp_wins = sum(w for w, _ in opp_by_seat.values())
+        out["opp_wins"] = opp_wins
+        out["opp_win_rate"] = opp_wins / n if n else 0.0
+        out["opp_null_win_rate"] = 0.25
+        out["opp_by_seat"] = {s: {"wins": w, "games": g} for s, (w, g) in opp_by_seat.items()}
+        out["no_winner"] = sum(1 for r in results if r["winner_seat"] < 0 or r.get("crashed"))
     if game_range is not None:
         out["game_range"] = [int(game_range[0]), int(game_range[1])]
     if vps_to_win is not None:
@@ -903,6 +1023,39 @@ def mixed_table(results: List[Dict[str, object]], names: Sequence[str]) -> Dict[
             "positions": positions}
 
 
+def mixed_table_2v2(results: List[Dict[str, object]], names: Sequence[str]) -> Dict[str, object]:
+    """Per-player figures of a 2v2-mixed run: ``wins`` (catanbot = either of our two seats, every
+    preset; ``none`` = turn-cap / crashed games), ``win_rate``, ``avg_vp`` (per seat: our two seats
+    both count), ``by_seat`` (per player and turn-order seat: wins by that seat / games in it) and
+    ``placements`` (our wins / games per lineup, ``/``-joined in turn order)."""
+    who = [CATANBOT] + [nm for nm in dict.fromkeys(names)]
+    wins = {k: 0 for k in who}
+    wins["none"] = 0
+    vps: Dict[str, List[int]] = {k: [] for k in who}
+    by_seat = {k: {str(s): [0, 0] for s in range(len(COLORS))} for k in who}
+    placements: Dict[str, List[int]] = {}
+    for r in results:
+        w = r.get("winner_name")
+        wins[w if w in wins else "none"] += 1
+        lineup = r.get("lineup") or []
+        for seat, nm in enumerate(lineup):
+            if nm not in by_seat:
+                continue
+            by_seat[nm][str(seat)][1] += 1
+            if int(r.get("winner_seat", -1)) == seat and not r.get("crashed"):
+                by_seat[nm][str(seat)][0] += 1
+            if not r.get("crashed"):
+                vps[nm].append(int(r["vps"][seat]))
+        row = placements.setdefault("/".join(lineup), [0, 0])
+        row[1] += 1
+        row[0] += bool(r.get("won"))
+    n = len(results)
+    return {"wins": wins, "win_rate": {k: (wins[k] / n if n else 0.0) for k in who},
+            "avg_vp": {k: (sum(v) / len(v) if v else 0.0) for k, v in vps.items()},
+            "by_seat": {k: {s: {"wins": w, "games": g} for s, (w, g) in v.items()} for k, v in by_seat.items()},
+            "placements": {k: {"wins": w, "games": g} for k, (w, g) in sorted(placements.items())}}
+
+
 def _timing_row(label: str, t: Dict[str, float], c: Dict[str, float], games: int, seats: int, s_per_game: float) -> str:
     per = max(1, games * seats)
     return (f"    {label:<34} {t['n'] / per:8.1f} {t['mean_ms']:9.2f} {t['p95_ms']:9.2f}   | "
@@ -924,7 +1077,39 @@ def print_summary(s: Dict[str, object], wall: float) -> None:
     two = s.get("our_seats", 1) == 2
     rng = s.get("game_range")
     rtxt = f', games {rng[0]}..{rng[1] - 1}' if rng else ""
-    if two:
+    fmt = s.get("format")
+    if fmt == "3v1":
+        print(f'3 x catanbot "{s["spec"]}" vs 1 x {s["opponent_class"]}{ptxt}: {s["games"]} games{rtxt}, 3v1 '
+              f'(opponent seat g%4), seed {s["seed"]} (catanatron {s.get("catanatron", CATANATRON_VERSION)}, '
+              f'trades {s.get("trades", "off")}, {_info_text(s)}PYTHONHASHSEED={s.get("hash_seed")})')
+        print(f'  wins        : {s["wins"]}/{s["games"]} = {100.0 * s["win_rate"]:.1f}%   (games won by any of the '
+              f'three catanbot seats; the 3v1 null is 75%)')
+        print(f'  opponent    : {s["opp_wins"]}/{s["games"]} = {100.0 * s["opp_win_rate"]:.1f}%   (the lone '
+              f'{s["opponent_class"]}; a random seat wins 25%); no winner {s["no_winner"]}')
+        print(f'  avg VP      : catanbot seats {s["avg_vp"]:.2f} | opponent {s["avg_opp_vp"]:.2f}')
+        opp = ", ".join(f'seat{k} {v["wins"]}/{v["games"]}' for k, v in s["opp_by_seat"].items())
+        print(f"  opp by seat : {opp}   (the opponent's wins / games in that seat)")
+        seats = ", ".join(f'seat{k} {v["wins"]}/{v["games"]}' for k, v in s["by_seat"].items())
+        print(f"  by seat     : {seats}   (wins by that catanbot seat / games it was ours)")
+    elif fmt == "2v2-mixed":
+        mx = s["mixed"]
+        print(f'2 x catanbot "{s["spec"]}" vs {" + ".join(s["opponents"])} ({s["opponent_class"]}){ptxt}: '
+              f'{s["games"]} games{rtxt}, 2v2-mixed (placement g%12: catanbot seats g%6, preset order (g//6)%2), '
+              f'seed {s["seed"]} (catanatron {s.get("catanatron", CATANATRON_VERSION)}, trades '
+              f'{s.get("trades", "off")}, {_info_text(s)}PYTHONHASHSEED={s.get("hash_seed")})')
+        print(f'  wins        : {s["wins"]}/{s["games"]} = {100.0 * s["win_rate"]:.1f}%   (games won by either '
+              f'catanbot seat; the 2v2 null is 50%)')
+        per = " | ".join(f'{k} {v}/{s["games"]} ({100.0 * mx["win_rate"].get(k, 0.0):.1f}%)'
+                         for k, v in mx["wins"].items() if k != "none")
+        print(f'  mixed wins  : {per} | no winner {mx["wins"]["none"]}')
+        print("  mixed VP    : " + " | ".join(f"{k} {v:.2f}" for k, v in mx["avg_vp"].items())
+              + "   (per seat)")
+        arr = ", ".join(f'{k} {v["wins"]}/{v["games"]}' for k, v in s["by_arrangement"].items())
+        print(f"  by pattern  : {arr}   (C = catanbot, o = opponent, in turn order)")
+        for k, v in mx["by_seat"].items():
+            cells = ", ".join(f'seat{p} {x["wins"]}/{x["games"]}' for p, x in v.items())
+            print(f"  seats {k:<9}: {cells}")
+    elif two:
         print(f'2 x catanbot "{s["spec"]}" vs 2 x {s["opponent_class"]}{ptxt}: {s["games"]} games{rtxt}, '
               f'6-arrangement rotation, seed {s["seed"]} (catanatron {s.get("catanatron", CATANATRON_VERSION)}, '
               f'trades {s.get("trades", "off")}, {_info_text(s)}PYTHONHASHSEED={s.get("hash_seed")})')
@@ -1241,9 +1426,10 @@ def main(argv=None, reexec: bool = False) -> int:
                          "from mid-game states and tabulate their answers (3.3 only)")
     ap.add_argument("--json", default=None, help="write the full results to this JSON file")
     ap.add_argument("--verbose", action="store_true", help="print one line per game")
-    ap.add_argument("--our-seats", type=int, choices=(1, 2), default=1,
+    ap.add_argument("--our-seats", type=int, choices=(1, 2, 3), default=1,
                     help="1 (default): 1v3, catanbot in seat g %% 4 against three opponent copies; 2: 2v2 mixed, two "
-                         "independent catanbot seats + two opponent seats, arrangement g %% 6 of the 6 placements")
+                         "independent catanbot seats + two opponent seats, arrangement g %% 6 of the 6 placements; "
+                         "3: 3v1, three independent catanbot seats + one opponent in seat g %% 4 (null 75%%)")
     ap.add_argument("--game-offset", type=int, default=0, metavar="A",
                     help="play games A .. A+games-1 of this --seed (same per-game seeds / seats as one run of all)")
     ap.add_argument("--game-range", type=parse_game_range, default=None, metavar="A:B",
@@ -1264,7 +1450,8 @@ def main(argv=None, reexec: bool = False) -> int:
                     help="--info counted: the cards of every discard on a 7 are public (default: count only)")
     ap.add_argument("--mixed-opponents", default=None, metavar="A,B,C",
                     help="1 catanbot seat (g %% 4) + one copy of each of these three presets, ordered in the other "
-                         "seats by permutation (g // 4) %% 6; reports wins per preset (format 1v3-mixed)")
+                         "seats by permutation (g // 4) %% 6; reports wins per preset (format 1v3-mixed).  With "
+                         "--our-seats 2: two presets A,B and two catanbot seats, placement g %% 12 (format 2v2-mixed)")
     ap.add_argument("--players", type=int, choices=(2, len(COLORS)), default=len(COLORS),
                     help=f"seats per game: {len(COLORS)} (default: the 1v3 / 2v2 / mixed formats) or 2 (1v1: catanbot "
                          "against one opponent, catanbot in seat g %% 2; the null is 50%%)")
@@ -1277,10 +1464,12 @@ def main(argv=None, reexec: bool = False) -> int:
         ap.error("--info-samples must be >= 1")
     mixed = parse_mixed(args.mixed_opponents)
     if mixed is not None:
-        if len(mixed) != len(COLORS) - 1:
-            ap.error(f"--mixed-opponents needs exactly {len(COLORS) - 1} presets (one per opponent seat), got {mixed}")
-        if args.our_seats != 1:
-            ap.error("--mixed-opponents is a 1v3 format (--our-seats 1)")
+        if args.our_seats == 3:
+            ap.error("--mixed-opponents is a 1v3 (three presets) or, with --our-seats 2, a 2v2 (two presets) format; "
+                     "3v1 has one opponent (--opponent)")
+        if len(mixed) != len(COLORS) - args.our_seats:
+            ap.error(f"--mixed-opponents needs exactly {len(COLORS) - args.our_seats} presets (one per opponent seat), "
+                     f"got {mixed}")
         if args.ladder:
             ap.error("--mixed-opponents and --ladder are mutually exclusive")
     if args.players == 2:
@@ -1346,9 +1535,17 @@ def main(argv=None, reexec: bool = False) -> int:
         indices = game_indices(args.games, args.game_offset, args.game_range)
         ranged = args.game_range is not None or args.game_offset
         gtxt = f"games {indices.start}..{indices.stop - 1}" if ranged else f"{len(indices)} games"
-        if mixed is not None:
+        if mixed is not None and args.our_seats == 2:
+            print(f"== 2x catanbot [{args.spec}] vs {' + '.join(mixed)} (2v2-mixed, placement g % 12){ptxt}, {gtxt}, "
+                  f"catanatron {CATANATRON_VERSION}, trades {args.trades}{itxt}, "
+                  f"PYTHONHASHSEED={os.environ.get('PYTHONHASHSEED')}")
+        elif mixed is not None:
             print(f"== catanbot [{args.spec}] vs {' + '.join(mixed)} (mixed lineup){ptxt}, {gtxt}, "
                   f"catanatron {CATANATRON_VERSION}, trades {args.trades}{itxt}, "
+                  f"PYTHONHASHSEED={os.environ.get('PYTHONHASHSEED')}")
+        elif args.our_seats == 3:
+            print(f"== 3x catanbot [{args.spec}] vs 1x {cls.__name__} ({opponent}){ptxt}, {gtxt}, 3v1 (opponent seat "
+                  f"g % 4), catanatron {CATANATRON_VERSION}, trades {args.trades}{itxt}, "
                   f"PYTHONHASHSEED={os.environ.get('PYTHONHASHSEED')}")
         elif args.our_seats == 2:
             print(f"== 2x catanbot [{args.spec}] vs 2x {cls.__name__} ({opponent}){ptxt}, {gtxt}, 2v2 arrangements, "
@@ -1380,8 +1577,7 @@ def main(argv=None, reexec: bool = False) -> int:
         if args.log_actions:
             os.makedirs(args.log_actions, exist_ok=True)
             log_path = action_log_path(args.log_actions, opponent, args.our_seats, args.seed, indices,
-                                       fmt=("1v3-mixed" if mixed is not None
-                                            else "1v1" if args.players == 2 else None))
+                                       fmt=match_format(args.our_seats, args.players, mixed is not None))
             open(log_path, "wb").close()   # a re-run of the same games replaces the earlier (partial) log
         t0 = time.perf_counter()
 
@@ -1398,6 +1594,8 @@ def main(argv=None, reexec: bool = False) -> int:
                 where = f'seat {r["seat"]}' if args.our_seats == 1 else f'seats {r["pattern"]}'
                 crash = f' CRASHED x{r["crashes"]}' if r.get("crashes") else ""
                 mtxt = (f' lineup={"/".join(r["lineup"])} winner={r.get("winner_name")}' if r.get("lineup") else "")
+                if r.get("format") == "3v1":
+                    mtxt += f' winner_seat={r["winner_seat"]}{" OPPONENT WON" if r.get("opp_won") else ""}'
                 print(f'  game {r["game"]:3d} {where} seed {r["seed"]}: '
                       f'{"WIN " if r["won"] else "loss"} vp={r["vps"]} turns={r["turns"]} {r["duration"]:.1f}s{ttxt}'
                       f'{mtxt}{crash}', flush=True)
@@ -1439,7 +1637,9 @@ def main(argv=None, reexec: bool = False) -> int:
                   f"{per / 1024:.1f} KiB/game)")
         summaries.append(summary)
     if len(summaries) > 1:
-        how = ("1v1 games; 50% = parity" if args.players == 2 else "4-player games; 25% = seat baseline")
+        how = ("1v1 games; 50% = parity" if args.players == 2
+               else "3v1 games, any of our three seats; 75% = seat baseline" if args.our_seats == 3
+               else "4-player games; 25% = seat baseline")
         print(f"\n== ladder summary (win rate of catanbot in {how}; catanatron {CATANATRON_VERSION})")
         for sm in summaries:
             print(f"  {sm['opponent_class']:<26} {sm['win_rate'] * 100:5.1f}%  avg VP {sm['avg_vp']:.2f} vs {sm['avg_opp_vp']:.2f}  ({sm['games']} games)")
