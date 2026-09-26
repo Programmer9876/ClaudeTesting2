@@ -521,3 +521,15 @@ the registered results without changing them:
 1. our bot with development-card purchases off, against AlphaBeta;
 2. an AlphaBeta patched to count its own hidden points and to score a won game as a win.
 
+### Q23. Are discards public?  The Colonist-information tests treated them as hidden.
+
+On a 7, Colonist shows which cards each player discarded (the user, a regular Colonist player, confirms it).
+In physical Catan the discards go back to the bank, face up.
+- **The proof's Colonist-information tests (T7-T9, T11)** were registered with hidden discards: only the count
+  was public (`discards_public: false`, protocol amendment 2).  That gave our bot *less* information than it
+  has on Colonist, and it still passed.  So the claim is conservative on this point.
+- **The advisor's log reader** (`catanbot/colonist_log.py`) already takes the discarded cards whenever the log
+  line shows them, and treats a discard as hidden only when the log gives just a count.
+- **From now on,** every Colonist-information queue row and benchmark uses `discards_public: true`
+  (`--adapter-opt discards_public=true`, or `--discards-public` in the bench scripts).  The registered proof
+  commands keep the old setting, so they replay unchanged.

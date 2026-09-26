@@ -389,6 +389,13 @@ Resolution:
 - The task text assumes about 6,000 self-play games/h. RESULTS.md measured about 1,000 games/h on 3 cores (11.5 s per game), and 170 on the Python evaluator. This plan uses 1,000.
 - The task says the proof is running. RESULTS.md reports T7-T11 finished at 04:10 UTC, and no bench, ablate or Python process was running when this plan was made. The proof guard stays for future pre-registered runs.
 
+## Rule for Colonist-information rows (user, 2026-09-26)
+
+Discards are public on Colonist.  Every counted-mode row sets `"discards_public": true` next to
+`"info": "counted"` in its adapter options.  The existing disabled counted rows (`devbelief_smoke@value`,
+`devbelief_noninf@value`, `crn_seeded_pilot@vf`, and any counted shadow) get it when step 6 enables them.
+docs/SCRUTINY.md Q23 has the details.
+
 ## Backlog (low priority; user, 2026-09-26)
 
 **Why the acceptance calibration failed its behaviour check** (`acq_calib_native@value`: 58.0 offers a game
