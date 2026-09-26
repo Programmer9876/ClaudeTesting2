@@ -743,6 +743,12 @@ They are all off by default outside the queue, and arm keys are unchanged when t
 | `t2_danger_mult_off@value`, `t2_block_need0@value`, `t2_exposure0_pyeval@value`, `t1_blockw0_pyeval@value` | robber | KEEP(unproven) | removing each: 0.0 +- 0.6, -1.2 +- 1.0, -0.5 +- 1.6, -0.6 +- 1.0 pp (400-800 pairs); the terms stay |
 | `t2_knight03@value` | robber | REJECT (futile) | +0.4 +- 0.2 pp at 1,000 pairs, below the smallest effect worth adopting |
 
+| `shadow_robber_step5` | robber | gate PASS (A/A clean) | the 40-game step-5 shadow ran |
+| `robber_gate_r1a` | robber | gate **FAIL** | R1a persistence failed its gates on the 40-game shadow, so `robber_persistence` and the robber + Largest Army bundle do not run.  The knight_kick fallback was not triggered (it triggers only on a G1 or G4 failure) |
+| `robber_gate_r1b`, `robber_gate_r1c` | robber | gate PASS | knight insurance and block duration pass their gates; both are SPSA knobs (backlog), with no standalone screen |
+| `t1_blockw0_pyeval@vf` | robber | KEEP(unproven) | -0.9 +- 1.0 pp at 800 pairs |
+| `devbelief_gate`, `shadow_dev_oracle` | counting | FAILED (queue bug) | the epoch-B4 snapshot lacked the two new scripts (the queue snapshots a fixed script list).  Fixed in `run_queue.py`; epoch B5 re-runs them as `devbelief_gate_v2` and `shadow_dev_oracle_v2` |
+
 ## Queue after the strength proof (2026-09-26): every strategy the user asked to test
 
 Everything below runs after T7-T11, one experiment at a time on 3 cores.

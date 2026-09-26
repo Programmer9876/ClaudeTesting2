@@ -4,6 +4,17 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 19:20 UTC - check-in: robber persistence fails its gate; a queue snapshot bug fixed
+
+- **Robber:** R1a (a block on a Knight holder is temporary) failed its gates on the 40-game shadow.  So its
+  screen and the robber + Largest Army bundle do not run, and the knight_kick fallback was not triggered.
+  Knight insurance and block duration passed, and stay SPSA knobs.  The robber ideas are on ice.
+- **Queue bug:** the two card-counting checks failed at once because the code snapshot copies only a fixed list
+  of scripts, and the two new ones were missing.  The scripts were added to the list (with `port_gate.py`),
+  the counting epoch was re-snapshotted (B5; the bot code is unchanged) and the checks re-run as `_v2` rows.
+- **Downtime:** a container restart stopped the queue for some time before 19:10 UTC.  It was restarted with
+  the 48-hour limit.
+
 ## 2026-09-26 15:00 UTC - check-in: the port gate fails; flat demand rejected; old robber terms kept
 
 - **Ports:** the pre-registered gate failed in every cell.  Cards saved vs 4:1 must rise by at least 1.1 a

@@ -717,7 +717,8 @@ class Ledger:
 # Snapshots (one code epoch per row, from an explicit allowlist)
 # ---------------------------------------------------------------------------
 SNAPSHOT_SCRIPTS = ("ablate_catanatron.py", "ablate.py", "bench_catanatron.py", "factorial_catanatron.py",
-                    "tune_joint.py", "mechanics.py", "seqtest.py", "decision_shadow.py", "winpaths_shadow.py")
+                    "tune_joint.py", "mechanics.py", "seqtest.py", "decision_shadow.py", "winpaths_shadow.py",
+                    "port_gate.py", "dev_belief_calibrate.py", "belief_shadow.py")
 CHECK_CODE = r"""
 import importlib.util, json, os, sys
 root = os.getcwd()

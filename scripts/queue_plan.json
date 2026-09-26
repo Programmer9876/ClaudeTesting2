@@ -1658,7 +1658,7 @@
    "notes": "Deferred to human testing at once: neither bot population retaliates (22.7% and 35.6% vs 33% uniform)."
   },
   {
-   "name": "devbelief_gate",
+   "name": "devbelief_gate_v2",
    "kind": "command",
    "area": "counting",
    "priority": 28,
@@ -1701,7 +1701,7 @@
    },
    "design": "estimate",
    "after": {
-    "row": "devbelief_gate",
+    "row": "devbelief_gate_v2",
     "verdicts": [
      "PASS"
     ]
@@ -1709,7 +1709,7 @@
    "notes": "Smoke (C): ms ratio <= 1.05, 0 devbelief_errors (adapter stats), replay --check clean; reports the discordant-seed share (RNG-neutral dealing keeps it low). Enabled in step 6: BLOCKED until an epoch has devbelief.ENABLED (--bump-code --areas counting), then waits for devbelief_gate PASS."
   },
   {
-   "name": "shadow_dev_oracle",
+   "name": "shadow_dev_oracle_v2",
    "kind": "command",
    "area": "counting",
    "priority": 30,
