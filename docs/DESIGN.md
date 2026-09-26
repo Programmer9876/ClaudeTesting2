@@ -66,6 +66,8 @@ catanbot/
   features.py     GameState -> numpy feature vector (perspective of a player)
   model.py        numpy MLP value network (train / predict / save / load)
   search.py       expectimax + beam search; returns ranked actions + explanation
+  corrections.py  leaf-correction hub: per-seat static-point corrections on the C++ values (section 16)
+  conversion.py   conversion-cost provider of the hub (search.conv; docs/STRATEGY.md "Conversion cost")
   agents/
     base.py       Bot interface
     random_bot.py
@@ -598,7 +600,8 @@ Model and knobs: docs/STRATEGY.md "Win-path races"; experiments: docs/ABLATIONS_
   `paths_priors`, `paths_spots`, so the Catanatron adapter, `ablate_catanatron
   --cand-spec` and campaign `cand_spec` strings can switch it on.
 * **Hooks in `Searcher`** (all guarded by `self._paths`, which is `None` unless
-  `config.paths` is set):
+  `config.paths` is set *alone*; next to another hub provider winpaths' `PathsContext` joins
+  the correction hub instead, section 16, and the sites below read `Searcher._value_ev()`):
   1. `search()` resets `self._paths = None` with the other per-search caches; after the
      single-legal-action early return (forced decisions build nothing) and outside the
      setup phases it builds `winpaths.PathsEvaluator.for_search(self.evaluator, state,
@@ -743,3 +746,58 @@ User guide: docs/USAGE.md "Card counting from the game log"; code `catanbot/colo
   request is byte-identical.  On engine games rendered by `LogRenderer` and fed in overlapping windows,
   the true hands are always among the hypotheses and every hand no hidden steal / discard touched is
   exact; with every hidden card revealed the count is exact throughout.
+
+## 16. Leaf-correction hub (`catanbot/corrections.py`; off by default)
+
+docs/PRIORITY_PLAN.md step 2 (`shared.corrections_hook`, `shared.seat_events`).  Several strategy terms are
+search-time corrections: per-seat static points `C_i` added to `static_value` before the evaluator's softmax,
+computed in Python on top of the C++ static values (no change to `static_value`, the placement score or `cpp/*`,
+no `needs_python_evaluator`).  They share one wrapper instead of wrapping each other.
+
+* **Providers.**  An object with `corrections(state) -> per-seat points` (`None` / all zeros = nothing),
+  optionally `adjust_priors(state, legal, priors)` (chained in provider order when its `priors` attribute is
+  true) and `stats`.  Today: winpaths' `PathsContext` (unchanged) and `conversion.ConversionContext`
+  (`search.conv`, docs/STRATEGY.md "Conversion cost").  Steps 3-5 of the plan add acq.progress, the ports flow
+  provider and robber_eval here.  `CorrectionHub.for_search(base, root, me, cfg)` builds them in a fixed order:
+  winpaths (through `PathsEvaluator.for_search`, the same constructor as before) first, then conversion.
+* **Values.**  `CorrectionHub.evaluate(states, players)` has the evaluator interface.  Per distinct state the
+  providers' corrections are summed in list order.  A `HeuristicEvaluator` base returns
+  `softmax((static_values(s) + sum C) / T)[player]` for corrected leaves; blended and other bases get
+  `base + w (softmax(V + C) - softmax(V))[player]` (`w = 1 - alpha` for a blend, 1 otherwise), as
+  `PathsEvaluator` does.  **Fast path:** a leaf whose summed correction is all zero gets the base evaluator's own
+  value (one batched `heuristic_evaluate` call for those leaves), bit for bit.  Finished games and setup-phase
+  states pass through to the base.
+* **Leaf-chance hook.**  `CorrectionHub.chance` providers (`leaf_outcomes(state, me) -> [(p, state'), ...]`
+  or `None`) may replace a *finished* depth-1 leaf by `sum_k p_k v(s_k)` (hub values, the extra states of a
+  search level in one batch; an outcome that is the leaf itself reuses its value).  The first provider that
+  answers wins, so two models of one mechanism (knight_kick vs robber persistence) never stack.  Applied in
+  `Searcher.search` right after a level's evaluation, only at `depth == 1` (deeper, the simulated opponents'
+  turns play such events out).  No real chance provider exists yet (search.knight_kick is step 5).
+* **Search integration.**  `Searcher._value_ev()` is the evaluator of every leaf-value site: `_eval` (every
+  leaf, the lookahead's greedy opponents, the reduced sub-search leaves), `_counter_filter` (rank_counters) and
+  the political trade options; `_future_values` takes the native C++ lookahead only when `_value_ev()` is the
+  bare base (C++ cannot see a correction).  `search()` builds the hub after the single-legal-action return and
+  outside the setup phases when a field of `_HUB_FIELDS` (`conv`) is set; `paths = 1` alone keeps
+  `winpaths.PathsEvaluator` (`self._paths`), so winpaths' values stay bit-identical to the pre-hub code
+  (digests pinned in tests/test_corrections.py: fixed-seed games and 24 fixed-position searches with paths 0
+  and 1, spots, depth 2).  `_candidate_priors` chains the hub's `adjust_priors` (winpaths' nudges when
+  `paths_priors`).  `reduced_config` copies `conv`; `native_level_dict` never sees it.  Limit: the conversion
+  provider is anchored at its search's root (so unbuilt leaves take the fast path); at depth >= 3 each reduced
+  sub-search builds its own hub anchored at its own root and so drops the change since the parent's root.
+  Depth 1 (the default) and depth 2 (the lookahead leaves go through the parent's hub) are exact.
+* **Invariants (tested).**  With every provider off nothing of `corrections` / `conversion` is imported by
+  the bot (fresh-interpreter test) and the default games reproduce the pre-feature digests, also with `conv=0`
+  spelled out and as ParamBots with the conversion constants overridden; a hub whose corrections are all
+  zero (`conv=1` with `KAPPA_CONV = 0`, no port ledger) returns every search result bit for bit.
+* **Cost** (depth 1, beam 4, expand 8; 323 main-phase roots of default self-play, interleaved best of 3,
+  process time): `conv=1` 1.01-1.04x the default's ms per decision (14 % of leaves corrected; the rest take
+  the fast path), with the reach component 1.06-1.09x; `paths=1` 1.23-1.24x and `paths=1,conv=1` 1.24-1.27x.
+* **Seat observers** (`shared.seat_events`).  `tuning.SEAT_OBSERVERS` maps a name to `factory(num_seats)`,
+  an object with `on_action(state, action, player)` (before the action is applied; the state is mutated in
+  place afterwards, so it must not be kept) and `result()`.  `tuning.play_paired_game(..., observers=[names])`
+  / `run_paired(..., observers=...)` chain them with the counter-offer counter on `play_game`'s `on_action` and
+  return `seat_events: {name: result}` (absent without observers, so default results are unchanged);
+  `paired_stats` copies it into the game's record.  `conversion.EconomyObserver` is registered as "economy"
+  (bank trades by ratio, settlements / cities built, first-build turns, resource types after setup).
+  scripts/ablate.py does not pass observers yet (a request to its owner).
+

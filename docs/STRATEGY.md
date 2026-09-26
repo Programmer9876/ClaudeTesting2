@@ -411,6 +411,66 @@ seat-rotated control); the constants only matter with `paths=1` in the base spec
 leaf on top of the batched C++ evaluation.  Experiments and decision rules:
 docs/ABLATIONS_WINPATHS.md.
 
+## Conversion cost: diversification weighted by ports (`conversion.py`; off by default)
+
+Area: diversification / expansion.  The bot opens ore/wheat and builds cities first on every board (docs/RESULTS.md
+2026-09-26 05:00: 3.85 resource types vs 4.67 for Catanatron's bots, 75-78 % of its bank trades at 4:1).  At depth
+1 the search never sees that every card of a missing resource is bought later at 4:1; static pays only 0.4 per
+type produced.  The user's rule: resource diversity matters a lot early without a port, a little less with a 3:1
+port, much less with a 2:1 port on a resource we produce plenty of.
+
+**The term** (our seat only; feature `ports.conversion_cost`, spec `conv=1`).  Robber-free production `p_r` per
+roll, income `I`; need shares `n_r` = `placement.RESOURCE_DEMAND` normalised (the build-cost mix: 0.187 / 0.187 /
+0.168 / 0.234 / 0.224); shortfall `s_r = max(0, n_r I - p_r)`, surplus `u_r` the other way.  Each acquired card
+costs `rho - 1` extra cards on its route: a 2:1 port on `s` carries up to `u_s / 2` cards per roll, the rest goes
+3:1 (generic port) or 4:1 (bank) - so 3 / 2 / 1 extra cards per missing card.  Over `R = n x H` rolls left
+(`winpaths.horizon`, frozen at the root; 64 rolls early, 18 at 8 VP) the correction is
+`-KAPPA_CONV x R x (c(leaf) - c(root))` static points, `KAPPA_CONV = 0.12` (static's price of a held card), and
+static's own port credit is cancelled for our seat (`PORT_LEDGER`), so a port settlement gains exactly its trade
+savings.  Calibration against the proof logs, for our typical opening: 12.5 extra cards a game at 4:1 (measured
+~15), a generic port saves 4.2 (measured ~5), a 2:1 wheat port 3.2 (measured 3.6-3.8); no factor was fitted.
+Setup: the `conversion` opening policy (`openings.policy=conversion`) adds `CONV_WEIGHT` (1.25 spot units per
+point) x the same cost change of a candidate spot to `setup_pick`, minus the spot score's port bonus.
+
+**What moves.**  A settlement on a missing type gains, a city on surplus ore/wheat loses a little (about 2 of its
+~18 static points early, ~10 %), both by two thirds as much with a 3:1 port; a port settlement gains its saving;
+everything fades with the horizon.  A road changes nothing unless `REACH_W > 0` (0 by default): then a leaf also
+gets `REACH_W x` the best conversion saving among the spots within two roads, discounted `1 / (1 + 0.9 d)` like
+static's reach term.
+
+**Decision shadow** (60 proof T1 games vs ValueFunction, our seat, C++ evaluator; 1,997 shadowed decisions, every
+2nd main decision; A/A 0 changed):
+
+| arm | changed | main | city-legal | settlement-legal | chosen road share (main) |
+|---|---|---|---|---|---|
+| default | - | - | - | - | 26.7 % (END_TURN 16.2 %) |
+| `conv=1` | 1.1 % | 22 / 1,248 | 16 / 126 | 6 / 104 | 26.7 % |
+| `conv=1`, `REACH_W=0.3` | 2.4 % | 48 / 1,248 | 16 / 126 | 6 / 104 | 26.9 % (3 END_TURN -> road) |
+| `paths=1` | 11.1 % | 178 / 1,248 | 3 / 126 | 2 / 104 | 30.1 % (END_TURN 11.4 %) |
+| `conv=1,paths=1` | 12.0 % | 195 / 1,248 | 17 / 126 | 6 / 104 | 30.1 % |
+
+`conv=1` changes *which* city or settlement (15 + 6 of 22) and almost never the kind of action (one city -> bank
+trade): at depth 1 a leaf term cannot make the bot save cards for a settlement next turn instead of building a
+city now.  The setup policy is
+the larger lever: it changes 56 % of our setup settlements (setup_pick forced: 38 %).  Second settlements of those
+positions (union with the logged first): types 3.78 -> 4.28, wheat+ore 11.6 -> 10.2 pips, wood+brick 7.4 -> 7.6,
+sheep 1.9 -> 2.4 (sheep is our largest shortfall under the build-cost mix), total pips 20.9 -> 20.2, port 7 ->
+13 %.  On 200 random boards (seat vs three default search bots): types 4.07 -> 4.62, 5-type openings 26 -> 62 %,
+pips 20.2 -> 18.9.
+
+**With the Longest Road race** (`paths=1,conv=1`).  The two are hub providers, summed per leaf, and value
+different things bought by the same roads: this term is *resource access* (cards not lost to the bank, from our
+buildings and ports); winpaths' credit is the *prize* (P(hold the 2-VP card at game end) from trail lengths, hand
+and road rate).  Their ledgers cancel disjoint parts of static (award progress vs the port credit), and neither
+reads the other's output (winpaths' road rate does count port-converted surplus: the race's feasibility, not the
+saving).  In the shadow the pair is additive - it differs from `paths=1` alone in 23 decisions, `conv=1` from the
+default in 22, and only one decision is changed by both - and it does not over-build roads (road share 30.1 %,
+the same as `paths=1`; with `REACH_W=0.3` 30.5 %).  Known overlap: `paths_spots=1` rescales static's reach credit
+by our chance at contested spots, the `REACH_W` saving is not rescaled.
+
+**Cost**: 1.01-1.04x the default's CPU per decision (1.06-1.09x with the reach component); the setup policy
+replaces the setup search and costs ~0.12x of it.
+
 ## Counter-offers and out-of-turn trade analysis (`counteroffers.py`; off by default)
 
 **Rules (Colonist.io).**  A rules variant, `GameState.allow_counters` (off: the base game is unchanged).

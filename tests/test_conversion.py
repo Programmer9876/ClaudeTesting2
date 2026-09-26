@@ -13,7 +13,6 @@ import sys
 
 import pytest
 
-from catanbot import accel
 from catanbot import board as B
 from catanbot import conversion as C
 from catanbot import engine as E
@@ -21,7 +20,7 @@ from catanbot import openings, placement, tuning
 from catanbot.agents.param_bot import ParamBot
 from catanbot.corrections import static_values
 from catanbot.heuristic import HeuristicEvaluator, static_value
-from catanbot.search import SearchConfig, Searcher
+from catanbot.search import SearchConfig
 from catanbot.selfplay import make_bot, play_game
 from catanbot.state import PHASE_MAIN, PHASE_SETUP_SETTLEMENT, new_game
 
