@@ -135,6 +135,7 @@ from .. import board as B
 from .. import engine as E
 from ..agents.base import Bot
 from ..agents.search_bot import SearchBot
+from ..devcards import without_dev_buys
 from ..heuristic import action_priors
 from ..selfplay import make_bot
 from ..state import (
@@ -1475,8 +1476,10 @@ class CatanbotPlayer(Player):
                 chosen = decision
             if chosen is None:
                 self.stats["fallback"] += 1
-                priors = action_priors(view, cb_legal, E.acting_player(view))
-                chosen = cb_legal[max(range(len(cb_legal)), key=lambda i: priors[i])]
+                with self._scope(("devcards.",)):     # a devcards.buy-off candidate never buys here either
+                    pool = without_dev_buys(cb_legal)
+                priors = action_priors(view, pool, E.acting_player(view))
+                chosen = pool[max(range(len(pool)), key=lambda i: priors[i])]
             try:
                 self.last_explanation = self.bot.explain(cb)
             except Exception:
@@ -1557,9 +1560,14 @@ class CatanbotPlayer(Player):
 
     def _belief_scope(self):
         """The ParamBot's ``devbelief.*`` overrides (a candidate arm's belief tunables), else nothing."""
+        return self._scope(("devbelief.",))
+
+    def _scope(self, prefixes: Tuple[str, ...]):
+        """The ParamBot's overrides whose names start with ``prefixes`` (work done for the bot outside its hooks),
+        else nothing."""
         from ..agents.param_bot import ParamBot
         if isinstance(self.bot, ParamBot):
-            return self.bot.scope(prefixes=("devbelief.",))
+            return self.bot.scope(prefixes=prefixes)
         return contextlib.nullcontext()
 
     def _sample_rng(self, call: int, k: int) -> random.Random:
@@ -1670,7 +1678,8 @@ class BenchOpponent(Player):
       value function is strictly higher after the trade than before (both
       hands updated as ``CONFIRM_TRADE`` would).  The value function is the
       player's own when it has one (catanatron's value / alpha-beta players:
-      their ``value_fn`` and weights; our stand-ins: their ``_value``),
+      their ``value_fn`` and weights; our stand-ins: their ``_value``; our
+      ``alphabeta_fixvp`` patch: its patched ``value_function``),
       otherwise catanatron's ``base_fn`` with its default weights.
     * ``fair``: ``value``, and never give more cards than received, and never
       trade with a proposer who has ``vps_to_win - 2`` or more public VP.
@@ -1770,7 +1779,11 @@ class BenchOpponent(Player):
         """``fn(game, color) -> float`` used by the ``value`` / ``fair`` rules (see the class doc)."""
         if self._value_fn is None:
             inner = self.inner
-            if hasattr(inner, "value_fn_builder_name"):          # catanatron 3.3 value / alpha-beta players
+            if getattr(inner, "use_value_function", None) and callable(getattr(inner, "value_function", None)):
+                # a 3.3 alpha-beta player that swaps its value through catanatron's own hook: that function
+                # (our alphabeta_fixvp patch, catanbot.bench.patched_alphabeta; catanatron's players leave it off)
+                self._value_fn = inner.value_function
+            elif hasattr(inner, "value_fn_builder_name"):        # catanatron 3.3 value / alpha-beta players
                 from catanatron.players.value import get_value_fn
                 params = getattr(inner, "params", None)
                 self._value_fn = get_value_fn(inner.value_fn_builder_name, getattr(params, "weights", None))

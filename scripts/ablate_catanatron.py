@@ -1570,7 +1570,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--opponent-params", metavar="KEY=VAL,...",
                    help="constructor parameters of every opponent (bench_catanatron.py --opponent-params syntax)")
     g.add_argument("--opponent", help="bench_catanatron preset: value / alphabeta / sameturn (3.3), vf / ab / vp / "
-                                      "weighted / random (3.2.1 and 3.3), or module:Class")
+                                      "weighted / random (3.2.1 and 3.3), alphabeta_fixvp (OUR patched AlphaBeta, "
+                                      "3.3; docs/SCRUTINY.md Q22), or module:Class")
     g.add_argument("--vps-to-win", type=int, default=10)
     g.add_argument("--discard-limit", type=int, default=7)
     g = p.add_argument_group("how many / where")

@@ -68,6 +68,19 @@ the bot never calls it.
 rule): :class:`AcceptCalibrator`, an online recalibration of ``OpponentModel.predict_accept`` per opponent from every
 observed answer, and the rejection-streak rule.
 
+``offer cost`` (:data:`OFFER_COST`, :data:`OFFER_LEAK`; docs/PRIORITY_PLAN.md "Backlog", the trade-offer spam): at a
+real table every offer is public (it tells the table what we need and what we hold) and a rejected one used to cost
+the search nothing, so any offer with a positive expectation beat not offering however low P(accept) fell.  With a
+cost on, ``Searcher._offer_value`` values each of our proposals at ``min(E, V_no + P x (V_acc - V_rej)) - cost``: ``E``
+the plain accept / reject expectation, ``V_no`` the best sibling that is not a proposal, ``V_acc`` / ``V_rej`` the
+accepted and rejected branches (both searched to the same depth) and ``cost`` :func:`offer_cost` = ``OFFER_COST +
+OFFER_LEAK x`` :func:`offer_reveal`.  An offer is therefore made only when its own expected gain ``P x (V_acc -
+V_rej)`` beats its cost (a trade we value at or below nothing is never proposed, and a rejected branch that merely
+searched deeper no longer carries it), and the pricing never raises an offer's value.  The acceptance calibration and
+the rejection streak supply the ``P``: against seats that never accept it falls to (about) 0 and the bot stops
+offering.  Our answers to other players' offers and counter-offers (``search.counter_margin``) are not priced.  Off
+by default (both 0): the search is then exactly the old one and never imports this module.
+
 Tunables register through :func:`register_tunables` (one import line at the end of catanbot/tuning.py).
 """
 from __future__ import annotations
@@ -92,6 +105,8 @@ SHAPES_KEEP = 2          # acq.breadth (B): injected offers kept per node ...
 SHAPES_MIN_P = 0.15      # ... with p_any at least this
 W_PREMIUM = 1.0          # acq_floor: premium per unit of the partner's win-probability gain x danger multiplier
 FLOOR_WINDOW = 3         # acq_floor: proposals checked beyond the node's proposal slots (the rest are not tried)
+OFFER_COST = 0.0         # offer cost: win probability charged per player-trade proposal we make (0 = off) ...
+OFFER_LEAK = 0.0         # ... plus this per unit of offer_reveal (cards asked for, +1 if it completes a build; 0 = off)
 
 
 
@@ -508,6 +523,38 @@ def floor_reason(state: GameState, me: int, j: int, cost: Sequence[int], get: Se
 
 
 # ---------------------------------------------------------------------------
+# offer cost: the price of a public proposal (read by Searcher._offer_value only with a cost on)
+# ---------------------------------------------------------------------------
+_VP_BUILDS = (B.COST_SETTLEMENT, B.COST_CITY)
+
+
+def offer_reveal(state: GameState, i: int, give: Sequence[int], get: Sequence[int]) -> int:
+    """What seat ``i``'s proposal (it gives ``give``, asks for ``get``) tells the table about its needs: the cards it
+    asks for, plus 1 when the trade would complete a settlement or a city its hand cannot pay now (the offer then
+    shows that it holds the rest of that build, which feeds the table's card counting and robber targeting)."""
+    hand = state.players[i].resources
+    after = [hand[r] - give[r] + get[r] for r in range(5)]
+    n = int(sum(get))
+    for cost in _VP_BUILDS:
+        if all(after[r] >= cost[r] for r in range(5)) and not all(hand[r] >= cost[r] for r in range(5)):
+            return n + 1
+    return n
+
+
+def offer_cost(state: GameState, i: int, give: Sequence[int], get: Sequence[int]) -> float:
+    """``OFFER_COST + OFFER_LEAK x offer_reveal`` (win probability) of seat ``i`` proposing ``give`` for ``get``."""
+    c = float(OFFER_COST)
+    if OFFER_LEAK:
+        c += float(OFFER_LEAK) * offer_reveal(state, i, give, get)
+    return c
+
+
+def offer_cost_on() -> bool:
+    """The offer cost is switched on (either weight non-zero)."""
+    return bool(OFFER_COST or OFFER_LEAK)
+
+
+# ---------------------------------------------------------------------------
 # acq.flow: trade-flow port value (fitted table; a pure function for the ports area)
 # ---------------------------------------------------------------------------
 # scripts/acq_flow_fit.py (fit: 1,000 T1 proof games, our seat vs 3 x ValueFunction, 6,708 bank trades; validation:
@@ -726,6 +773,18 @@ def register_tunables(registry: Dict[str, object]) -> None:
                 description="player-trade premium per unit of the partner's win-probability gain x their danger "
                             "multiplier (0 = plain bank floor: ties go to the bank); only with search.acq_floor=1")
     registry[t.name] = t
+    for attr, default, cands, desc in (
+            ("OFFER_COST", OFFER_COST, [0.002, 0.005, 0.01],
+             "offer cost: win probability charged per player-trade proposal we make; with a cost on, a proposal is "
+             "valued min(expectation, not offering + P(accept) x (accepted - rejected branch)) - cost, so it is made "
+             "only when its own expected gain beats its cost (0 = off, with OFFER_LEAK 0: the old search)"),
+            ("OFFER_LEAK", OFFER_LEAK, [0.001, 0.003],
+             "offer cost, information-leak part: win probability per card the proposal asks for, +1 unit when the "
+             "trade would complete a settlement or city (acquisition.offer_reveal); 0 = off")):
+        t = Tunable(name=f"acquisition.{attr}", module=__name__, attr=attr, default=default, kind="weight",
+                    candidates=list(cands), requires_search=True, needs_python_evaluator=False, clear_caches=False,
+                    parse=tuning._parse_float, description=desc + " (the search bot's proposals)")
+        registry[t.name] = t
     om = "catanbot.opponent_model"
     for attr, default, cands, parse, desc in (
             ("CALIB_RATE", 0.0, [1.0, 0.5], tuning._parse_float,

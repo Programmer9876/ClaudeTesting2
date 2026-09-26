@@ -22,6 +22,7 @@ from typing import List, Optional
 
 from .. import actions as A
 from ..actions import Action
+from ..devcards import without_dev_buys
 from ..heuristic import action_priors
 from ..state import GameState, PHASE_MAIN, PHASE_TRADE_RESPONSE
 from ..trading import should_accept
@@ -51,6 +52,7 @@ class HeuristicBot(Bot):
         return self.trade_bias
 
     def decide(self, state: GameState, legal_actions: List[Action], rng) -> Action:
+        legal_actions = without_dev_buys(legal_actions)     # devcards.buy off (Q22 check); the same list when on
         if len(legal_actions) == 1:
             return legal_actions[0]
         bias = self._game_bias(rng)

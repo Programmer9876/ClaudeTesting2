@@ -854,3 +854,4 @@ from .acquisition import register_tunables as _register_acquisition; _register_a
 from .portvalue import register_tunables as _register_portvalue; _register_portvalue(TUNABLES)  # noqa: E402,E702
 from .robber_eval import register_tunables as _register_robber; _register_robber(TUNABLES)  # noqa: E402,E702
 from .devbelief import register_tunables as _register_devbelief; _register_devbelief(TUNABLES)  # noqa: E402,E702
+from .devcards import register_tunables as _register_devcards; _register_devcards(TUNABLES)  # noqa: E402,E702

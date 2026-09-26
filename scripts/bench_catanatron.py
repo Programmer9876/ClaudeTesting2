@@ -29,6 +29,12 @@ copies of the chosen catanatron opponent:
 * ``value`` / ``alphabeta`` / ``sameturn`` / ``playouts`` / ``mcts`` - catanatron's
   own strong players (``catanatron.players.value`` / ``minimax`` / ``playouts`` /
   ``mcts``), shipped by the 3.3 engine of the GitHub checkout only
+* ``alphabeta_fixvp`` - OUR patch of catanatron 3.3's ``AlphaBetaPlayer``, not
+  Catanatron's player (``catanbot.bench.patched_alphabeta``, docs/SCRUTINY.md
+  Q22): it scores its own victory points with ``ACTUAL_VICTORY_POINTS`` (its
+  hidden VP cards count) and a won / lost finished game with a +/- 1e16 bonus;
+  everything else is catanatron's defaults (depth 2, ``base`` weights, no
+  pruning).  3.3 only (3.2.1 refuses it like the other 3.3 presets)
 
 ``--opponent-params KEY=VAL,...`` passes constructor parameters to every
 opponent: the fields of a 3.3 player's ``Params`` (``alphabeta``:
@@ -209,6 +215,9 @@ PRESETS = {
     "playouts": "catanatron.players.playouts:GreedyPlayoutsPlayer",
     "vf": "catanbot.bench.catanatron_players:ValueFunctionPlayer",
     "ab": "catanbot.bench.catanatron_players:AlphaBetaPlayer",
+    # OUR patch of catanatron 3.3's AlphaBetaPlayer (docs/SCRUTINY.md Q22), NOT Catanatron's player: it counts its
+    # own hidden VP cards and scores a won / lost finished game (catanbot/bench/patched_alphabeta.py); in no ladder
+    "alphabeta_fixvp": "catanbot.bench.patched_alphabeta:FixVPAlphaBetaPlayer",
 }
 LADDERS = {
     "controls": ["random", "weighted", "vp"],
@@ -1397,7 +1406,8 @@ def main(argv=None, reexec: bool = False) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--games", type=int, default=20, help="number of games (default 20)")
     ap.add_argument("--opponent", default="vp",
-                    help="opponent preset (vp, weighted, random, vf, ab, value, alphabeta, sameturn, playouts, mcts), "
+                    help="opponent preset (vp, weighted, random, vf, ab, value, alphabeta, sameturn, playouts, mcts; "
+                         "alphabeta_fixvp = OUR patched AlphaBeta, docs/SCRUTINY.md Q22), "
                          "an import path module:Class, or a comma-separated list (default vp)")
     ap.add_argument("--opponent-params", default=None, metavar="KEY=VAL,...",
                     help="constructor parameters for every opponent (3.3 Params fields, e.g. depth=3 for alphabeta, "

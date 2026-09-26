@@ -8,11 +8,21 @@ Buying guidelines:
 * Card-count pressure (> 7 cards) - converting three cards into a dev card
   is a cheap way to dodge a 7.
 * Never instead of an affordable city or a settlement on a good spot.
+
+Due-diligence switch (docs/SCRUTINY.md Q22): ``BUY_ENABLED`` (tunable ``devcards.buy``, a flag; off =
+``devcards.buy:off`` / ``--flag-off``) removes ``BUY_DEV`` from our bot's OWN choices through
+:func:`without_dev_buys`: every decision node of our turn in the search (``Searcher._candidates``) and the legal
+lists of ``SearchBot.decide`` / ``HeuristicBot.decide`` (and the adapter's prior fallback).  Nothing else reads it:
+``should_buy_dev``, ``heuristic.action_priors``, the opponent model and the simulated opponents' turns are
+unchanged, so opponents are still expected to buy.  At depth >= 3 the native (C++) lookahead's model of our own
+next turn still contains purchases (it reads no Python constant); the default depth-1 search has no such turn.
+On (the default) the function returns its argument itself, so default play is byte-identical.
 """
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
+from . import actions as A
 from . import board as B
 from .counting import HandBelief, dev_draw_probabilities, monopoly_expected_take
 from .placement import (RESOURCE_DEMAND, best_settlement_spots, buildable_settlements,
@@ -24,6 +34,19 @@ KNIGHT_VALUE = 0.55        # robber move + steal + progress to Largest Army
 ROAD_BUILDING_VALUE = 0.7  # two roads = 2 wood + 2 brick
 YEAR_OF_PLENTY_VALUE = 0.55
 MONOPOLY_BASE_VALUE = 0.6
+
+# Q22 check (docs/SCRUTINY.md): False = our bot never buys a development card (see the module doc).
+BUY_ENABLED = True
+
+
+def without_dev_buys(legal: Sequence) -> Sequence:
+    """``legal`` without ``BUY_DEV`` when :data:`BUY_ENABLED` is off; ``legal`` itself (same object) when on.
+
+    Should ``BUY_DEV`` be the only legal action (never in the rules: ``END_TURN`` is legal whenever a purchase
+    is), ``legal`` is returned unchanged, so a decision always has an action to play."""
+    if BUY_ENABLED:
+        return legal
+    return [a for a in legal if a[0] != A.BUY_DEV] or legal
 
 
 def _can_afford(p, cost) -> bool:
@@ -195,3 +218,22 @@ def dev_card_advice(state: GameState, player: int, belief: Optional[HandBelief] 
         r1, r2, why = best_year_of_plenty(state, player)
         lines.append(f"Year of Plenty: take {B.RESOURCE_NAMES[r1]} + {B.RESOURCE_NAMES[r2]} ({why})")
     return lines
+
+
+def register_tunables(registry: Dict[str, object]) -> None:
+    """Add ``devcards.buy`` (the Q22 switch, :data:`BUY_ENABLED`) to the ``tuning.TUNABLES`` registry.
+
+    A flag: on (the default) installs nothing; off sets ``devcards.BUY_ENABLED = False`` for the candidate bot's own
+    hooks only (``agents/param_bot.py``).  It needs neither the search (the heuristic bot honours it too) nor the
+    Python evaluator (``static_value`` does not read it)."""
+    import importlib
+    import sys
+    tuning = sys.modules.get("catanbot.tuning") or importlib.import_module("catanbot.tuning")
+    t = tuning.Tunable(name="devcards.buy", module=__name__, attr="BUY_ENABLED", default=True, kind="flag",
+                       candidates=[False], parse=tuning._parse_bool, requires_search=False,
+                       needs_python_evaluator=False, clear_caches=False,
+                       description="off: our bot never buys a development card (BUY_DEV removed from its own "
+                                   "choices: search nodes of our turn, SearchBot / HeuristicBot legal lists); "
+                                   "should_buy_dev, action_priors and the opponent model are unchanged; the "
+                                   "docs/SCRUTINY.md Q22 due-diligence check")
+    registry[t.name] = t

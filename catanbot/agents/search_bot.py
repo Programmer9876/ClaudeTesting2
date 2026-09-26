@@ -15,6 +15,7 @@ from .. import actions as A
 from .. import engine as E
 from ..actions import Action
 from ..counting import HandBelief
+from ..devcards import without_dev_buys
 from ..heuristic import HeuristicEvaluator, action_priors
 from ..opponent_model import OpponentModel
 from ..politics import PoliticalState
@@ -74,6 +75,7 @@ class SearchBot(Bot):
             self.politics = PoliticalState(state.num_players)
 
     def decide(self, state: GameState, legal_actions: List[Action], rng) -> Action:
+        legal_actions = without_dev_buys(legal_actions)     # devcards.buy off (Q22 check); the same list when on
         if state.allow_counters and not self.config.counters and state.phase == PHASE_TRADE_RESPONSE:
             # Counter-offer rules, bot without counters: answer like a bot that does not know them.
             legal_actions = [a for a in legal_actions if a[0] != A.COUNTER_TRADE] or legal_actions

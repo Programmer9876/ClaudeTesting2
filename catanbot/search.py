@@ -45,6 +45,7 @@ from . import engine as E
 from .actions import Action
 from .counting import HandBelief
 from .devcards import should_buy_dev
+from .devcards import without_dev_buys   # devcards.buy (docs/SCRUTINY.md Q22): identity unless switched off
 from .discard import choose_discard, default_keep_targets, explain_seven_risk, seven_risk, surplus_dump_actions
 from .heuristic import action_priors
 from .opponent_model import OpponentModel, trade_stage_factor
@@ -179,6 +180,14 @@ def _hub_needed(cfg: "SearchConfig") -> bool:
     pv = sys.modules.get("catanbot.portvalue")
     return pv is not None and bool(pv.FLOW_KAPPA)
 
+
+def _offer_pricing():
+    """The ``catanbot.acquisition`` module when its offer cost is on (``OFFER_COST`` / ``OFFER_LEAK`` non-zero), else
+    None.  Read through ``sys.modules`` like ``_hub_needed``: the default bot never imports the module, and an override
+    of either weight imports it."""
+    q = sys.modules.get("catanbot.acquisition")
+    return q if q is not None and q.offer_cost_on() else None
+
 # Node budget one leaf of the depth >= 3 lookahead needs for its reduced sub-search (``reduced_config``'s floor).
 # ``_future_values`` runs the sub-search for every leaf or for none (``REDUCED_SEARCH_MIN_NODES`` x leaves must be
 # left in ``max_nodes`` after the opponents' turns): a partial set, valued one turn deeper than the rest, would
@@ -283,6 +292,7 @@ class Searcher:
         self._paths = None           # winpaths.PathsEvaluator of the current search (config.paths = 1 alone)
         self._corr = None            # corrections.CorrectionHub of the current search (a hub provider switched on)
         self._counter_rank: Dict[Action, int] = {}     # counters kept by _counter_filter (config.counters = 1)
+        self._offer_q = None         # catanbot.acquisition while its offer cost is on (_offer_pricing), else None
         # Native lookahead (C++): the evaluator's twin handle, or None -> the Python _future_values below.
         self._native_ev = None
         self._native_key = None
@@ -315,6 +325,7 @@ class Searcher:
         self._paths = None
         self._corr = None
         self._counter_rank = {}
+        self._offer_q = _offer_pricing()      # offer cost (off by default: None, the old valuation)
         if self._native_ev is not None and _accel.evaluator_key(self.evaluator) != self._native_key:
             # The net's arrays were replaced (set_params / load): rebuild the native twin.
             self._native_ev = _accel.native_evaluator(self.evaluator)
@@ -400,12 +411,15 @@ class Searcher:
         # the ordering of every leaf below 0); the root values are clamped for the caller after ranking.
         self._backup(root, me)
         results: List[ScoredAction] = []
-        for a, kids in root.children:
+        priced = self._priced_children(root, me) if self._offer_q is not None else None
+        for i, (a, kids) in enumerate(root.children):
             v = sum(p * (k.value if k.value is not None else k.static) for p, k in kids)
+            if priced is not None:
+                v = priced[i][2]            # offer cost on: our proposals net of their price (_offer_value)
             if a[0] == A.COUNTER_TRADE:
                 v -= cfg.counter_margin     # counters (config.counters = 1 only) must beat accept / reject by a margin
             best_kid = max(kids, key=lambda pk: pk[1].value if pk[1].value is not None else pk[1].static)[1]
-            line = self._principal_line(best_kid)
+            line = self._principal_line(best_kid, me)
             results.append(ScoredAction(a, v, "", [a] + line, sum(p * k.static for p, k in kids)))
         results.sort(key=lambda r: -r.value)
         for r in results:
@@ -455,20 +469,65 @@ class Searcher:
                 v += p * self._backup(k, me)
             if v > best:
                 best = v
+        if self._offer_q is not None:
+            # Offer cost on: our proposals enter the max net of their price (_offer_value).
+            best = max(v for _a, _k, v in self._priced_children(node, me))
         # A pruned/unexpanded alternative might still be better than the expanded ones? No:
         # the static value of this node is what we would get without acting; END_TURN is
         # always among the candidates, so ``best`` already covers "do nothing".
         node.value = best
         return best
 
-    def _principal_line(self, node: _Node) -> List[Action]:
+    def _principal_line(self, node: _Node, me: Optional[int] = None) -> List[Action]:
         line: List[Action] = []
         while node.children:
-            a, kids = max(node.children,
-                          key=lambda ak: sum(p * (k.value if k.value is not None else k.static) for p, k in ak[1]))
+            if self._offer_q is not None and me is not None:
+                a, kids, _v = max(self._priced_children(node, me), key=lambda t: t[2])
+            else:
+                a, kids = max(node.children,
+                              key=lambda ak: sum(p * (k.value if k.value is not None else k.static) for p, k in ak[1]))
             line.append(a)
             node = max(kids, key=lambda pk: pk[0])[1]
         return line
+
+    # --- offer cost (acquisition.OFFER_COST / OFFER_LEAK; every method below runs only with the cost on) ----------
+    def _priced_children(self, node: _Node, me: int) -> List[Tuple[Action, list, float]]:
+        """``[(action, kids, value)]`` of a backed-up decision node in child order: the plain expectation, except that
+        every PROPOSE_TRADE of ours is valued by :meth:`_offer_value` against the node's best non-proposal child."""
+        vals = []
+        base = -math.inf
+        for a, kids in node.children:
+            v = sum(p * (k.value if k.value is not None else k.static) for p, k in kids)
+            vals.append((a, kids, v))
+            if a[0] != A.PROPOSE_TRADE and v > base:
+                base = v
+        if E.acting_player(node.state) != me:
+            return vals
+        return [(a, kids, self._offer_value(node.state, a, kids, v, base, me) if a[0] == A.PROPOSE_TRADE else v)
+                for a, kids, v in vals]
+
+    def _offer_value(self, state: GameState, action: Action, kids, ev: float, base: float, me: int) -> float:
+        """Our proposal ``action`` (outcomes ``kids`` from ``_trade_outcomes``, plain expectation ``ev``) net of its
+        price ``acquisition.offer_cost``: ``min(ev, base + P x (V_acc - V_rej)) - cost``.  ``base`` is the best
+        sibling that is not a proposal (not offering); the accepted outcome is the one in which our hand changed.
+        So the offer is worth making only when its own expected gain ``P x (V_acc - V_rej)`` (both branches searched
+        to the same depth) beats the cost: a trade we value at or below nothing, or a rejected branch that merely
+        searched deeper than the siblings, no longer carries it; and the price never raises an offer's value.  A
+        missing branch (P(accept) about 0 or 1) takes ``base`` in its place; no non-proposal sibling: ``ev - cost``."""
+        cost = self._offer_q.offer_cost(state, me, action[1], action[2])
+        if base == -math.inf:
+            return ev - cost
+        mine = state.players[me].resources
+        p_acc, v_acc, v_rej = 0.0, None, None
+        for p, k in kids:
+            v = k.value if k.value is not None else k.static
+            if k.state.players[me].resources != mine:
+                p_acc += p
+                v_acc = v
+            else:
+                v_rej = v
+        gain = 0.0 if v_acc is None else p_acc * (v_acc - (base if v_rej is None else v_rej))
+        return min(ev, base + gain) - cost
 
     # ------------------------------------------------------------------
     # candidate generation
@@ -716,6 +775,7 @@ class Searcher:
         legal = E.legal_actions(state)
         if not legal:
             return []
+        legal = without_dev_buys(legal)     # devcards.buy off: no BUY_DEV of our own (the same list when on)
         if state.allow_counters and state.phase == PHASE_TRADE_RESPONSE:
             legal = self._counter_filter(state, legal, me)
         if cfg.acq_floor and state.phase == PHASE_TRADE_RESPONSE:
