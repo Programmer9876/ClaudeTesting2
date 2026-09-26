@@ -296,6 +296,10 @@ def arm_key(arm: Dict[str, Any], ctx: Dict[str, Any]) -> str:
                                        "vps_to_win", "discard_limit", "hashseed")}
     if ctx.get("fake"):
         key_ctx["fake"] = ctx["fake"]["effect"]   # synthetic games: the effect size defines them, not the crash hooks
+        if ctx["fake"].get("disc") is not None:
+            key_ctx["fake_disc"] = ctx["fake"]["disc"]
+    if ctx.get("crn"):
+        key_ctx["crn"] = ctx["crn"]               # only when on: every CRN-off arm key is unchanged
     return sha({"role": arm["role"], "spec": arm["spec"], "overrides": arm["overrides"], "adapter": arm["adapter"],
                 "ctx": key_ctx})
 
@@ -405,10 +409,21 @@ def make_context(args) -> Dict[str, Any]:
     if args.fake_games is not None:
         fake = {"effect": args.fake_games, "crash": sorted(args.fake_crash_seeds), "die": sorted(args.fake_die_seeds),
                 "sleep": args.fake_sleep}
-    return {"opponent": args.opponent, "opponent_params": parse_opponent_params(args.opponent_params),
-            "python": platform.python_version(), "catanatron": catanatron_version(),
-            "evaluator": evaluator_mode(), "vps_to_win": args.vps_to_win, "discard_limit": args.discard_limit,
-            "hashseed": os.environ.get("PYTHONHASHSEED"), "fake": fake}
+        if getattr(args, "fake_discordance", None) is not None:
+            fake["disc"] = args.fake_discordance
+        if getattr(args, "fake_default_shift", None):
+            fake["shift"] = args.fake_default_shift
+    ctx = {"opponent": args.opponent, "opponent_params": parse_opponent_params(args.opponent_params),
+           "python": platform.python_version(), "catanatron": catanatron_version(),
+           "evaluator": evaluator_mode(), "vps_to_win": args.vps_to_win, "discard_limit": args.discard_limit,
+           "hashseed": os.environ.get("PYTHONHASHSEED"), "fake": fake}
+    # Test-queue options (docs/QUEUE.md), absent unless switched on so contexts and arm keys stay as before:
+    # ``mech`` adds per-game mechanism metrics (never part of the arm key), ``crn`` couples the dice.
+    if getattr(args, "mech", False):
+        ctx["mech"] = True
+    if getattr(args, "crn", "off") not in (None, "off"):
+        ctx["crn"] = args.crn
+    return ctx
 
 
 def finalize_runs(runs: List[Dict[str, Any]], ctx: Dict[str, Any], exp: str, seeds: Tuple[int, int]) -> None:
@@ -568,6 +583,90 @@ def _catanbot_kwargs(adapter_opts: Dict[str, Any]) -> Dict[str, Any]:
     return kw
 
 
+_MECH = None
+
+
+def _mechanics():
+    """``scripts/mechanics.py`` as a module (per-game mechanism metrics, ``--mech``)."""
+    global _MECH
+    if _MECH is None:
+        import importlib.util
+        path = os.path.join(ROOT, "scripts", "mechanics.py")
+        spec = importlib.util.spec_from_file_location("_mechanics_for_ablate", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _MECH = mod
+    return _MECH
+
+
+class DicePatch:
+    """``--crn dice``: common random numbers for the dice.  For the duration of one game catanatron's
+    ``roll_dice`` (``catanatron.apply_action`` on 3.3, ``catanatron.state`` on 3.2.1) is replaced by a function
+    that draws the k-th roll of the REAL game from a stream seeded by the game seed alone, so both arms of a
+    pair roll the same dice whatever happens to steals, discards and tie-breaks (which share the engine's
+    stream).  A call whose caller frame does not hold the real game's state (an opponent's look-ahead on a
+    copy) falls through to the original function, so simulations do not consume the coupled stream."""
+
+    def __init__(self, me, gseed: int):
+        self.me = me
+        self.rng = random.Random(f"crn-dice-{gseed}")
+        self.rolls = 0
+        self.fallback = 0
+        self.sums: List[int] = []
+        self._saved: List[Tuple[Any, Any]] = []
+
+    def _patched(self, orig):
+        def roll_dice(*args, **kwargs):
+            game = self.me.__dict__.get("_ab_game")
+            try:
+                caller_state = sys._getframe(1).f_locals.get("state")
+            except Exception:  # noqa: BLE001
+                caller_state = None
+            if game is not None and caller_state is not None and caller_state is game.state:
+                d = (self.rng.randint(1, 6), self.rng.randint(1, 6))
+                self.rolls += 1
+                self.sums.append(d[0] + d[1])
+                return d
+            self.fallback += 1
+            return orig(*args, **kwargs)
+        return roll_dice
+
+    def install(self) -> "DicePatch":
+        import importlib
+        for name in ("catanatron.apply_action", "catanatron.state"):
+            try:
+                mod = importlib.import_module(name)
+            except ImportError:
+                continue
+            orig = getattr(mod, "roll_dice", None)
+            if callable(orig):
+                self._saved.append((mod, orig))
+                mod.roll_dice = self._patched(orig)
+        if not self._saved:
+            raise RuntimeError("--crn dice: no catanatron roll_dice found to couple")
+        return self
+
+    def restore(self) -> None:
+        for mod, orig in reversed(self._saved):
+            mod.roll_dice = orig
+        self._saved = []
+
+    def summary(self) -> Dict[str, Any]:
+        return {"mode": "dice", "rolls": self.rolls, "fallback": self.fallback,
+                "sums": ",".join(str(x) for x in self.sums)}
+
+
+def _game_mech(ad, game, seat: int) -> Dict[str, Any]:
+    """``--mech``: mechanism metrics of our seat from the in-memory action log (scripts/mechanics.py)."""
+    try:
+        st = game.state
+        items = [ad.encode_log_entry(e) for e in ad.action_log(st)]
+        return _mechanics().game_mechanics(items, ad.encode_board(st.board), ad.COLORS[seat].value,
+                                           final=ad.state_summary(st), colors=[c.value for c in st.colors])
+    except Exception as ex:  # noqa: BLE001  (a metric must never cost a game)
+        return {"error": f"{type(ex).__name__}: {ex}"[:300]}
+
+
 def _real_game(job: Dict[str, Any], arm: Dict[str, Any], s: int) -> Dict[str, Any]:
     from catanbot.agents.param_bot import ParamBot
     from catanbot.bench import catanatron_adapter as ad
@@ -579,7 +678,12 @@ def _real_game(job: Dict[str, Any], arm: Dict[str, Any], s: int) -> Dict[str, An
     me = _traced_class()(ad.COLORS[seat], spec=arm["spec"], bot=pb, seed=gseed, **_catanbot_kwargs(arm["adapter"]))
     players = [me if i == seat else _make_opponent(ad, make, c, arm["adapter"], ctx["vps_to_win"])
                for i, c in enumerate(ad.COLORS)]
-    res = ad.play_game(players, seed=gseed, vps_to_win=ctx["vps_to_win"], discard_limit=ctx["discard_limit"])
+    dice = DicePatch(me, gseed).install() if ctx.get("crn") == "dice" else None
+    try:
+        res = ad.play_game(players, seed=gseed, vps_to_win=ctx["vps_to_win"], discard_limit=ctx["discard_limit"])
+    finally:
+        if dice is not None:
+            dice.restore()
     game = me.__dict__.get("_ab_game")
     log = ad.action_log(game.state) if game is not None else []
     items = [f"{ad.log_action(e)!r}|{ad.log_result(e)!r}" for e in log]
@@ -606,7 +710,7 @@ def _real_game(job: Dict[str, Any], arm: Dict[str, Any], s: int) -> Dict[str, An
             extra[k] = _num(v)
     vps = [int(x) for x in res["vps"]]
     winner_seat = int(res.get("winner_seat", -1))
-    return {
+    out = {
         "winner": res.get("winner"), "winner_seat": winner_seat, "won": winner_seat == seat,
         "our_vp": vps[seat], "opp_vps": [v for i, v in enumerate(vps) if i != seat], "vps": vps,
         "turns": int(res.get("turns", 0)), "actions": int(res.get("actions", len(log))),
@@ -619,6 +723,11 @@ def _real_game(job: Dict[str, Any], arm: Dict[str, Any], s: int) -> Dict[str, An
         "trace": make_trace(items), "ours": list(me.__dict__.get("_ab_ours", [])), "ours_v": OURS_VERSION,
         "extra": extra,
     }
+    if ctx.get("mech") and game is not None:
+        out["mech"] = _num(_game_mech(ad, game, seat))
+    if dice is not None:
+        out["crn"] = dice.summary()
+    return out
 
 
 def _fake_game(job: Dict[str, Any], arm: Dict[str, Any], s: int) -> Dict[str, Any]:
@@ -632,6 +741,8 @@ def _fake_game(job: Dict[str, Any], arm: Dict[str, Any], s: int) -> Dict[str, An
         os._exit(3)   # a hard crash: the worker process dies without a Python exception
     if fk.get("sleep"):
         time.sleep(fk["sleep"])
+    if fk.get("disc") is not None or fk.get("shift"):
+        return _fake_game_disc(job, arm, s)
     u = random.Random(f"fake-{s}").random()
     p = 0.25 + (fk["effect"] if cand else 0.0)
     won = u < p
@@ -645,7 +756,7 @@ def _fake_game(job: Dict[str, Any], arm: Dict[str, Any], s: int) -> Dict[str, An
     ours = [[10 * k + 3, short_hash(f"{s}-{k}")] for k in range(6)]
     if differs:
         ours[4] = [43, short_hash(f"{s}-cand")]
-    return {
+    rec = {
         "winner": "RED" if won else "BLUE", "winner_seat": seat if won else (seat + 1) % 4, "won": won,
         "our_vp": our_vp, "opp_vps": opp, "vps": vps, "turns": 80, "actions": 60, "truncated": False,
         "duration": 0.01, "dec": timing_summary([0.002 + 0.001 * cand] * 5 + [0.01]), "trivial": 3,
@@ -653,6 +764,71 @@ def _fake_game(job: Dict[str, Any], arm: Dict[str, Any], s: int) -> Dict[str, An
         "adapter": {"errors": 0, "fallback": 0, "trade_prompts": 0}, "unmapped": {},
         "trace": make_trace(items), "ours": ours, "extra": {},
     }
+    if job["ctx"].get("mech"):
+        rec["mech"] = _fake_mech(s, "cand" if differs else "same")
+    return rec
+
+
+def _fake_mech(s: int, tag: str) -> Dict[str, Any]:
+    """Synthetic mechanism metrics (``--mech`` with synthetic games): equal for identical games."""
+    m = random.Random(f"fake-mech-{s}-{tag}").random()
+    return {"port_settled": int(m < 0.59), "share_4to1": round(0.6 + 0.3 * m, 4),
+            "first_settle_round": 8 + int(10 * m), "setup_distinct": 3 + int(3 * m)}
+
+
+def _fake_record(job: Dict[str, Any], s: int, won: bool, differs: bool, cand: bool, tag: str = "cand"
+                 ) -> Dict[str, Any]:
+    """Body of a :func:`_fake_game_disc` record, built like :func:`_fake_game`'s (identical games share every
+    field; a diverged game differs in its action log after action 40 and in catanbot's 5th decision)."""
+    seat = seat_of(s)
+    u = random.Random(f"fake-vp-{s}-{tag if differs else 'same'}").random()
+    our_vp = 10 if won else 2 + int(u * 7)
+    opp = [10 if (not won and i == 0) else 3 + (s + i) % 5 for i in range(3)]
+    vps = opp[:seat] + [our_vp] + opp[seat:]
+    base = [f"a{s}-{i}" for i in range(60)]
+    items = base[:40] + ([f"c{s}-{i}-{tag}" for i in range(20)] if differs else base[40:])
+    ours = [[10 * k + 3, short_hash(f"{s}-{k}")] for k in range(6)]
+    if differs:
+        ours[4] = [43, short_hash(f"{s}-{tag}")]
+    rec = {
+        "winner": "RED" if won else "BLUE", "winner_seat": seat if won else (seat + 1) % 4, "won": won,
+        "our_vp": our_vp, "opp_vps": opp, "vps": vps, "turns": 80, "actions": 60, "truncated": False,
+        "duration": 0.01, "dec": timing_summary([0.002 + 0.001 * cand] * 5 + [0.01]), "trivial": 3,
+        "overhead_ms": 0.0, "opp_dec": timing_summary([0.001] * 10), "opp_trade_stats": {},
+        "adapter": {"errors": 0, "fallback": 0, "trade_prompts": 0}, "unmapped": {},
+        "trace": make_trace(items), "ours": ours, "extra": {},
+    }
+    if job["ctx"].get("mech"):
+        rec["mech"] = _fake_mech(s, tag if differs else "same")
+    return rec
+
+
+def _fake_game_disc(job: Dict[str, Any], arm: Dict[str, Any], s: int) -> Dict[str, Any]:
+    """Synthetic games with a set discordance (``--fake-discordance D``) and default win rate
+    (``0.25 + --fake-default-shift X``): the default game is a function of the seed alone (shared by every
+    candidate value); given it, the candidate flips the outcome so that P(x = +1) = (D + effect) / 2 and
+    P(x = -1) = (D - effect) / 2.  Every discordant pair and a share of the concordant ones diverge (differing,
+    consistent traces), so negative effects no longer produce identical traces with different winners."""
+    fk = job["ctx"]["fake"]
+    D = fk.get("disc")
+    D = 0.4 if D is None else float(D)
+    eff = float(fk["effect"])
+    p_d = min(0.95, max(0.05, 0.25 + float(fk.get("shift") or 0.0)))
+    u = random.Random(f"fake-{s}").random()
+    won_d = u < p_d
+    if arm["role"] != "cand":
+        return _fake_record(job, s, won_d, False, False)
+    a = min(1.0, max(0.0, (D + eff) / (2.0 * (1.0 - p_d))))    # P(cand wins | default lost)
+    b = min(1.0, max(0.0, (D - eff) / (2.0 * p_d)))            # P(cand loses | default won)
+    tag = f"{eff:g}"
+    v = random.Random(f"fake-disc-{s}-{tag}").random()
+    w = random.Random(f"fake-div-{s}-{tag}").random()
+    if won_d:
+        won_c = not (v < b)
+    else:
+        won_c = v < a
+    differs = (won_c != won_d) or (w < min(1.0, 1.5 * D))
+    return _fake_record(job, s, won_c, differs, True, tag=tag)
 
 
 def _base_record(job: Dict[str, Any], arm: Dict[str, Any]) -> Dict[str, Any]:
@@ -766,6 +942,7 @@ class Index:
         self.games: Dict[Tuple[str, int], List[Dict[str, Any]]] = collections.defaultdict(list)
         self.runs: Dict[str, Dict[str, Any]] = {}
         self.stops: Dict[str, Dict[str, Any]] = {}
+        self.queue_stops: Dict[str, Dict[str, Any]] = {}   # verdicts of scripts/run_queue.py: the FIRST one wins
         self.order = 0
         for r in records:
             self.add(r)
@@ -780,6 +957,8 @@ class Index:
             self.runs[r["run_key"]] = r
         elif kind == "stop":
             self.stops[r["run_key"]] = r
+            if r.get("source") == "queue":
+                self.queue_stops.setdefault(r["run_key"], r)
 
     def get(self, key: str, s: int) -> List[Dict[str, Any]]:
         return self.games.get((key, s), [])
@@ -1003,7 +1182,9 @@ def print_run(run: Dict[str, Any], st: Dict[str, Any], stopped: Optional[Dict[st
     p(f"  pairs     {st['pairs']} complete" + (f" of {planned} planned" if planned else "")
       + f" (seeds {st['seed_min']}..{st['seed_max']}); {st['errors']} with an error, {st['incomplete']} incomplete"
       + (f"; code versions {len(st['codes'])}" if len(st["codes"]) > 1 else "")
-      + (f"; STOPPED EARLY at {stopped['pairs']} pairs (sequential stop, see the caveat)" if stopped else ""))
+      + ((f"; STOPPED by the test queue: {stopped.get('label') or stopped.get('verdict')} at {stopped.get('pairs')} "
+          "pairs" if stopped.get("source") == "queue" else
+          f"; STOPPED EARLY at {stopped['pairs']} pairs (sequential stop, see the caveat)") if stopped else ""))
     if not st["pairs"]:
         for m in st["error_samples"]:
             p(f"  error     {m}")
@@ -1051,7 +1232,7 @@ def print_report(path: str, retry_errors: bool = False, out=sys.stdout) -> List[
     print(f"{path}: {len(index.runs)} run(s), {ngames} game records" + (f", {bad} unparseable line(s) skipped" if bad else ""),
           file=out)
     for run, st in rows:
-        stop = index.stops.get(run["run_key"])
+        stop = index.queue_stops.get(run["run_key"]) or index.stops.get(run["run_key"])
         print_run(run, st, stop, out=out)
     return rows
 
@@ -1103,7 +1284,7 @@ class Campaign:
     def __init__(self, runs: List[Dict[str, Any]], out: str, ctx: Dict[str, Any], code: str, seeds: Sequence[int],
                  exp: str, timeout: int, retry_errors: bool = False, stop_se: Optional[float] = None,
                  stop_min_pairs: int = 100, reuse: Optional[ReusePool] = None, quiet: bool = False,
-                 log=sys.stderr):
+                 log=sys.stderr, default_only: bool = False):
         self.runs = runs
         self.out = out
         self.ctx = ctx
@@ -1117,6 +1298,7 @@ class Campaign:
         self.reuse = reuse
         self.quiet = quiet
         self.log = log
+        self.default_only = default_only
         index, bad = load_index(out)
         if bad:
             print(f"note: {bad} unparseable line(s) in {out} skipped (a write cut short by a kill)", file=log)
@@ -1130,6 +1312,14 @@ class Campaign:
         decl = [run_line(r, ctx, code) for r in runs if self._needs_declaration(r)]
         self._write(decl)
         for r in runs:
+            qs = self.index.queue_stops.get(r["run_key"])
+            if qs is not None:
+                # a verdict of the test queue (scripts/run_queue.py) that this invocation did not compute:
+                # campaign.py resuming a multi-value row must not keep playing a candidate the queue stopped
+                self.stopped[r["run_key"]] = {"pairs": qs.get("pairs"), "source": "queue", "verdict": qs.get("verdict")}
+                print(f"note: {r['cand']['label']} was stopped by the test queue ({qs.get('label') or qs.get('verdict')}"
+                      f" at {qs.get('pairs')} pairs); not played", file=log)
+                continue
             if self.stop_se:
                 st = run_stats(self.index, r)
                 if should_stop(st, self.stop_se, self.stop_min_pairs):
@@ -1150,6 +1340,12 @@ class Campaign:
 
     def arms_needed(self, s: int) -> List[Dict[str, Any]]:
         need: Dict[str, Dict[str, Any]] = {}
+        if self.default_only:
+            # --default-only (a control-variate pool): the default arm alone, no candidate game
+            for r in self.active():
+                if not self.index.has(r["def_key"], s, self.code, self.retry_errors):
+                    need.setdefault(r["def_key"], dict(r["def"], key=r["def_key"]))
+            return list(need.values())
         for r in self.active():
             c, d = self.index.pair(r, s, self.retry_errors)
             if c is not None:
@@ -1183,7 +1379,11 @@ class Campaign:
         n = 0
         for s in self.seeds:
             for r in self.active():
-                if self.index.pair(r, s, self.retry_errors)[0] is None:
+                if self.default_only:
+                    if not self.index.has(r["def_key"], s, self.code, self.retry_errors):
+                        n += 1
+                        break
+                elif self.index.pair(r, s, self.retry_errors)[0] is None:
                     n += 1
                     break
         return n
@@ -1389,6 +1589,14 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--game-timeout", type=int, default=1800, help="seconds before a game is abandoned as an error")
     g.add_argument("--retry-errors", action="store_true", help="re-play games recorded as errors")
     g.add_argument("--quiet", action="store_true", help="no per-seed lines")
+    g = p.add_argument_group("test-queue options (docs/QUEUE.md; all off by default, arm keys unchanged)")
+    g.add_argument("--mech", action="store_true",
+                   help="store per-game mechanism metrics (scripts/mechanics.py) as record['mech']; not in the arm key")
+    g.add_argument("--crn", choices=("off", "dice"), default="off",
+                   help="common random numbers: 'dice' draws the k-th roll of each game from a stream seeded by the "
+                        "game seed, identical in both arms (enters the arm key only when on)")
+    g.add_argument("--default-only", action="store_true",
+                   help="play the default arm only (a control-variate pool on a disjoint seed block)")
     g = p.add_argument_group("reporting")
     g.add_argument("--report", action="store_true", help="print the statistics of --out and exit (no games)")
     g.add_argument("--report-json", help="also write the statistics as JSON to this path")
@@ -1401,6 +1609,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fake-die-seeds", type=lambda t: [int(x) for x in t.split(",") if x], default=[],
                    help=argparse.SUPPRESS)
     p.add_argument("--fake-sleep", type=float, default=0.0, help=argparse.SUPPRESS)
+    # synthetic games with a set discordant share and default win rate (test-queue simulations)
+    p.add_argument("--fake-discordance", type=float, default=None, help=argparse.SUPPRESS)
+    p.add_argument("--fake-default-shift", type=float, default=0.0, help=argparse.SUPPRESS)
     return p
 
 
@@ -1470,7 +1681,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"ablate_catanatron: {len(runs)} candidate(s) vs default, opponent {args.opponent} x3, catanatron "
           f"{ctx['catanatron']}, python {ctx['python']}, {ctx['evaluator']}, PYTHONHASHSEED={ctx['hashseed']}, "
           f"code {code}; seeds {seeds[0] if seeds else '-'}..{seeds[-1] if seeds else '-'}, workers {args.workers}"
-          + (" [SYNTHETIC GAMES]" if fake else ""), flush=True)
+          + (" [SYNTHETIC GAMES]" if fake else "") + (" [mech]" if ctx.get("mech") else "")
+          + (f" [crn {ctx['crn']}]" if ctx.get("crn") else "") + (" [default arm only]" if args.default_only else ""),
+          flush=True)
     for r in runs:
         print(f"  run {r['run_key']}: {r['cand']['label']} (arm {r['cand_key']}) vs {r['def']['label']} "
               f"(arm {r['def_key']}); spec {r['cand']['spec']}", flush=True)
@@ -1481,7 +1694,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  {r['cand']['label']}: {done}/{len(seeds)} seeds complete in {args.out}")
         return 0
     camp = Campaign(runs, args.out, ctx, code, seeds, exp, args.game_timeout, retry_errors=args.retry_errors,
-                    stop_se=args.stop_at_se, stop_min_pairs=args.stop_min_pairs, reuse=reuse, quiet=args.quiet)
+                    stop_se=args.stop_at_se, stop_min_pairs=args.stop_min_pairs, reuse=reuse, quiet=args.quiet,
+                    default_only=args.default_only)
     todo = camp.pending_jobs()
     print(f"  {todo} seed(s) need games; results -> {args.out}", flush=True)
     deadline = time.time() + 60.0 * args.max_minutes if args.max_minutes else None

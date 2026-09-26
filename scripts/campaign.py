@@ -53,6 +53,15 @@ EXPERIMENT_KEYS = {"name", "interpreter", "opponent", "tunable", "values", "flag
                    "def_spec", "cand_set", "set", "adapter_opts", "cand_adapter_opts", "trades", "opponent_params",
                    "seeds", "workers", "priority", "stop_at_se", "stop_min_pairs", "game_timeout", "vps_to_win",
                    "discard_limit", "enabled", "notes", "extra_args", "reuse"}
+# Optional fields of the test queue (scripts/run_queue.py, docs/QUEUE.md).  campaign.py accepts them and ignores
+# them, except ``kind``: it runs only ``kind: catanatron`` rows (the default) and skips the others with a note.
+# (``seed`` stays unknown on purpose: it is the usual typo of ``seeds``.)
+QUEUE_KEYS = {"kind", "area", "polarity", "promise_pp", "mechanism", "tier", "design", "parent", "fallback", "on",
+              "after", "route", "estimator", "crn", "weight", "exclusive", "cmd", "verdict_from", "est_cpu_h", "games",
+              "players", "counters", "headroom", "d_prior", "confirms", "shadow_gate", "label", "bundle_of", "mech",
+              "info", "chunk_games", "noharm", "pool_m", "requires", "cwd"}
+EXPERIMENT_KEYS = EXPERIMENT_KEYS | QUEUE_KEYS
+RUNNABLE_KINDS = (None, "catanatron")
 NAME_RE = re.compile(r"^[A-Za-z0-9_.@+=-]+$")
 IDLE_GAP_S = 600.0     # gaps between records longer than this are not counted as playing time
 
@@ -108,7 +117,8 @@ def load_plan(path: str, max_workers: int) -> Tuple[List[Dict[str, Any]], Dict[s
         bad = set(e) - EXPERIMENT_KEYS
         if bad:
             raise SystemExit(f"plan error: experiment {e.get('name', i)}: unknown field(s) {sorted(bad)}")
-        for k in ("name", "interpreter", "opponent"):
+        runnable = e.get("kind") in RUNNABLE_KINDS and e.get("route") != "human"
+        for k in (("name", "interpreter", "opponent") if runnable else ("name",)):
             if not e.get(k):
                 raise SystemExit(f"plan error: experiment {i}: '{k}' is required")
         if not NAME_RE.match(e["name"]):
@@ -116,6 +126,17 @@ def load_plan(path: str, max_workers: int) -> Tuple[List[Dict[str, Any]], Dict[s
         if e["name"] in names:
             raise SystemExit(f"plan error: duplicate experiment name {e['name']!r}")
         names.add(e["name"])
+        if not runnable:
+            # a queue-only row (self-play / command / pool / human route): kept for the plan order, never run here
+            e["_skip"] = f"kind {e.get('kind') or 'catanatron'}" + (" (route human)" if e.get("route") == "human" else "")
+            seeds = e.get("seeds", 100)
+            e["seeds"] = {"count": int(seeds.get("count", 100)), "base": int(seeds.get("base", 0))} \
+                if isinstance(seeds, dict) else {"count": int(seeds), "base": 0}
+            e["workers"] = max(1, min(int(e.get("workers", max_workers)), max_workers))
+            e["priority"] = e.get("priority", 100)
+            e["_order"] = i
+            out.append(e)
+            continue
         if e["interpreter"] not in interps:
             raise SystemExit(f"plan error: {e['name']}: interpreter {e['interpreter']!r} not in {sorted(interps)}")
         if bool(e.get("tunable")) == bool(e.get("cand_spec") or e.get("def_spec")):
@@ -286,10 +307,52 @@ def rate_class(e: Dict[str, Any]) -> Tuple[Any, ...]:
     except Exception:  # noqa: BLE001
         pass
     return (e["interpreter"], e["opponent"], json.dumps(e.get("opponent_params"), sort_keys=True),
-            e.get("trades") or "off", pyeval)
+            e.get("trades") or "off", pyeval, info_mode(e), search_depth(e), crn_mode(e))
+
+
+def _extra_opt(e: Dict[str, Any], flag: str) -> Optional[str]:
+    xs = [str(x) for x in e.get("extra_args") or []]
+    for i, x in enumerate(xs):
+        if x == flag and i + 1 < len(xs):
+            return xs[i + 1]
+        if x.startswith(flag + "="):
+            return x.split("=", 1)[1]
+    return None
+
+
+def info_mode(e: Dict[str, Any]) -> str:
+    """'counted' when either arm plays with Colonist information (3.4-4.2x the cost per game), else 'full'."""
+    for key in ("adapter_opts", "cand_adapter_opts"):
+        v = e.get(key)
+        if isinstance(v, dict) and v.get("info") == "counted":
+            return "counted"
+        if isinstance(v, (list, str)) and "info=counted" in (v if isinstance(v, str) else " ".join(map(str, v))):
+            return "counted"
+    if e.get("info") == "counted" or _extra_opt(e, "--info") == "counted":
+        return "counted"
+    return "full"
+
+
+def search_depth(e: Dict[str, Any]) -> int:
+    """Deepest search either arm runs (depth 2 costs ~2.4x per game)."""
+    depth = 1
+    for key in ("cand_spec", "def_spec", "base_spec"):
+        m = re.search(r"depth=(\d+)", str(e.get(key) or ""))
+        if m:
+            depth = max(depth, int(m.group(1)))
+    if e.get("tunable") == "search.depth":
+        vals = e.get("values") if isinstance(e.get("values"), list) else [2]
+        depth = max([depth] + [int(v) for v in vals if isinstance(v, (int, float))])
+    return depth
+
+
+def crn_mode(e: Dict[str, Any]) -> str:
+    return str(e.get("crn") or _extra_opt(e, "--crn") or "off")
 
 
 def print_status(exps: List[Dict[str, Any]], d: str, plan: str) -> None:
+    skipped = [e for e in exps if e.get("_skip")]
+    exps = [e for e in exps if not e.get("_skip")]
     rows = [(e, progress(e, d)) for e in exps]
     rates: Dict[Tuple[Any, ...], float] = {}
     for e, p in rows:
@@ -322,6 +385,8 @@ def print_status(exps: List[Dict[str, Any]], d: str, plan: str) -> None:
               f"{p['games']:>9}/{p['planned_games']:<9} {p['errors']:>4} {p['reused']:>6} {rate_txt:>9} {state:>8}  {pr}")
     print(f"  remaining (serial, at measured rates): {fmt_h(total_eta)}" + (" + experiments without a rate yet"
                                                                            if unknown else ""))
+    if skipped:
+        print(f"  not run by campaign.py (scripts/run_queue.py rows): {', '.join(e['name'] for e in skipped)}")
 
 
 # ---------------------------------------------------------------------------
@@ -352,8 +417,27 @@ def holm(pvals: Dict[Any, float]) -> Dict[Any, float]:
     return out
 
 
+def queue_verdicts(d: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """``{run_key: first verdict record}`` from ``<dir>/ledger.jsonl`` (scripts/run_queue.py), None without one."""
+    path = os.path.join(d, "ledger.jsonl")
+    if not os.path.exists(path):
+        return None
+    out: Dict[str, Dict[str, Any]] = {}
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("kind") == "verdict" and r.get("run_key"):
+                out.setdefault(r["run_key"], r)
+    return out
+
+
 def summary_markdown(exps: List[Dict[str, Any]], d: str, plan: str) -> str:
     rows: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any]]] = []
+    qv = queue_verdicts(d)
+    exps = [e for e in exps if not e.get("_skip")]
     for e in exps:
         p = progress(e, d)
         if not p["exists"] or not p["runs"]:
@@ -383,14 +467,15 @@ def summary_markdown(exps: List[Dict[str, Any]], d: str, plan: str) -> str:
              "",
              "| prio | experiment | candidate | default | opponent | engine | pairs / planned | cand win % | def win % "
              "| delta (pp) +- s.e. | 95% CI (pp) | Holm p | dVP +- s.e. | ms/dec c / d | opp ms c / d | ident | verdict "
-             "| status |",
-             "|" + "---|" * 18]
+             "| status |" + (" queue verdict |" if qv is not None else ""),
+             "|" + "---|" * (18 + (qv is not None))]
     for i, (e, x, st, p) in enumerate(rows):
         if x is None:
             state = "not started" if p["last_exit"] in (None, 0) else \
                 f"FAILED (exit {p['last_exit']}, see logs/{e['name']}.log)"
             lines.append(f"| {e['priority']} | {e['name']} | {e.get('tunable') or e.get('cand_spec')} | | {e['opponent']} "
-                         f"| {e['interpreter']} | 0 / {e['seeds']['count']} | | | | | | | | | | | {state} |")
+                         f"| {e['interpreter']} | 0 / {e['seeds']['count']} | | | | | | | | | | | {state} |"
+                         + (" |" if qv is not None else ""))
             continue
         run = x["run"]
         lo, hi = st["ci95"]
@@ -413,8 +498,14 @@ def summary_markdown(exps: List[Dict[str, Any]], d: str, plan: str) -> str:
             f"{vpd} +- {AB.fmt(st['vp_se'])} | {AB.fmt(st['ms_cand'], 1)} / {AB.fmt(st['ms_def'], 1)}"
             f"{'' if st.get('timing_coplayed', True) else ' (reused)'} | "
             f"{AB.fmt(st['opp_ms_cand'], 1)} / {AB.fmt(st['opp_ms_def'], 1)} | {st['identical']}/{st['pairs']} | "
-            f"{st['verdict']} | {status} |")
+            f"{st['verdict']} | {status} |" + (f" {_qv_text(qv.get(run['run_key']))} |" if qv is not None else ""))
     return "\n".join(lines) + "\n"
+
+
+def _qv_text(v: Optional[Dict[str, Any]]) -> str:
+    if not v:
+        return "open"
+    return f"{v.get('label') or v.get('verdict')} (look {v.get('look')}, {v.get('pairs')} pairs)"
 
 
 def write_summary(exps: List[Dict[str, Any]], d: str, plan: str, path: str) -> None:
@@ -455,6 +546,9 @@ def run_campaign(args, exps: List[Dict[str, Any]], interps: Dict[str, str]) -> i
     try:
         for e in exps:
             if e.get("enabled") is False:
+                continue
+            if e.get("_skip"):
+                print(f"[{e['name']}] {e['_skip']}: run by scripts/run_queue.py, skipped", flush=True)
                 continue
             p = progress(e, d)
             if p["complete"]:
