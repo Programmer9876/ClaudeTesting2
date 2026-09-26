@@ -692,6 +692,43 @@ standard error is about 4.6 points, so small effects cannot be seen.  These
 runs use 1,000-2,000 seeds per row, with a standard error of about 1-1.5
 points.
 
+## Politics rule (user decision, 2026-09-26): inconclusive -> deferred to human testing
+
+**Scope: politics and table-social terms.**
+- `politics.MAX_SLACK`, `politics.BASELINE`, `politics.DECAY`;
+- `coalitions.*`;
+- `trading.feed_leader_guard`;
+- `opponent_model.stage_late_drop` and the other trade-willingness terms of
+  the opponent model;
+- counteroffers (`search.counters`) and the out-of-turn offer analysis
+  (`search.respond_lookahead`);
+- the unbuilt coalition-splitting trades.
+
+Their value depends on how *people* react.  Catanatron's bots do not react
+at all, and self-play copies react exactly as our model predicts.
+
+**Rule.**  Each such term gets its one pre-planned screen of thousands of
+games: the campaign row (1,000-2,000 seeds, paired) or the self-play
+ablation (1,200 games).
+- **Significant** (Holm p < 0.05 within its tier): it continues to
+  factorial and joint tuning like any other term.
+- **Otherwise it is INCONCLUSIVE:**
+  - no more games: no follow-up rows, no factorial pairs, not in the SPSA
+    trade group;
+  - its default stays exactly as it is (no evidence either way);
+  - it goes on the deferred list below, for the human test sessions with
+    the advisor.
+- Inconclusive means "no clear effect against bots", not "no effect".
+
+The coalition-splitting trade idea is not built until human testing gives
+a reason to.
+
+**Deferred to human testing** (filled in as the screens finish):
+
+| term | screen | result | status |
+|---|---|---|---|
+| (none yet) | | | |
+
 ## After screening: interactions and joint tuning (user's point, 2026-09-26)
 
 The terms are not independent.  Examples:
@@ -711,15 +748,16 @@ around it.  So the screening is followed by three steps:
    |---|---|
    | `devcards.KNIGHT_VALUE` x `heuristic.EXPOSURE_WEIGHT` | knight as robber insurance |
    | `danger.danger_multiplier` x `danger.steal_factor` | who to rob x what to take |
-   | `politics.MAX_SLACK` x `coalitions.SCALE` | slack toward a bloc |
-   | `search.trade_proposals` x `trading.feed_leader_guard` | trading as leader |
+   | `politics.MAX_SLACK` x `coalitions.SCALE` | slack toward a bloc (only if both screened significant, politics rule) |
+   | `search.trade_proposals` x `trading.feed_leader_guard` | trading as leader (only if the guard screened significant, politics rule) |
 
 2. **Joint tuning (SPSA)** of groups of weights at once, in self-play and
    against Catanatron (`scripts/tune_joint.py`, docs/TUNING.md: being
    built).  SPSA moves all weights of a group together from paired games,
-   which is how game engines tune their evaluation.  Groups: robber
-   (danger, knight, exposure, placement robber terms) and trade (margins,
-   slack, coalitions, late drop, counter margin).
+   which is how game engines tune their evaluation.  Groups:
+   - robber: danger, knight, exposure, placement robber terms;
+   - trade: margins, slack, coalitions, late drop, counter margin, but only
+     the terms that screened significant (politics rule).
 3. **Confirmation through the league gate:** a tuned set is a candidate like
    any other and must beat the current champion.
 
@@ -731,7 +769,8 @@ default, then test):
   it can undo.
 - **Trading to split a coalition.**  Coalitions currently steer robber
   targets and who we expect to accept our offers.  As the leader, we do not
-  yet aim trades at one bloc member to break the bloc.
+  yet aim trades at one bloc member to break the bloc.  Deferred to human
+  testing (politics rule): not built unless the human sessions show a need.
 
 ## Planned: win-path races with crowding (`search.paths`)
 

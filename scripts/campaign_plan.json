@@ -73,17 +73,17 @@
     {"name": "t2_max_slack0_vrule@value", "priority": 33, "interpreter": "py330", "opponent": "value",
      "tunable": "politics.MAX_SLACK", "values": [0.0], "trades": "value",
      "seeds": {"count": 1000, "base": 0},
-     "notes": "TIER 2, self-play showed nothing (-3.3 +- 4.6 pp). Favour slack 0. It only acts through trades (20/20 identical with trading off), here through search.py's trade_willingness on catanbot's own proposals. Hence --trades value: report as 'vs value-rule responders'. Default arm reused from t1_trades0_vrule@value. 1000 x 1.33 s = 0.37 h."},
+     "notes": "POLITICS RULE (user, 2026-09-26): if this row is not significant (Holm p < 0.05) at its full seed count, label it INCONCLUSIVE, spend no more games on it (no follow-up rows, no factorial, no joint tuning) and defer it to human testing; the default stays as is. TIER 2, self-play showed nothing (-3.3 +- 4.6 pp). Favour slack 0. It only acts through trades (20/20 identical with trading off), here through search.py's trade_willingness on catanbot's own proposals. Hence --trades value: report as 'vs value-rule responders'. Default arm reused from t1_trades0_vrule@value. 1000 x 1.33 s = 0.37 h."},
 
     {"name": "t2_coal_scale2_vrule@value", "priority": 34, "interpreter": "py330", "opponent": "value",
      "tunable": "coalitions.SCALE", "values": [2.0], "trades": "value",
      "seeds": {"count": 1000, "base": 0},
-     "notes": "TIER 2, self-play showed nothing (+0.8 / +1.7 pp for 0.25 / 1.0). Default 0.5; 2.0 makes coalition signals about 16x weaker (close to coalitions off). 20/20 identical with trading off, so run under --trades value ('vs value-rule responders'). 0.37 h."},
+     "notes": "POLITICS RULE (user, 2026-09-26): if this row is not significant (Holm p < 0.05) at its full seed count, label it INCONCLUSIVE, spend no more games on it (no follow-up rows, no factorial, no joint tuning) and defer it to human testing; the default stays as is. TIER 2, self-play showed nothing (+0.8 / +1.7 pp for 0.25 / 1.0). Default 0.5; 2.0 makes coalition signals about 16x weaker (close to coalitions off). 20/20 identical with trading off, so run under --trades value ('vs value-rule responders'). 0.37 h."},
 
     {"name": "t2_feed_leader_off_vrule@value", "priority": 35, "interpreter": "py330", "opponent": "value",
      "tunable": "trading.feed_leader_guard", "flag_off": true, "trades": "value",
      "seeds": {"count": 1000, "base": 0},
-     "notes": "TIER 2, self-play showed nothing (+0.8 +- 4.6 pp). The don't-feed-the-leader rule also drives opponent_model's prediction of who accepts catanbot's offers. 20/20 identical with trading off, so run under --trades value ('vs value-rule responders'). 0.37 h."},
+     "notes": "POLITICS RULE (user, 2026-09-26): if this row is not significant (Holm p < 0.05) at its full seed count, label it INCONCLUSIVE, spend no more games on it (no follow-up rows, no factorial, no joint tuning) and defer it to human testing; the default stays as is. TIER 2, self-play showed nothing (+0.8 +- 4.6 pp). The don't-feed-the-leader rule also drives opponent_model's prediction of who accepts catanbot's offers. 20/20 identical with trading off, so run under --trades value ('vs value-rule responders'). 0.37 h."},
 
     {"name": "t2_knight03@value", "priority": 36, "interpreter": "py330", "opponent": "value",
      "tunable": "devcards.KNIGHT_VALUE", "values": [0.3],
@@ -103,7 +103,7 @@
     {"name": "t2_late_drop0_vrule@value", "priority": 39, "interpreter": "py330", "opponent": "value",
      "tunable": "opponent_model.stage_late_drop", "values": [0.0], "trades": "value",
      "seeds": {"count": 1000, "base": 0},
-     "notes": "TIER 2, self-play weak signal only (+4.2 +- 4.6 pp, within noise). Trade willingness never drops late. Acts only through trades (20/20 identical with trading off), so run under --trades value ('vs value-rule responders'). 0.37 h."},
+     "notes": "POLITICS RULE (user, 2026-09-26): if this row is not significant (Holm p < 0.05) at its full seed count, label it INCONCLUSIVE, spend no more games on it (no follow-up rows, no factorial, no joint tuning) and defer it to human testing; the default stays as is. TIER 2, self-play weak signal only (+4.2 +- 4.6 pp, within noise). Trade willingness never drops late. Acts only through trades (20/20 identical with trading off), so run under --trades value ('vs value-rule responders'). 0.37 h."},
 
     {"name": "t2x_beam2@value", "priority": 40, "interpreter": "py330", "opponent": "value",
      "tunable": "search.beam", "values": [2],
