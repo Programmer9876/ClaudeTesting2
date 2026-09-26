@@ -526,3 +526,20 @@ def test_real_catanatron_smoke(tmp_path):
         assert [r["arm"] for r in u["records"]] == ["plus", "minus"]
         assert all(r["status"] == "ok" and r["hashseed"] == "0" and r["seat"] == u["s"] % 4 for r in u["records"])
         assert u["records"][0]["game_seed"] == u["records"][1]["game_seed"] == u["s"] + 1
+
+
+def test_robber_leaf_group_holds_persistence_off_and_fix_reaches_both_arms():
+    cfg, params = _config(["--group", "robber_leaf", "--max-games", "2400"])
+    assert [p.name for p in params] == ["robber_eval.INSURANCE_W", "robber_eval.BLOCK_DUR_W"]
+    assert "robber_corr=1" in cfg["base_spec"]
+    assert cfg["fixed"] == {"robber_eval.PERSIST_W": 0.0}
+    jobs = TJ.make_jobs(cfg, 0, {"robber_eval.INSURANCE_W": 1.0}, {"robber_eval.INSURANCE_W": 0.5})
+    assert all(j["plus"]["robber_eval.PERSIST_W"] == 0.0 and j["minus"]["robber_eval.PERSIST_W"] == 0.0 for j in jobs)
+    assert jobs[0]["plus"]["robber_eval.INSURANCE_W"] == 1.0 and jobs[0]["minus"]["robber_eval.INSURANCE_W"] == 0.5
+    # the original robber group is unchanged: no step-5 knobs, no robber_corr, nothing held
+    cfg2, params2 = _config(["--group", "robber", "--max-games", "2400"])
+    assert "robber_corr" not in cfg2["base_spec"] and "fixed" not in cfg2
+    assert not any(p.name.startswith("robber_eval.") for p in params2)
+    # a tuned name cannot also be held
+    with pytest.raises(SystemExit):
+        _config(["--group", "robber_leaf", "--max-games", "2400", "--fix", "robber_eval.INSURANCE_W=0"])

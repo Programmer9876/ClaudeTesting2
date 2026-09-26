@@ -95,12 +95,26 @@ GROUPS: Dict[str, Dict[str, Any]] = {
         "note": "who / where to rob, knight value, steal exposure; EXPOSURE_WEIGHT needs the search bot and, with "
                 "PLACEMENT_ROBBER_Q, the Python evaluator (~5x slower in self-play, ~3x vs Catanatron; --exclude both "
                 "for the C++ evaluator)"},
+    "robber_leaf": {
+        "params": ["robber_eval.INSURANCE_W", "robber_eval.BLOCK_DUR_W"],
+        "fixed": {"robber_eval.PERSIST_W": 0.0},
+        "note": "knight insurance (R1b) and block duration (R1c), the robber leaf corrections of catanbot/robber_eval.py; "
+                "they only act with search.robber_corr=1, added to the base spec automatically unless --base-spec is "
+                "given.  R1a persistence failed its gate (docs/ABLATIONS.md), so robber_eval.PERSIST_W is held at 0 "
+                "in both arms (the group's fixed value; --fix overrides it)"},
     "trade": {
         "params": ["trading.accept_margin", "politics.MAX_SLACK", "politics.BASELINE", "coalitions.SCALE",
                    "opponent_model.stage_late_drop", "search.counter_margin"],
         "note": "POLITICS RULE: only the terms whose screen was significant (Holm p < 0.05) may be tuned; "
                 "--exclude the rest.  search.counter_margin needs counter=1 and the counter-offer rules (added "
                 "automatically unless --base-spec is given)"},
+    "ports": {
+        "params": ["ports.FLOW_KAPPA"],
+        "note": "ports.flow_provider's static-points weight for our seat's port value (catanbot/portvalue.py); needs "
+                "the search bot.  The F1 conversion weights placement.PORT_A0 / PORT_B are left out: they only act "
+                "with placement.PORT_MODEL > 0, an ordinary weight override (not a SearchConfig spec key), so the "
+                "spec_requirement()/--base-spec mechanism that turns on robber_corr or counter above cannot switch it "
+                "on here"},
 }
 POLITICS = F.POLITICS_TERMS
 TRADE_TERMS = ("trading.", "politics.", "coalitions.", "opponent_model.", "search.counter", "search.trade_proposals")
@@ -173,6 +187,8 @@ def spec_requirement(name: str) -> Optional[Tuple[str, str, bool]]:
         return ("counter", "1", True)
     if name.startswith("winpaths.") or name in ("search.paths_w", "search.paths_crowd"):
         return ("paths", "1", False)
+    if name in ("robber_eval.INSURANCE_W", "robber_eval.BLOCK_DUR_W"):
+        return ("robber_corr", "1", False)
     return None
 
 
@@ -278,6 +294,9 @@ def catanatron_seed(seed: int, k: int, j: int, games: int) -> int:
 
 
 def make_jobs(cfg: Dict[str, Any], k: int, plus: Dict[str, Any], minus: Dict[str, Any]) -> List[Dict[str, Any]]:
+    fixed = cfg.get("fixed") or {}
+    if fixed:                                  # held values (--fix / a group's "fixed"), the same in both arms
+        plus, minus = {**fixed, **plus}, {**fixed, **minus}
     fake = cfg.get("fake")
     jobs = []
     if cfg["mode"] == "selfplay":
@@ -668,6 +687,7 @@ def recommendation(state: Dict[str, Any]) -> Dict[str, Any]:
     avg_x = [p.pretty(p.install(u)) for p, u in zip(params, avg)]
     last_x = [p.pretty(p.install(u)) for p, u in zip(params, state["theta"])]
     changed = {p.name: x for p, x in zip(params, avg_x) if x != p.pretty(p.default)}
+    changed = {**(state["config"].get("fixed") or {}), **changed}
     from catanbot.agents.param_bot import tuned_spec
     spec = tuned_spec(state["config"]["base_spec"], changed) if changed else state["config"]["base_spec"]
     return {"iterations": K, "averaged_over": len(tail) if hist else 0, "average": overrides_of(params, avg_x),
@@ -791,7 +811,7 @@ def environment(cfg: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Configuration from the command line
 # ---------------------------------------------------------------------------
-CONFIG_OPTS = ("group", "params", "exclude", "mode", "base_spec", "counters", "opponent", "opponent_params", "trades",
+CONFIG_OPTS = ("group", "params", "exclude", "fix", "mode", "base_spec", "counters", "opponent", "opponent_params", "trades",
                "games", "seed", "a", "A", "c", "alpha", "gamma", "first_step", "max_step", "objective", "bounds", "scale",
                "start", "max_turns", "fake_optimum", "fake_kappa")
 
@@ -891,6 +911,15 @@ def build_config(args) -> Tuple[Dict[str, Any], List[Param], List[str]]:
     objective = args.objective or "win"
     first_step = args.first_step if args.first_step is not None else 0.05
     a = args.a if args.a is not None else auto_gain(first_step, A, alpha, c, games, SIGMA[objective])
+    fixed = dict(GROUPS[args.group].get("fixed", {})) if args.group and not args.params else {}
+    try:
+        fixed.update({k: float(v) for k, v in _kv(getattr(args, "fix", None), "--fix").items()})
+        for n in fixed:
+            tuning.find(n)
+    except (ValueError, KeyError) as ex:
+        raise SystemExit(f"error: --fix: {ex}")
+    if set(fixed) & set(names):
+        raise SystemExit(f"error: --fix names are also tuned: {sorted(set(fixed) & set(names))}")
     cfg = {"mode": args.mode, "group": args.group if not args.params else None, "names": names, "base_spec": spec,
            "counters": counters, "games": games, "games_per_iteration": per_iter, "iterations": iterations,
            "max_games": args.max_games, "seed": args.seed if args.seed is not None else 1,
@@ -898,6 +927,9 @@ def build_config(args) -> Tuple[Dict[str, Any], List[Param], List[str]]:
            "max_step": args.max_step if args.max_step is not None else 0.1, "objective": objective,
            "sigma": SIGMA[objective], "max_turns": args.max_turns or 400, "game_timeout": args.game_timeout,
            "python_eval": any(tuning.find(n).needs_python_evaluator for n in names), "notes": notes}
+    if fixed:
+        cfg["fixed"] = fixed
+        cfg["notes"] = list(notes) + [f"held (not tuned, both arms): {fixed}"]
     if args.mode == "catanatron":
         if not args.opponent:
             raise SystemExit("error: --mode catanatron needs --opponent (e.g. value on catanatron 3.3)")
@@ -982,6 +1014,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--scale", action="append", metavar="NAME=X", help="raw units per normalised unit "
                                                                       "(default: that span)")
     g.add_argument("--start", action="append", metavar="NAME=V", help="theta_0 (default: the registry default)")
+    g.add_argument("--fix", action="append", metavar="NAME=V",
+                   help="hold a registry weight at V in both arms, not tuned (a group may preset some)")
     g = p.add_argument_group("games")
     g.add_argument("--mode", choices=("selfplay", "catanatron"), default=None, help="default selfplay")
     g.add_argument("--base-spec", help=f"bot spec of both sides (default {tuning.DEFAULT_SEARCH_SPEC}; depth 2 for "
