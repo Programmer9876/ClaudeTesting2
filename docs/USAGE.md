@@ -158,11 +158,13 @@ A single screenshot shows every player's hand *size* but not which cards
 they hold.  Colonist prints everything else that is public in its log panel
 (dice and production, builds, development-card buys and plays, bank / port
 and player trades, offers, Monopoly, Year of Plenty, robber steals, 7
-discards), so the advisor can count cards like a strong human: exactly,
-except for what is hidden from you - the card of a steal between two other
-players, the types of cards discarded on a 7 (only the count is shown) and
-unplayed development cards - which become probabilities.  Off by default:
-without these two options nothing changes.
+discards - Colonist's log shows the actual cards discarded, so these are
+public and counted exactly), so the advisor can count cards like a strong
+human: exactly, except for what is hidden from you - the card of a steal
+between two other players and unplayed development cards - which become
+probabilities.  A client that hides a discard and shows only the count
+(`Bob discarded 4 cards`) is still handled, treated like a hidden discard.
+Off by default: without these two options nothing changes.
 
 ```bash
 # every screenshot during the game, read by the Claude-vision parser (it also transcribes the log panel)
@@ -245,13 +247,13 @@ compare it with yours:
 | production | `Bob got 2 wood, 1 ore` (also `received`) |
 | build | `Alice built a Road` / `Settlement` / `City` (roads after Road Building are free) |
 | development card | `Bob bought Development Card`; `Bob used Knight` / `Road Building` / `Year of Plenty` / `Monopoly` / `Victory Point` (also `played`) |
-| Monopoly | `Bob stole 5 ore` (after `used Monopoly`), or `Bob used Monopoly and stole 5 ore` - the total; the split between the victims is inferred from the hand sizes |
+| Monopoly | `Bob stole 5 ore` (after `used Monopoly`), or `Bob used Monopoly and stole 5 ore` - the total; Colonist logs `Bob stole all of: ore` (after `used Monopoly`) with no total shown; either way the split between the victims is inferred from the hand sizes |
 | Year of Plenty | `Bob took from bank wood ore`, or `Bob used Year of Plenty and took wood ore` |
 | bank / port trade | `Bob gave bank 4 wood and took 1 ore`, `Bob gave 3 wool and got 1 ore from bank`, `Bob traded 2 wool for 1 ore with bank` |
 | player trade | `Alice traded 1 wood for 1 ore with Bob` (Alice gave the wood, got the ore) |
 | offer / counter-offer | `Alice wants to give 1 wood for 1 ore`, `Bob counter-offered 1 ore for 2 wood` (hard evidence they hold what they offer; soft that they lack what they ask for) |
 | steal | `Carol stole a card from Bob` (hidden), `You stole ore from Bob`, `Bob stole wood from you` |
-| 7 discard | `Bob discarded 4 cards` (hidden), `You discarded 2 wood, 2 ore`; no cards at all = half the hand |
+| 7 discard | `Bob discarded 2 wood, 2 ore` (public, counted exactly); `Bob discarded 4 cards` (a client that hides the cards - handled like a hidden discard); no cards at all = half the hand |
 | robber / turn | `Bob moved Robber to 6 wheat`; `Bob ended their turn`, `Bob's turn` |
 | ignored | Largest Army / Longest Road, `won the game`, `No player gets resources`, `accepted` / `rejected` / `cancelled`, `is selecting ...`, joined / left |
 
@@ -272,11 +274,10 @@ setup, `bought Development Card`, `used <card>`, `took from bank`, `gave bank
 ...`, the counter-offer wording, `moved Robber to`, `discarded`); whether a
 Monopoly is logged as one line or two and whether it shows the total or the
 amount per victim; whether Year of Plenty has its own "took" line; whether a
-third-party steal shows a card back and whether discards show their cards
-(if Colonist shows them, they are simply counted exactly); whether turn ends
-are logged at all; whether the log says "You" for you; whether a free Road
-Building road is logged differently; whether colons follow the verbs (all
-optional in the table).
+third-party steal shows a card back; whether turn ends are logged at all;
+whether the log says "You" for you; whether a free Road Building road is
+logged differently; whether colons follow the verbs (all optional in the
+table).
 
 **Limitations.**  The count is only as good as the log it sees: a missed
 line is detected and repaired from the hand sizes, but the repair is a guess
