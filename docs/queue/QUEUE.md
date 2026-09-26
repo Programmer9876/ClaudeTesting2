@@ -1,6 +1,6 @@
 # Test queue report
 
-Plan `scripts/queue_plan.json` (806c3d3a0efc), results `/home/user/queue_runs/queue1`, written 2026-09-26 08:14:45.  One line per candidate.  Units: win-rate percentage points of the candidate minus the default (paired); `p` = stage-wise one-sided p (fixed two-sided p for politics / estimate rows), `Holm` = adjusted within the row's tier (provisional `*` until the tier is complete).  Estimates of rows stopped early are biased away from 0 (winner's curse): confirm on fresh seeds.
+Plan `scripts/queue_plan.json` (bd8f71f836af), results `/home/user/queue_runs/queue1`, written 2026-09-26 08:44:23.  One line per candidate.  Units: win-rate percentage points of the candidate minus the default (paired); `p` = stage-wise one-sided p (fixed two-sided p for politics / estimate rows), `Holm` = adjusted within the row's tier (provisional `*` until the tier is complete).  Estimates of rows stopped early are biased away from 0 (winner's curse): confirm on fresh seeds.
 
 | area | row | candidate | polarity | design | label | look | pairs | estimate (pp) +- se | unit | base rate / relative | p | Holm | dVP +- se | discordant / diverged | mechanism (cand - def) | CPU-h | next action |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -11,14 +11,14 @@ Plan `scripts/queue_plan.json` (806c3d3a0efc), results `/home/user/queue_runs/qu
 | harness | crn_pilot_off@vf | 4 | measure | estimate | ESTIMATE(fixed N) | 1 | 400 | +2.8 +- 2.8 | pp (1v3 win rate vs vf) | 26.5% / +10% | 0.329 |  | -0.05 +- 0.13 | 0.32 / 0.98 | first_city_round +0.52+-0.34; first_settle_round -0.61+-0.30; knights_held_end +0.07+-0.03; knights_played +0.03+-0.10; largest_army -0.03+-0.03; longest_road - | 0.08 | measurement recorded |
 | harness | crn_pilot_dice@vf | 4 | measure | estimate | ESTIMATE(fixed N) | 1 | 400 | -3.0 +- 2.3 | pp (1v3 win rate vs vf) | 29.2% / -10% | 0.195 |  | -0.02 +- 0.10 | 0.21 / 0.95 | first_city_round +0.51+-0.35; first_settle_round -0.53+-0.26; knights_held_end +0.03+-0.02; knights_played +0.16+-0.09; largest_army +0.04+-0.02; longest_road - | 0.17 | measurement recorded |
 | harness | crn_aa_dice@vf | cand | measure | estimate | PASS(A/A identical) | 1 | 400 | +0.0 +- 0.2 | pp (1v3 win rate vs vf) | 29.2% / +0% |  |  | +0.00 +- 0.00 | 0.00 / 0.00 | first_city_round +0.00+-0.00; first_settle_round +0.00+-0.00; knights_held_end +0.00+-0.00; knights_played +0.00+-0.00; largest_army +0.00+-0.00; longest_road + | 0.09 | pipeline / pairing verified |
-| trades | t1_trades0_vrule@value | 0 | measure | estimate | ESTIMATE(fixed N) | 1 | 2000 | -24.1 +- 1.2 | pp (1v3 win rate vs value, vs value-rule responders) | 84.3% / -29% | 6.14e-83 | 6.14e-83* | -1.04 +- 0.05 | 0.37 / 1.00 | first_city_round +1.54+-0.17; first_settle_round +3.58+-0.17; knights_held_end -0.01+-0.02; knights_played -0.63+-0.05; largest_army -0.13+-0.01; longest_road - | 2.49 | measurement recorded (headroom for its area) |
+| trades | t1_trades0_vrule@value | 0 | measure | estimate | ESTIMATE(fixed N) | 1 | 2000 | -24.1 +- 1.2 | pp (1v3 win rate vs value, vs value-rule responders) | 84.3% / -29% | 6.14e-83 | 1.23e-82* | -1.04 +- 0.05 | 0.37 / 1.00 | first_city_round +1.54+-0.17; first_settle_round +3.58+-0.17; knights_held_end -0.01+-0.02; knights_played -0.63+-0.05; largest_army -0.13+-0.01; longest_road - | 2.49 | measurement recorded (headroom for its area) |
 | trades | t2_dump0@value | 0 | knockout | knockout | KEEP(unproven) [stopped early] | 2 | 400 | -0.8 +- 0.8 | pp (1v3 win rate vs value) | 65.8% / -1% | 0.817 | 0.817* | -0.03 +- 0.03 | 0.03 / 0.35 | first_city_round -0.03+-0.02; first_settle_round -0.03+-0.04; knights_held_end +0.00+-0.01; knights_played -0.04+-0.02; largest_army -0.01+-0.01; longest_road - | 0.13 | keep the term (default unchanged) |
-| trades | acq_breadth_bundle | 1 | new | screen | open | 1 | 480 | -2.9 +- 2.3 | pp (per seat, 2v2) | 52.9% / -6% | 0.9 |  | -0.06 +- 0.10 | 1.00 / 0.00 |  | 1.10 | running |
+| trades | acq_breadth_bundle | 1 | new | screen | SHELVE(too small to prove; conditional power < 0.1) [stopped early] | 2 | 960 | +0.2 +- 1.6 | pp (per seat, 2v2) | 49.8% / +0% | 0.449 | 0.449* | +0.05 +- 0.07 | 1.00 / 0.00 |  | 2.21 | on ice (default unchanged) |
 | trades | acq_breadth_confirm@value | 1 | new | confirm | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | confirmation waits for tier t1 to complete (Holm family) |
-| trades | acq_breadth_noharm_3p | 1 | measure | estimate | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after acq_breadth_bundle |
-| trades | acq_calib_native@value | 1 | measure | estimate | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | queued |
-| trades | acq_calib | 1 | new | politics | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | politics: one fixed-N screen, after acq_calib_native@value |
-| trades | acq_reject_streak_native@value | 3 | measure | estimate | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after acq_calib_native@value |
+| trades | acq_breadth_noharm_3p | 1 | measure | estimate | NOT TRIGGERED |  |  |  |  |  |  |  |  |  |  | 0.00 | after acq_breadth_bundle: condition not met |
+| trades | acq_calib_native@value | 1 | measure | estimate | ESTIMATE(fixed N) | 1 | 40 | -12.5 +- 5.3 | pp (1v3 win rate vs value) | 67.5% / -19% | 0.0183 |  | -0.20 +- 0.17 | 0.12 / 1.00 | setup_distinct +0.00+-0.00; first_settle_round -0.71+-0.33; first_city_round -0.16+-0.24; settle_before_city +0.00+-0.04; port_settled +0.00+-0.06; share_4to1 + | 0.08 | measurement recorded |
+| trades | acq_calib | 1 | new | politics | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | politics: one fixed-N screen, queued |
+| trades | acq_reject_streak_native@value | 3 | measure | estimate | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | queued |
 | trades | acq_calib_reject_streak | row |  | human | DEFERRED |  |  |  |  |  |  |  |  |  |  | 0.00 | deferred to human testing (no games) |
 | trades | acq_flow_fit | row |  | gate | PASS |  |  |  |  |  |  |  |  |  |  | 0.00 | pipeline / pairing verified |
 | trades | acq_floor_selfplay | 1 | new | screen | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | queued |
@@ -42,6 +42,20 @@ Plan `scripts/queue_plan.json` (806c3d3a0efc), results `/home/user/queue_runs/qu
 | diversification | t3_openings@alphabeta | pips_diversity | new | confirm | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | confirmation waits for tier t1 to complete (Holm family) |
 | diversification | t3_openings@alphabeta | standin_book | new | confirm | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | confirmation waits for tier t1 to complete (Holm family) |
 | diversification | t3_openings@alphabeta | setup_pick | new | confirm | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | confirmation waits for tier t1 to complete (Holm family) |
+| ports | ports_gate_f1@vf | 1 | measure | estimate | BLOCKED |  |  |  |  |  |  |  |  |  |  | 0.00 | needs --bump-code: placement.PORT_MODEL not in epoch A |
+| ports | ports_gate_f2@vf | 0.8 | measure | estimate | BLOCKED |  |  |  |  |  |  |  |  |  |  | 0.00 | needs --bump-code: heuristic.PORT_STATIC_GENERIC, placement.PORT_GENERIC_ONCE not in epoch A |
+| ports | ports_gate_flow@vf | 0.25 | measure | estimate | BLOCKED |  |  |  |  |  |  |  |  |  |  | 0.00 | needs --bump-code: ports.FLOW_KAPPA not in epoch A |
+| ports | ports_gate_mode3_trigger | row |  | gate | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after ports_gate_f1@vf |
+| ports | ports_gate_f1_mode3@vf | 3 | measure | estimate | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after ports_gate_mode3_trigger |
+| ports | ports_gate | row |  | gate | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after ports_gate_f1@vf |
+| ports | ports_gate_pick_f1 | row |  | gate | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after ports_gate |
+| ports | ports_gate_pick_f2 | row |  | gate | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after ports_gate |
+| ports | ports_gate_pick_flow | row |  | gate | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after ports_gate |
+| ports | ports_gate_pick_f1m3 | row |  | gate | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after ports_gate |
+| ports | ports_best_f1@vf | 1 | new | screen | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after ports_gate_pick_f1 |
+| ports | ports_best_f2@vf | 0.8 | new | screen | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after ports_gate_pick_f2 |
+| ports | ports_best_flow@vf | 0.25 | new | screen | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after ports_gate_pick_flow |
+| ports | ports_best_f1m3@vf | 3 | new | screen | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | after ports_gate_pick_f1m3 |
 | ports | ports_spot_leader | row |  | human | DEFERRED |  |  |  |  |  |  |  |  |  |  | 0.00 | deferred to human testing (no games) |
 | robber | shadow_robber | row |  | gate | queued |  |  |  |  |  |  |  |  |  |  | 0.00 | queued |
 | robber | t2_danger_mult_off@value | off | knockout | knockout | WAITING |  |  |  |  |  |  |  |  |  |  | 0.00 | shadow shadow_robber |
@@ -76,8 +90,8 @@ Plan `scripts/queue_plan.json` (806c3d3a0efc), results `/home/user/queue_runs/qu
 
 | # | area | row | status | remaining CPU-h | weight | why |
 |---|---|---|---|---|---|---|
-| 1 | trades | acq_breadth_bundle | RUNNING | 1.10 | 0.2031 |  |
-| 2 | trades | acq_calib_native@value | ELIGIBLE | 0.07 | 0.1672 |  |
+| 1 | trades | acq_calib | ELIGIBLE | 3.60 | 0.1649 |  |
+| 2 | trades | acq_reject_streak_native@value | ELIGIBLE | 0.07 | 0.1550 |  |
 | 3 | trades | acq_floor_selfplay | ELIGIBLE | 3.53 | 0.1340 |  |
 | 4 | trades | acq_floor_vrule@value | ELIGIBLE | 1.63 | 0.1294 |  |
 | 5 | diversification | t1_openings@value | RUNNING | 2.05 | 0.0625 |  |
@@ -101,16 +115,16 @@ Plan `scripts/queue_plan.json` (806c3d3a0efc), results `/home/user/queue_runs/qu
 | 23 | other | t2x_expand4@value | ELIGIBLE | 0.48 | 0.0001 |  |
 | 24 | other | shadow_paths | ELIGIBLE | 0.15 | 0.0001 |  |
 
-Waiting / blocked: acq_breadth_confirm@value (WAITING: confirmation waits for tier t1 to complete (Holm family)); acq_breadth_noharm_3p (WAITING: after acq_breadth_bundle); acq_calib (WAITING: after acq_calib_native@value); acq_reject_streak_native@value (WAITING: after acq_calib_native@value); t3_trades0_vrule@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); demand_mild_pyeval@vf (WAITING: parent demand_flat_pyeval@vf (ELIGIBLE)); ports_conversion_cost@value (WAITING: bundle first: div_lr_bundle); ports_conversion_reach@value (WAITING: parent ports_conversion_cost@value (WAITING)); div_lr_bundle-no-conv (WAITING: after div_lr_bundle); div_lr_bundle-no-paths (WAITING: after div_lr_bundle); t3_openings@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); t2_danger_mult_off@value (WAITING: shadow shadow_robber); t2_block_need0@value (WAITING: shadow shadow_robber); t2_steal_factor_off@value (WAITING: shadow shadow_robber); t2_rob_break_off@value (WAITING: shadow shadow_robber); t2_turns_half2@value (WAITING: shadow shadow_robber); t2_knight03@value (WAITING: shadow shadow_robber); t3_blockw0_pyeval@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); paths_main@value (WAITING: shadow shadow_paths); paths_main@vf (WAITING: shadow shadow_paths); t3_search_vs_heur@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); t3_depth2@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family))
+Waiting / blocked: acq_breadth_confirm@value (WAITING: confirmation waits for tier t1 to complete (Holm family)); t3_trades0_vrule@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); demand_mild_pyeval@vf (WAITING: parent demand_flat_pyeval@vf (ELIGIBLE)); ports_conversion_cost@value (WAITING: bundle first: div_lr_bundle); ports_conversion_reach@value (WAITING: parent ports_conversion_cost@value (WAITING)); div_lr_bundle-no-conv (WAITING: after div_lr_bundle); div_lr_bundle-no-paths (WAITING: after div_lr_bundle); t3_openings@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); ports_gate_f1@vf (BLOCKED: needs --bump-code: placement.PORT_MODEL not in epoch A); ports_gate_f2@vf (BLOCKED: needs --bump-code: heuristic.PORT_STATIC_GENERIC, placement.PORT_GENERIC_ONCE not in epoch A); ports_gate_flow@vf (BLOCKED: needs --bump-code: ports.FLOW_KAPPA not in epoch A); ports_gate_mode3_trigger (WAITING: after ports_gate_f1@vf); ports_gate_f1_mode3@vf (WAITING: after ports_gate_mode3_trigger); ports_gate (WAITING: after ports_gate_f1@vf); ports_gate_pick_f1 (WAITING: after ports_gate); ports_gate_pick_f2 (WAITING: after ports_gate); ports_gate_pick_flow (WAITING: after ports_gate); ports_gate_pick_f1m3 (WAITING: after ports_gate); ports_best_f1@vf (WAITING: after ports_gate_pick_f1); ports_best_f2@vf (WAITING: after ports_gate_pick_f2); ports_best_flow@vf (WAITING: after ports_gate_pick_flow); ports_best_f1m3@vf (WAITING: after ports_gate_pick_f1m3); t2_danger_mult_off@value (WAITING: shadow shadow_robber); t2_block_need0@value (WAITING: shadow shadow_robber); t2_steal_factor_off@value (WAITING: shadow shadow_robber); t2_rob_break_off@value (WAITING: shadow shadow_robber); t2_turns_half2@value (WAITING: shadow shadow_robber); t2_knight03@value (WAITING: shadow shadow_robber); t3_blockw0_pyeval@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); paths_main@value (WAITING: shadow shadow_paths); paths_main@vf (WAITING: shadow shadow_paths); t3_search_vs_heur@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family)); t3_depth2@alphabeta (WAITING: confirmation waits for tier t1 to complete (Holm family))
 
 ## Per area
 
 | area | rows | final | open | ADOPT | on ice (SHELVE/REJECT) | NOOP | FAILED | deferred | CPU-h spent |
 |---|---|---|---|---|---|---|---|---|---|
 | harness | 7 | 7 | 0 | 0 | 2 | 0 | 0 | 0 | 0.92 |
-| trades | 13 | 4 | 4 | 0 | 0 | 0 | 0 | 1 | 3.72 |
+| trades | 13 | 7 | 4 | 0 | 1 | 0 | 0 | 1 | 4.90 |
 | diversification | 10 | 0 | 4 | 0 | 0 | 0 | 0 | 0 | 0.00 |
-| ports | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0.00 |
+| ports | 15 | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0.00 |
 | robber | 12 | 1 | 4 | 0 | 0 | 0 | 0 | 1 | 0.00 |
 | politics | 6 | 0 | 6 | 0 | 0 | 0 | 0 | 0 | 0.00 |
 | other | 10 | 0 | 6 | 0 | 0 | 0 | 0 | 0 | 0.00 |

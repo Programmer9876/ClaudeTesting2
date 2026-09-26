@@ -339,12 +339,32 @@ def port_need_weights(prod: Sequence[float], scarcity: Sequence[float]) -> Tuple
 def port_pe(prod: Sequence[float], rho: Sequence[int], rho2: Sequence[int],
             scarcity: Sequence[float]) -> Tuple[float, float]:
     """F1 ``(PE, c)``: the pips-equivalent ``36 G w`` of going from ratios ``rho`` to ``rho2`` for the production
-    ``prod``, and the complement factor ``c`` of :func:`port_need_weights`."""
-    g = port_gain(prod, rho, rho2)
+    ``prod``, and the complement factor ``c`` of :func:`port_need_weights` - the arithmetic of :func:`port_gain` and
+    :func:`port_need_weights` fused into one pass (it runs for every port spot the Python evaluator scores)."""
+    inc = sum(prod)
+    if inc <= 0.0:
+        return 0.0, 0.5
+    demand = RESOURCE_DEMAND
+    tot = sum(demand)
+    a0, b, e = PORT_A0, PORT_B, PORT_ELAST
+    g = dsum = wsum = csum = 0.0
+    for r in range(5):
+        x = prod[r]
+        share = demand[r] / tot * inc
+        if rho2[r] < rho[r]:
+            s = x - share
+            conv = a0 * x / inc + b * (s if s > 0.0 else 0.0)
+            g += conv * (1.0 / rho2[r] - 1.0 / rho[r]) * (1.0 + e * (4.0 / rho2[r] - 1.0))
+        d = share - x
+        if d > 0.0:
+            dsum += d
+            wsum += d * demand[r] * (scarcity[r] ** 0.5)
+            csum += d / (1.0 + 4.0 * x)
     if g <= 0.0:
         return 0.0, 0.5
-    w, c = port_need_weights(prod, scarcity)
-    return 36.0 * g * w, c
+    if dsum <= 0.0:
+        return 36.0 * g, 0.5
+    return 36.0 * g * (wsum / dsum), csum / dsum
 
 
 def spot_port_bonus(state: GameState, player: int, v: int, own_prod: Optional[Sequence[float]] = None,

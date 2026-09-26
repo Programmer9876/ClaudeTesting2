@@ -1,5 +1,5 @@
 {
- "notes": "Test queue plan (docs/QUEUE.md; docs/PRIORITY_PLAN.md step 1). Epoch A = today's code: the existing campaign rows re-expressed with area / polarity / tier / promise / design, the A/A and smoke rows, the CRN dice pilot, the zero-game robber and paths shadows, the diversification rows (openings, resource demand; docs/ABLATIONS.md 'Regrouping', 2026-09-26). Rows of features not built yet are present with enabled:false and a 'requires' note. Run with scripts/run_queue.py; campaign.py can read this file too (it runs only the enabled kind:catanatron rows, legacy style). Step 3 (trades, 2026-09-26): the trade rows are enabled for epoch B1 (they need the new tunables, so they wait as BLOCKED until --bump-code --areas trades); acq.progress stopped at its Stage 0 audit; screen_once (plan decision 1, taken by the user: screen the +0.5-2 pp ideas once within the budget) lists the trade screens whose power at their promise is below 0.5 (a plan-level list so that a queue process started before the field existed can still read the file); the zero-game gates ran from the working tree (scripts/acq_audit.py, acq_mechanism.py, acq_flow_fit.py, decision_shadow.py).",
+ "notes": "Test queue plan (docs/QUEUE.md; docs/PRIORITY_PLAN.md step 1). Epoch A = today's code: the existing campaign rows re-expressed with area / polarity / tier / promise / design, the A/A and smoke rows, the CRN dice pilot, the zero-game robber and paths shadows, the diversification rows (openings, resource demand; docs/ABLATIONS.md 'Regrouping', 2026-09-26). Rows of features not built yet are present with enabled:false and a 'requires' note. Run with scripts/run_queue.py; campaign.py can read this file too (it runs only the enabled kind:catanatron rows, legacy style). Step 3 (trades, 2026-09-26): the trade rows are enabled for epoch B1 (they need the new tunables, so they wait as BLOCKED until --bump-code --areas trades); acq.progress stopped at its Stage 0 audit; screen_once (plan decision 1, taken by the user: screen the +0.5-2 pp ideas once within the budget) lists the trade screens whose power at their promise is below 0.5 (a plan-level list so that a queue process started before the field existed can still read the file); the zero-game gates ran from the working tree (scripts/acq_audit.py, acq_mechanism.py, acq_flow_fit.py, decision_shadow.py). Step 4 (ports, 2026-09-26): the ports mechanism gate is enabled for epoch B2 (--bump-code --areas ports): three 300-seed cells vs 3.2.1 vf (F1 PORT_MODEL=1 and F2 P3' on one Python-evaluator default arm, the flow provider on the C++ evaluator), the milder F1 mode-3 cell behind a command trigger, the gate verdict (scripts/port_gate.py, the pre-registered rule) and one best-cell 2,000-seed screen per cell behind a 'this cell is the best pass' command; the best-cell screens are in screen_once; SPOT_LEADER stays deferred to human testing and spot_want waits for step 7.",
  "defaults": {
   "workers": 3,
   "reuse": true,
@@ -28,7 +28,11 @@
   "acq_breadth_bundle",
   "acq_floor_selfplay",
   "acq_floor_vrule@value",
-  "acq_calib"
+  "acq_calib",
+  "ports_best_f1@vf",
+  "ports_best_f2@vf",
+  "ports_best_flow@vf",
+  "ports_best_f1m3@vf"
  ],
  "experiments": [
   {
@@ -463,10 +467,9 @@
   },
   {
    "name": "ports_gate_f1@vf",
-   "enabled": false,
    "area": "ports",
    "polarity": "measure",
-   "tier": "t1",
+   "tier": "smoke",
    "priority": 12,
    "interpreter": "py321",
    "opponent": "vf",
@@ -480,18 +483,16 @@
    },
    "design": "estimate",
    "mechanism": {
-    "metric": "share_4to1",
-    "direction": "-"
+    "metric": "cards_saved",
+    "direction": "+"
    },
-   "requires": "step 4 (placement.PORT_MODEL, Python evaluator)",
-   "notes": "Ports mechanism gate cell F1 (shared Python-evaluator base arm, vf on 3.2.1). Pre-registered PASS: cards saved vs 4:1 up >= 1.1 a game and settlements a game down <= 0.15."
+   "notes": "Ports mechanism gate cell F1 (ports.surplus_value, the calibrated conversion model in the spot score and static_value; placement.PORT_MODEL=1): 300 paired seeds vs 3.2.1 vf, full information, trades off, Python evaluator (needs_python_evaluator: ablate_catanatron re-executes with CATANBOT_NO_ACCEL=1) on the default arm it shares with the F2 and F1-mode-3 cells. Pre-registered PASS (scripts/port_gate.py): cards saved vs 4:1 (4 x cards received - cards given, mech cards_saved) up by at least 1.1 a game AND settlements a game not lower by 0.15 or more. Tier smoke: a mechanism gate, not in a Holm family; the win-rate estimate is a sanity readout. Zero-game screen (1,000 R1 proof games): see docs/RESULTS.md."
   },
   {
    "name": "ports_gate_f2@vf",
-   "enabled": false,
    "area": "ports",
    "polarity": "measure",
-   "tier": "t1",
+   "tier": "smoke",
    "priority": 13,
    "interpreter": "py321",
    "opponent": "vf",
@@ -507,36 +508,66 @@
     "base": 0
    },
    "design": "estimate",
-   "requires": "step 4 (the port constants as tunables)",
-   "notes": "Gate cell F2 (P3': static 3:1 = 0.8, counted once)."
+   "mechanism": {
+    "metric": "cards_saved",
+    "direction": "+"
+   },
+   "notes": "Ports gate cell F2 (ports.constants, P3': static 3:1 = 0.8, counted once via placement.PORT_GENERIC_ONCE=1), Python evaluator, shared default arm with F1. Pre-registered PASS (scripts/port_gate.py): cards saved vs 4:1 (4 x cards received - cards given, mech cards_saved) up by at least 1.1 a game AND settlements a game not lower by 0.15 or more."
   },
   {
    "name": "ports_gate_flow@vf",
-   "enabled": false,
    "area": "ports",
    "polarity": "measure",
-   "tier": "t1",
+   "tier": "smoke",
    "priority": 14,
    "interpreter": "py321",
    "opponent": "vf",
    "tunable": "ports.FLOW_KAPPA",
    "values": [
-    1.0
+    0.25
    ],
    "seeds": {
     "count": 300,
     "base": 0
    },
    "design": "estimate",
-   "requires": "step 4 (ports.flow_provider; the acq.flow function and table landed in step 3)",
-   "notes": "Gate cell 3 (C++ evaluator, its own 300-seed base arm). Never stacked with F1 modes 1/2."
+   "mechanism": {
+    "metric": "cards_saved",
+    "direction": "+"
+   },
+   "notes": "Ports gate cell 3 (ports.flow_provider: acq.flow's fitted trade-flow value replaces static's port credit for our seat through the correction hub; FLOW_KAPPA 0.25 static points per card saved, calibrated so that a 3:1 port at our main-phase settlement decisions is worth the design's calibrated 0.78 points). C++ evaluator, so its own 300-seed default arm. Never stacked with PORT_MODEL 1 / 2; with conv=1 the conversion term owns our port value and the flow provider stands down. Pre-registered PASS (scripts/port_gate.py): cards saved vs 4:1 (4 x cards received - cards given, mech cards_saved) up by at least 1.1 a game AND settlements a game not lower by 0.15 or more."
+  },
+  {
+   "name": "ports_gate_mode3_trigger",
+   "kind": "command",
+   "area": "ports",
+   "priority": 14.5,
+   "interpreter": "py321",
+   "cwd": "repo",
+   "est_cpu_h": 0.002,
+   "after": {
+    "row": "ports_gate_f1@vf"
+   },
+   "cmd": [
+    "{python}",
+    "{root}/scripts/port_gate.py",
+    "--dir",
+    "{dir}",
+    "--json",
+    "{dir}/ports_gate.json"
+   ],
+   "verdict_from": {
+    "json": "{dir}/ports_gate.json",
+    "key": "f1_overshoot",
+    "pass_if": true
+   },
+   "notes": "Zero-game (reads the F1 cell's games): PASS = F1 raised cards saved by more than 2 paired se but failed the settlement guard (settlements down by more than 0.15), the design's trigger of the milder mode-3 cell. A command row because the built-in 'milder' rule needs a REJECT / SHELVE verdict, which an estimate-design gate cell never gives."
   },
   {
    "name": "ports_gate_f1_mode3@vf",
-   "enabled": false,
    "area": "ports",
    "polarity": "measure",
-   "tier": "t1",
+   "tier": "smoke",
    "priority": 15,
    "interpreter": "py321",
    "opponent": "vf",
@@ -549,17 +580,178 @@
     "base": 0
    },
    "design": "estimate",
-   "requires": "step 4",
-   "notes": "Milder fallback of F1 (calibrated 3:1 only): only if F1 raises cards saved but fails the settlement guard."
+   "mechanism": {
+    "metric": "cards_saved",
+    "direction": "+"
+   },
+   "after": {
+    "row": "ports_gate_mode3_trigger",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   "notes": "Milder fallback of F1 (ports.surplus_value mode 3: the calibrated value for 3:1 ports only, the 2:1 constants kept): runs only if ports_gate_mode3_trigger PASSes. Same seeds and Python-evaluator default arm as F1. Pre-registered PASS (scripts/port_gate.py): cards saved vs 4:1 (4 x cards received - cards given, mech cards_saved) up by at least 1.1 a game AND settlements a game not lower by 0.15 or more."
   },
   {
-   "name": "ports_best_cell@vf",
-   "enabled": false,
+   "name": "ports_gate",
+   "kind": "command",
+   "area": "ports",
+   "priority": 15.5,
+   "interpreter": "py321",
+   "cwd": "repo",
+   "est_cpu_h": 0.002,
+   "after": [
+    {
+     "row": "ports_gate_f1@vf"
+    },
+    {
+     "row": "ports_gate_f2@vf"
+    },
+    {
+     "row": "ports_gate_flow@vf"
+    },
+    {
+     "row": "ports_gate_f1_mode3@vf"
+    }
+   ],
+   "cmd": [
+    "{python}",
+    "{root}/scripts/port_gate.py",
+    "--dir",
+    "{dir}",
+    "--json",
+    "{dir}/ports_gate.json"
+   ],
+   "verdict_from": {
+    "json": "{dir}/ports_gate.json",
+    "key": "any_pass",
+    "pass_if": true
+   },
+   "notes": "The ports mechanism gate (docs/PRIORITY_PLAN.md step 4): PASS = at least one cell passes the pre-registered rule (cards saved up >= 1.1 a game, settlements not lower by 0.15 or more, >= 90 % of the 300 seeds paired). FAIL = SHELVE the whole port-valuation line (the expected outcome): the knobs stay registered for a later Python-evaluator SPSA batch; no more rows."
+  },
+  {
+   "name": "ports_gate_pick_f1",
+   "kind": "command",
+   "area": "ports",
+   "priority": 15.6,
+   "interpreter": "py321",
+   "cwd": "repo",
+   "est_cpu_h": 0.002,
+   "after": {
+    "row": "ports_gate",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   "cmd": [
+    "{python}",
+    "{root}/scripts/port_gate.py",
+    "--dir",
+    "{dir}",
+    "--json",
+    "{dir}/ports_gate.json"
+   ],
+   "verdict_from": {
+    "json": "{dir}/ports_gate.json",
+    "key": "best_is.f1",
+    "pass_if": true
+   },
+   "notes": "PASS when ports_gate_f1@vf passed the gate with the largest gain in cards saved: only that cell gets the 2,000-seed row (ports_best_f1@vf)."
+  },
+  {
+   "name": "ports_gate_pick_f2",
+   "kind": "command",
+   "area": "ports",
+   "priority": 15.7,
+   "interpreter": "py321",
+   "cwd": "repo",
+   "est_cpu_h": 0.002,
+   "after": {
+    "row": "ports_gate",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   "cmd": [
+    "{python}",
+    "{root}/scripts/port_gate.py",
+    "--dir",
+    "{dir}",
+    "--json",
+    "{dir}/ports_gate.json"
+   ],
+   "verdict_from": {
+    "json": "{dir}/ports_gate.json",
+    "key": "best_is.f2",
+    "pass_if": true
+   },
+   "notes": "PASS when ports_gate_f2@vf passed the gate with the largest gain in cards saved: only that cell gets the 2,000-seed row (ports_best_f2@vf)."
+  },
+  {
+   "name": "ports_gate_pick_flow",
+   "kind": "command",
+   "area": "ports",
+   "priority": 15.8,
+   "interpreter": "py321",
+   "cwd": "repo",
+   "est_cpu_h": 0.002,
+   "after": {
+    "row": "ports_gate",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   "cmd": [
+    "{python}",
+    "{root}/scripts/port_gate.py",
+    "--dir",
+    "{dir}",
+    "--json",
+    "{dir}/ports_gate.json"
+   ],
+   "verdict_from": {
+    "json": "{dir}/ports_gate.json",
+    "key": "best_is.flow",
+    "pass_if": true
+   },
+   "notes": "PASS when ports_gate_flow@vf passed the gate with the largest gain in cards saved: only that cell gets the 2,000-seed row (ports_best_flow@vf)."
+  },
+  {
+   "name": "ports_gate_pick_f1m3",
+   "kind": "command",
+   "area": "ports",
+   "priority": 15.9,
+   "interpreter": "py321",
+   "cwd": "repo",
+   "est_cpu_h": 0.002,
+   "after": {
+    "row": "ports_gate",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   "cmd": [
+    "{python}",
+    "{root}/scripts/port_gate.py",
+    "--dir",
+    "{dir}",
+    "--json",
+    "{dir}/ports_gate.json"
+   ],
+   "verdict_from": {
+    "json": "{dir}/ports_gate.json",
+    "key": "best_is.f1m3",
+    "pass_if": true
+   },
+   "notes": "PASS when ports_gate_f1_mode3@vf passed the gate with the largest gain in cards saved: only that cell gets the 2,000-seed row (ports_best_f1m3@vf)."
+  },
+  {
+   "name": "ports_best_f1@vf",
    "area": "ports",
    "polarity": "new",
    "promise_pp": 3,
    "tier": "t1",
-   "priority": 16,
+   "priority": 16.0,
    "interpreter": "py321",
    "opponent": "vf",
    "tunable": "placement.PORT_MODEL",
@@ -568,14 +760,109 @@
    ],
    "seeds": {
     "count": 2000,
-    "base": 0
+    "base": 300
    },
-   "requires": "a PASSing gate cell (edit tunable/values to the best cell)",
    "mechanism": {
     "metric": "port_settled",
     "direction": "+"
    },
-   "notes": "One seqtest screen for the passing cell with the largest gain in cards saved."
+   "after": {
+    "row": "ports_gate_pick_f1",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   "notes": "The one 2,000-seed seqtest screen of the ports area (docs/PRIORITY_PLAN.md test queue p16), only for the gate cell that passed with the largest gain in cards saved; fresh seeds 300.. (the gate's 0..299 are not reused). ADOPT needs about 2.7 pp observed; screened once (plan decision 1) although the whole port-efficiency gap is worth at most about 1.6 pp. Python evaluator."
+  },
+  {
+   "name": "ports_best_f2@vf",
+   "area": "ports",
+   "polarity": "new",
+   "promise_pp": 3,
+   "tier": "t1",
+   "priority": 16.1,
+   "interpreter": "py321",
+   "opponent": "vf",
+   "tunable": "heuristic.PORT_STATIC_GENERIC",
+   "values": [
+    0.8
+   ],
+   "cand_set": {
+    "placement.PORT_GENERIC_ONCE": 1
+   },
+   "seeds": {
+    "count": 2000,
+    "base": 300
+   },
+   "mechanism": {
+    "metric": "port_settled",
+    "direction": "+"
+   },
+   "after": {
+    "row": "ports_gate_pick_f2",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   "notes": "The one 2,000-seed seqtest screen of the ports area (docs/PRIORITY_PLAN.md test queue p16), only for the gate cell that passed with the largest gain in cards saved; fresh seeds 300.. (the gate's 0..299 are not reused). ADOPT needs about 2.7 pp observed; screened once (plan decision 1) although the whole port-efficiency gap is worth at most about 1.6 pp. Python evaluator."
+  },
+  {
+   "name": "ports_best_flow@vf",
+   "area": "ports",
+   "polarity": "new",
+   "promise_pp": 3,
+   "tier": "t1",
+   "priority": 16.2,
+   "interpreter": "py321",
+   "opponent": "vf",
+   "tunable": "ports.FLOW_KAPPA",
+   "values": [
+    0.25
+   ],
+   "seeds": {
+    "count": 2000,
+    "base": 300
+   },
+   "mechanism": {
+    "metric": "port_settled",
+    "direction": "+"
+   },
+   "after": {
+    "row": "ports_gate_pick_flow",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   "notes": "The one 2,000-seed seqtest screen of the ports area (docs/PRIORITY_PLAN.md test queue p16), only for the gate cell that passed with the largest gain in cards saved; fresh seeds 300.. (the gate's 0..299 are not reused). ADOPT needs about 2.7 pp observed; screened once (plan decision 1) although the whole port-efficiency gap is worth at most about 1.6 pp. C++ evaluator."
+  },
+  {
+   "name": "ports_best_f1m3@vf",
+   "area": "ports",
+   "polarity": "new",
+   "promise_pp": 3,
+   "tier": "t1",
+   "priority": 16.3,
+   "interpreter": "py321",
+   "opponent": "vf",
+   "tunable": "placement.PORT_MODEL",
+   "values": [
+    3
+   ],
+   "seeds": {
+    "count": 2000,
+    "base": 300
+   },
+   "mechanism": {
+    "metric": "port_settled",
+    "direction": "+"
+   },
+   "after": {
+    "row": "ports_gate_pick_f1m3",
+    "verdicts": [
+     "PASS"
+    ]
+   },
+   "notes": "The one 2,000-seed seqtest screen of the ports area (docs/PRIORITY_PLAN.md test queue p16), only for the gate cell that passed with the largest gain in cards saved; fresh seeds 300.. (the gate's 0..299 are not reused). ADOPT needs about 2.7 pp observed; screened once (plan decision 1) although the whole port-efficiency gap is worth at most about 1.6 pp. Python evaluator."
   },
   {
    "name": "t1_openings@value",
@@ -804,7 +1091,7 @@
     "base": 0
    },
    "requires": "winpaths Stage 5 adopting paths_spots=1, and step 7 (SPOT_WANT in _spot_table)",
-   "notes": "Zero-game screen first: the shadow must change >= 3% of settlement and road decisions."
+   "notes": "Zero-game screen first: the shadow must change >= 3% of settlement and road decisions. The rival-want / leader helper exists since step 4 (catanbot/portvalue.py rival_want / will_block, used by the advice text); its winpaths integration (SPOT_WANT in _spot_table) is step 7."
   },
   {
    "name": "ports_spot_leader",
@@ -821,8 +1108,8 @@
    "kind": "command",
    "area": "ports",
    "priority": 21,
-   "requires": "step 4 (portvalue.ADVICE)",
-   "notes": "Zero-game: unit tests plus a CLI smoke; a fixed-seed game trace must be byte-identical. Not a queue job."
+   "requires": "nothing: zero-game, done outside the queue (tests/test_ports.py)",
+   "notes": "ports.advice (portvalue.ADVICE / catanbot recommend --port-advice) landed in step 4: unit tests, a CLI smoke and a byte-identical fixed-seed game trace with ADVICE=1 (tests/test_ports.py). Not a queue job; kept disabled as the record."
   },
   {
    "name": "shadow_robber",
