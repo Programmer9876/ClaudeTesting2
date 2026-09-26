@@ -393,6 +393,30 @@ python -m catanbot render game.json shot.png --size 1280x800 --me red
 Produces a synthetic Colonist.io-style screenshot (used for parser tests).
 `--size` is `WIDTHxHEIGHT` in pixels; `--me` picks whose hand is drawn.
 
+## 5. Replay archive (game picker and "what our bot knew")
+
+One static page lists every logged game of the strength proof and the
+benchmarks. Any game opens in a step-through replay. In the public-information
+tests (T7, T8, T9, T11) it shows each opponent's real hand next to what our
+bot believed at that moment. The design is in `docs/designs/replay_archive.md`.
+
+```bash
+S=/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad
+# export (nice -n 10, at most 2 workers); writes $S/replay_archive/{index.html,index.json.gz,shards/}
+python3 scripts/replay_export.py --tests T2,T8,H1 --workers 2      # omit --tests for all 18
+# rewrite index.html only (after editing the page or the core), from the existing parts
+python3 scripts/replay_export.py --tests T2,T8,H1 --merge-only
+# validate the bundle against the original logs, results files and manifests
+node scripts/check_replay_bundle.mjs --bundle $S/replay_archive
+```
+
+The page template is `scripts/replay_archive_template.html`; the exporter
+inlines `scripts/replay_core.js` between its `BEGIN`/`END replay_core.js`
+markers, so the bundle has no `.js` file. Publish `index.html` as the page, with
+`index.json.gz` and `shards/*.json.gz` as supporting files. Deep links are bare
+tokens: `#T8-123` (a game), `#T8-123.57` (position 57), `#T8~won` (a filtered
+list), `#selftest` (decode check against the host).
+
 ## Notes on real screenshots
 
 The colour references in `catanbot/vision/colonist.py::Calibration` match

@@ -70,7 +70,9 @@ DEFAULT_WORK = os.path.join(SCRATCH, "replay_archive_work")
 DEFAULT_PY33 = "/home/user/venv_cat33/bin/python"
 DEFAULT_PY32 = "python3"
 SNAPSHOT2 = "/home/user/proof_snapshot2"
-PAGE_DIR = os.path.join(HERE, "replay_archive")
+PAGE_TEMPLATE = os.path.join(HERE, "replay_archive_template.html")   # page template (spec 2.1)
+PAGE_CORE = os.path.join(HERE, "replay_core.js")                     # inlined into the page, never published
+VALIDATOR = os.path.join(HERE, "check_replay_bundle.mjs")            # node validator (spec 9.1)
 MAX_WORKERS = 2
 
 FORMAT = 2
@@ -842,6 +844,11 @@ def _r(x: Optional[float], nd: int = 6) -> Optional[float]:
     return None if x is None else round(float(x), nd)
 
 
+def _sig(x: Optional[float], digits: int = 6) -> Optional[float]:
+    """``x`` to ``digits`` significant digits (for values that can be tiny, such as the minimum chance)."""
+    return None if x is None else float(f"{float(x):.{digits}g}")
+
+
 class BotView:
     """The bot-view lockstep of one counted game (spec 5.2-5.8): the displayed tracker, an audited copy and a
     ``reveal_hidden`` twin, all built as the proof player built its tracker, fed ``final_state``'s log."""
@@ -1028,7 +1035,8 @@ class BotView:
     def summary(self) -> Dict[str, Any]:
         c = self.plain.counter
         return {"allExact": _r(self.all_exact / max(1, self.positions)),
-                "meanP": _r(self.p_sum / max(1, self.pairs)), "minP": _r(self.p_min, 8),
+                # minP can be ~1e-9 (T11-186): relative precision, never rounded to a fixed number of decimals
+                "meanP": _r(self.p_sum / max(1, self.pairs)), "minP": _sig(self.p_min),
                 "calP": _r(self.calp_sum / max(1, self.pairs)),
                 "meanPu": _r(self.pu_sum / self.nu) if self.nu else None,
                 "calPu": _r(self.calpu_sum / self.nu) if self.nu else None, "nu": self.nu,
@@ -1852,7 +1860,7 @@ def _check_totals(checks: Sequence[Dict[str, Any]]) -> Dict[str, int]:
 
 def write_page(out: str) -> bool:
     """``index.html`` = the page template with ``replay_core.js`` inlined between the markers (spec 2.1)."""
-    tpl, core = os.path.join(PAGE_DIR, "index.html"), os.path.join(PAGE_DIR, "replay_core.js")
+    tpl, core = PAGE_TEMPLATE, PAGE_CORE
     if not (os.path.exists(tpl) and os.path.exists(core)):
         return False
     with open(tpl, encoding="utf-8") as fh:
@@ -1869,12 +1877,12 @@ def write_page(out: str) -> bool:
 
 
 def run_validator(args) -> bool:
-    js = os.path.join(PAGE_DIR, "validate_archive.js")
+    js = VALIDATOR
     if not os.path.exists(js):
         print(f"--validate: {js} does not exist", flush=True)
         return False
     cmd = ["node", js, "--bundle", args.out, "--repo", REPO, "--truth", os.path.join(args.work, "truth"),
-           "--core", os.path.join(PAGE_DIR, "replay_core.js")]
+           "--core", PAGE_CORE, "--template", PAGE_TEMPLATE]
     print("validate: " + " ".join(cmd), flush=True)
     return subprocess.run(cmd).returncode == 0
 

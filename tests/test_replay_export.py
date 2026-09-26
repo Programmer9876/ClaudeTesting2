@@ -272,6 +272,15 @@ def test_largest_remainder():
     assert RE.largest_remainder([0.8104, 0.1896]) == [810, 190]
 
 
+def test_min_chance_keeps_relative_precision():
+    """bv.sum.minP of T11-186 is 2.47e-9 and of T7-278 6.05e-9: rounding to 8 decimals gave 0 and 1e-8 (found by the
+    full-bundle validator run); significant digits keep them."""
+    assert RE._sig(2.471724145016134e-9) == 2.47172e-9
+    assert RE._sig(6.053408747539136e-9) == 6.05341e-9
+    assert RE._sig(0.771234567) == 0.771235 and RE._sig(None) is None
+    assert RE._r4(RE._sig(2.471724145016134e-9)) == 2.472e-9
+
+
 def test_geometry_global():
     """Games of both generations, 2- and 4-player, give one geometry; it matches game_viewer.geometry."""
     code = ("import sys, json; sys.path.insert(0, %r); import replay_export as RE; RE.load_engine(%r); "
@@ -764,13 +773,14 @@ def test_head_digest_job(t8_worker, tmp_path):
 
 
 def test_node_validator(tmp_path):
-    js = os.path.join(RE.PAGE_DIR, "validate_archive.js")
+    js = RE.VALIDATOR
     if shutil.which("node") is None or not os.path.exists(js):
-        pytest.skip("node or scripts/replay_archive/validate_archive.js not available")
+        pytest.skip("node or scripts/check_replay_bundle.mjs not available")
     t = "T2" if AD.API_33 else "R1"
     r = subprocess.run([sys.executable, SCRIPT, "--worker", t, "--shard", "0", "--code-root", REPO, "--out",
                         str(tmp_path / "out"), "--work", str(tmp_path / "work"), "--games", "0,1"],
                        capture_output=True, text=True, cwd="/")
     assert r.returncode == 0, r.stderr[-2000:]
-    r = subprocess.run(["node", js, "--bundle", str(tmp_path / "out"), "--bundle-only"], capture_output=True, text=True)
+    r = subprocess.run(["node", js, "--bundle", str(tmp_path / "out"), "--bundle-only", "--work", str(tmp_path / "work"),
+                        "--repo", RE.REPO], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]

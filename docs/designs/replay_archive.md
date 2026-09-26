@@ -150,6 +150,11 @@ Sources: the survey of every log (`proto/survey.py`) and the critics' read-only 
 | `docs/designs/replay_archive.md` | this spec |
 | `docs/USAGE.md` | a short "Replay archive" section (export, validate, publish) added once the scripts exist |
 
+**Names as implemented.** The files were created as `scripts/replay_export.py` (exporter),
+`tests/test_replay_export.py` (pytest), `scripts/replay_archive_template.html` (page template),
+`scripts/replay_core.js` (core) and `scripts/check_replay_bundle.mjs` (node validator, ES module; options as in 9.1
+plus `--template`, `--expect-all`, and `--bundle-only [--work DIR]` for partial bundles). The roles are the ones above.
+
 `scripts/game_viewer.py` and its template stay unchanged. The new page copies the template's CSS tokens and drawing
 code; it does not import them.
 

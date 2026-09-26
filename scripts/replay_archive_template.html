@@ -1,0 +1,1597 @@
+<title>Catanbot Replay Archive</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root {
+  --ground: #eceee8;
+  --panel: #f8f9f5;
+  --ink: #1c2521;
+  --muted: #5b6862;
+  --line: #cfd6d0;
+  --sea: #3b7396;
+  --sea-edge: #2c5b78;
+  --ours: #b07d12;
+  --ours-soft: #f3e6c4;
+  --now: #fffbe8;
+  --wood: #4f8a46; --brick: #b95d3f; --sheep: #a9c970; --wheat: #e5c65b; --ore: #8e96a2; --desert: #d9c9a1;
+  --p-RED: #cf3a2c; --p-BLUE: #2e6cd0; --p-ORANGE: #e8891b; --p-WHITE: #f5f5f0;
+  --piece-edge: #1c2521;
+  --token: #f7f1df; --token-ink: #1c2521; --token-hot: #b3261e;
+  --port: #f4efe2; --port-ink: #1c2521; --port-line: #e9dfc6;
+  --known: #2d6a3a;
+  --known-soft: #dcebdc;
+  --differs: #6a3fa3;
+  --differs-soft: #efe6fa;
+  --meter-track: #dde2de;
+  --meter-fill: #56646f;
+  --hidden: #5a6470;
+  --hidden-soft: #e4e8ec;
+  --delta-up: #2a6d2f;
+  --delta-down: #a3281f;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground: #141a18; --panel: #1c2421; --ink: #e5ebe7; --muted: #9aa8a1; --line: #33413b;
+    --sea: #1f4b66; --sea-edge: #163a50; --ours: #e0b04a; --ours-soft: #3a3120; --now: #2b2a1c;
+    --known: #8ccf97; --known-soft: #20342a; --differs: #c8a5f5; --differs-soft: #2d2440;
+    --meter-track: #2d3a35; --meter-fill: #9fb1bd; --hidden: #a6b0bb; --hidden-soft: #26302e;
+    --delta-up: #86d18f; --delta-down: #ff9d91;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #141a18; --panel: #1c2421; --ink: #e5ebe7; --muted: #9aa8a1; --line: #33413b;
+  --sea: #1f4b66; --sea-edge: #163a50; --ours: #e0b04a; --ours-soft: #3a3120; --now: #2b2a1c;
+  --known: #8ccf97; --known-soft: #20342a; --differs: #c8a5f5; --differs-soft: #2d2440;
+  --meter-track: #2d3a35; --meter-fill: #9fb1bd; --hidden: #a6b0bb; --hidden-soft: #26302e;
+  --delta-up: #86d18f; --delta-down: #ff9d91;
+}
+* { box-sizing: border-box; }
+body { background: var(--ground); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.45; margin: 0; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 22px 40px; }
+@media (max-width: 600px) { .wrap { padding-inline: 16px; } }
+[hidden] { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+a { color: inherit; text-decoration-color: color-mix(in srgb, var(--ink) 40%, transparent); text-underline-offset: 2px; }
+a:hover { text-decoration-color: var(--ink); }
+a:focus-visible { outline: 2px solid var(--ours); outline-offset: 2px; border-radius: 3px; }
+header { display: grid; gap: 6px; margin-bottom: 18px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--display); font-weight: 700; font-size: clamp(24px, 3.4vw, 34px); line-height: 1.1; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--display); font-size: 16px; font-weight: 700; margin: 0 0 6px; text-wrap: balance; }
+.sub { color: var(--muted); max-width: 72ch; margin: 0; }
+.small { font-size: 13.5px; }
+.result { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12.5px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); white-space: nowrap; }
+.chip.win { border-color: var(--ours); background: var(--ours-soft); font-weight: 600; }
+.dot { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--piece-edge); flex: none; display: inline-block; vertical-align: -1px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+button, select, input { font: inherit; font-size: 13.5px; color: var(--ink); }
+button, select { background: var(--ground); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; cursor: pointer; }
+input[type=number], input[type=search], input[type=text] { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; min-width: 0; }
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--ours); outline-offset: 2px; }
+button.primary { background: var(--ink); color: var(--panel); border-color: var(--ink); min-width: 78px; font-weight: 700; }
+button.linkish { background: none; border: 0; padding: 2px 4px; text-decoration: underline; text-underline-offset: 2px; }
+.tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; background: var(--ours); color: #1c1606; font-weight: 600; white-space: nowrap; }
+.tag.soft { background: var(--hidden-soft); color: var(--hidden); }
+.tag.known { background: var(--known-soft); color: var(--known); }
+.meter { display: inline-block; width: 56px; height: 6px; border-radius: 3px; background: var(--meter-track); vertical-align: middle; overflow: hidden; flex: none; }
+.meter > i { display: block; height: 100%; background: var(--meter-fill); }
+kbd { font-family: var(--mono); font-size: 11.5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--panel); }
+
+/* status line and messages */
+.statusline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 9px 14px; margin-bottom: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; font-size: 14px; }
+.statusline.error { border-color: var(--delta-down); }
+.statusline.error > span:first-child { color: var(--delta-down); font-weight: 700; }
+.msg { padding: 8px 12px; margin: 0 0 12px; border: 1px dashed var(--muted); border-radius: 8px; font-size: 14px; color: var(--ink); background: var(--panel); }
+
+/* picker */
+.counts summary, details.check summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
+.counts ul { margin: 6px 0 0; padding-left: 18px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.counts li.off { color: var(--delta-down); font-weight: 700; }
+details.filters { margin-block: 4px 10px; }
+details.filters > summary { cursor: pointer; font-family: var(--display); font-weight: 700; font-size: 16px; padding: 10px 14px; display: flex; gap: 8px; align-items: baseline; }
+details.filters > summary .n { font-family: var(--mono); font-size: 12.5px; color: var(--muted); font-weight: 400; }
+.fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 12px 16px; padding: 2px 14px 14px; }
+.fgrid .wide { grid-column: 1 / -1; }
+.fl { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); align-content: start; min-width: 0; }
+.fl select, .fl input { width: 100%; }
+.frow { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.frow > * { flex: 1 1 0; min-width: 0; }
+.frow .to { flex: none; color: var(--muted); }
+.tgroups { display: grid; gap: 8px; }
+.tgroup { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.tgroup .glabel { font-size: 12px; color: var(--muted); width: 100%; }
+.fchip { border-radius: 999px; font-size: 12.5px; padding: 4px 10px; display: inline-flex; gap: 6px; align-items: baseline; }
+.fchip b { font-family: var(--mono); font-weight: 600; }
+.fchip span { color: var(--muted); }
+.fchip[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.fchip[aria-pressed="true"] span { color: color-mix(in srgb, var(--panel) 80%, transparent); }
+.fline { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 13.5px; color: var(--muted); margin-bottom: 10px; }
+.summary { padding: 12px 14px; display: grid; gap: 6px; margin-bottom: 12px; }
+.summary .big { font-size: 15.5px; font-variant-numeric: tabular-nums; }
+.summary .big b { font-family: var(--display); font-weight: 700; }
+.summary .note { font-size: 12.5px; color: var(--muted); }
+.tools { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; margin-bottom: 10px; }
+.tools .fl { grid-auto-flow: row; }
+.tools .grow { flex: 1 1 auto; }
+.share { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12.5px; color: var(--muted); min-width: 0; }
+.share input { font-family: var(--mono); font-size: 12.5px; width: 16ch; flex: 1 1 10ch; max-width: 100%; }
+.tablewrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+table.games { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+table.games th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 9px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: bottom; }
+table.games th button { background: none; border: 0; padding: 0; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+table.games th[aria-sort="ascending"] button::after { content: " ↑"; }
+table.games th[aria-sort="descending"] button::after { content: " ↓"; }
+table.games th[aria-sort="ascending"], table.games th[aria-sort="descending"] { color: var(--ink); }
+table.games td { padding: 7px 8px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); vertical-align: middle; }
+table.games tbody tr:last-child td { border-bottom: 0; }
+table.games tbody tr:hover { background: var(--now); }
+table.games .c-id a { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
+table.games .num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+table.games .c-vp, table.games .c-seat, table.games .c-win, table.games .c-titles, table.games .c-info, table.games .c-opp, table.games .c-behind { white-space: nowrap; }
+table.games th.wrap { white-space: normal; min-width: 10ch; }
+.hvtag { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 4px; background: var(--hidden-soft); color: var(--hidden); white-space: nowrap; }
+table.games .c-bot { white-space: nowrap; font-family: var(--mono); font-size: 12.5px; }
+table.games .c-bot .meter { margin-right: 6px; }
+table.games .muted { color: var(--muted); }
+.c-break, .m-only { display: none; }
+.pager { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-top: 10px; font-size: 13.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pager .where { margin-left: auto; }
+.empty { padding: 18px 14px; color: var(--muted); }
+@media (max-width: 900px) {
+  table.games thead { display: none; }
+  table.games, table.games tbody { display: block; }
+  table.games tr { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 12px; padding: 10px 12px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  table.games tbody tr:last-child { border-bottom: 0; }
+  table.games td { display: inline-block; padding: 0; border: 0 !important; font-size: 13px; }
+  table.games .c-id { order: 1; font-size: 14.5px; }
+  table.games .c-win { order: 2; }
+  table.games .c-vp { order: 3; margin-left: auto; }
+  table.games .c-break { display: block; order: 4; flex-basis: 100%; height: 0; }
+  table.games td.rest { order: 5; color: var(--muted); }
+  table.games td.rest:empty, table.games td.blank { display: none; }
+  table.games .num { text-align: left; }
+  .m-only { display: inline; }
+}
+
+/* replay */
+.topbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 14px; }
+.topbar .gid { font-family: var(--mono); font-size: 13px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.topbar .pn { display: flex; gap: 6px; margin-left: auto; }
+.badge { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; margin: 2px 0 0; max-width: 88ch; font-size: 14px; }
+.badge .tag { flex: none; }
+.seg { border: 0; padding: 0; margin: 0 0 14px; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; min-width: 0; }
+.seg legend { float: left; font-weight: 700; font-size: 14px; padding: 0; margin-right: 4px; }
+.seg .opts { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.seg label { position: relative; display: inline-flex; align-items: center; padding: 6px 12px; font-size: 13.5px; cursor: pointer; border-left: 1px solid var(--line); }
+.seg label:first-child { border-left: 0; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg label:has(input:checked) { background: var(--ink); color: var(--panel); font-weight: 700; }
+.seg label:has(input:focus-visible) { outline: 2px solid var(--ours); outline-offset: -2px; }
+@media (max-width: 600px) {
+  .seg legend { float: none; margin-bottom: 6px; }
+  .seg .opts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .seg label { justify-content: center; text-align: center; padding: 6px; }
+}
+.layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.boardbox { padding: 10px; display: grid; gap: 10px; }
+.boardsvg { width: 100%; max-width: 100%; height: auto; display: block; aspect-ratio: 1 / 0.92; }
+.status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; padding-inline: 4px; }
+.status .now { font-weight: 700; }
+.status .now .who { font-family: var(--display); font-size: 17px; }
+.dice { display: inline-flex; gap: 5px; align-items: center; }
+.die { width: 26px; height: 26px; border-radius: 6px; border: 1.5px solid var(--ink); background: var(--panel); display: grid; place-items: center; font-family: var(--mono); font-weight: 600; font-size: 14px; }
+.lastact { color: var(--muted); font-size: 14px; padding-inline: 4px; min-height: 2.9em; }
+.lastact .hidtag, .lr .hidtag { color: var(--hidden); font-style: italic; }
+.controls { display: grid; gap: 8px; padding-inline: 4px; }
+.btnrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+input[type=range] { width: 100%; accent-color: var(--ours); }
+.pos { font-family: var(--mono); font-size: 12.5px; color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+.moment { display: grid; gap: 4px; padding: 8px 4px 2px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.side { display: grid; gap: 16px; min-width: 0; }
+.players { display: grid; }
+.allexact { display: flex; gap: 8px; align-items: center; padding: 9px 14px; font-size: 13.5px; color: var(--known); background: var(--known-soft); border-radius: 10px 10px 0 0; font-weight: 700; }
+.pl { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; padding: 12px 14px; border-top: 1px solid var(--line); }
+.players > .pl:first-child, .allexact[hidden] + .pl { border-top: 0; }
+.pl.turn { background: var(--now); }
+.pl .name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-weight: 700; }
+.pl .role { font-family: var(--mono); font-size: 11.5px; color: var(--muted); font-weight: 400; }
+.vp { grid-row: span 2; align-self: center; text-align: right; font-family: var(--display); font-size: 28px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.vp small { display: block; font-family: var(--mono); font-size: 10.5px; font-weight: 400; color: var(--muted); margin-top: 3px; white-space: nowrap; }
+.pl .swatch { grid-row: span 2; width: 14px; border-radius: 4px; border: 1.5px solid var(--piece-edge); align-self: stretch; }
+.pl .full { grid-column: 2 / 4; min-width: 0; }
+.hand { display: flex; flex-wrap: wrap; gap: 4px 5px; align-items: center; }
+.rc { display: inline-flex; align-items: center; gap: 3px; font-family: var(--mono); font-size: 12px; padding: 1px 6px 1px 3px; border-radius: 5px; background: var(--ground); font-variant-numeric: tabular-nums; }
+.rc i { width: 10px; height: 13px; border-radius: 2px; display: inline-block; border: 1px solid rgba(0, 0, 0, .25); }
+.rc.zero { opacity: .45; }
+.rc.size { padding-left: 6px; }
+.rc .d { font-weight: 600; }
+.rc .d.up { color: var(--delta-up); } .rc .d.down { color: var(--delta-down); }
+.meta { font-size: 12.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 3px 12px; }
+.meta b { color: var(--ink); font-weight: 700; }
+.title-on { color: var(--ink); font-weight: 700; }
+.bel { display: grid; gap: 6px; margin-top: 4px; }
+.belline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; width: 100%; text-align: left; font-size: 13px; padding: 5px 8px; background: var(--ground); }
+.belline .chev { font-family: var(--mono); color: var(--muted); margin-left: auto; }
+.belline.known { color: var(--known); background: var(--known-soft); border-color: transparent; font-weight: 700; }
+.belline svg { flex: none; }
+.belgrid { border-collapse: collapse; font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.belgrid th, .belgrid td { padding: 3px 7px; text-align: right; }
+.belgrid thead th { font-weight: 400; color: var(--muted); font-size: 10.5px; }
+.belgrid thead th i { display: block; width: 12px; height: 12px; border-radius: 2px; margin: 0 0 2px auto; border: 1px solid rgba(0, 0, 0, .25); }
+.belgrid tbody th { text-align: left; font-family: var(--body); font-weight: 400; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.belgrid td.diff { outline: 2px solid var(--differs); outline-offset: -2px; border-radius: 4px; color: var(--differs); font-weight: 600; background: var(--differs-soft); }
+.belgrid td.diff .ne { margin-left: 2px; }
+.belnote, .devline { font-size: 12px; color: var(--muted); max-width: 70ch; margin: 0; }
+.chartbox { padding: 12px 14px 8px; }
+.chartsvg { width: 100%; height: auto; display: block; }
+.chartnote { margin: 4px 0 2px; font-size: 12.5px; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.legend span { display: inline-flex; gap: 5px; align-items: center; }
+.logbox { padding: 12px 0 0; }
+.logbox h2 { padding-inline: 14px; }
+.log { max-height: 360px; overflow-y: auto; border-top: 1px solid var(--line); font-size: 13.5px; }
+.lr { display: grid; grid-template-columns: 3.6em 12px minmax(0, 1fr); gap: 8px; align-items: baseline; padding: 4px 14px; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); border-radius: 0; font-size: 13.5px; }
+.lr:hover { background: var(--ground); }
+.lr.cur { background: var(--now); font-weight: 700; }
+.lr.future { opacity: .5; }
+.lr .t { font-family: var(--mono); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.lr .dot { width: 10px; height: 10px; align-self: center; }
+.lrh { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 10px 14px 4px; }
+.knew { padding: 14px; margin-top: 20px; display: grid; gap: 8px; }
+.knew ol { margin: 0; padding-left: 20px; display: grid; gap: 3px; font-size: 14px; }
+.knew li, .knew p { overflow-wrap: anywhere; }
+.knew code { font-family: var(--mono); font-size: 12.5px; }
+.knew .numbers { font-size: 14px; max-width: 80ch; margin: 0; }
+.knew .label { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.notes { margin-top: 18px; display: grid; gap: 6px; color: var(--muted); font-size: 13.5px; max-width: 80ch; }
+.notes p { margin: 0; }
+.notes b { color: var(--ink); }
+details.check { margin-top: 16px; padding: 10px 14px; }
+details.check pre { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 4px; }
+.samedeal { font-size: 13.5px; color: var(--muted); margin: 12px 0 0; }
+.bottombar { display: none; }
+@media (max-width: 900px) {
+  body.replaying .wrap { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
+  body.replaying .bottombar { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; gap: 8px; align-items: center; justify-content: center; padding: 8px 16px calc(8px + env(safe-area-inset-bottom, 0px)); background: var(--panel); border-top: 1px solid var(--line); }
+  .bottombar button { min-height: 40px; }
+  .bottombar .pos { margin-left: 4px; }
+}
+.selftest pre { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px 14px; margin: 0; }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none !important; } }
+@keyframes pulse { 0% { stroke-width: 0.16; opacity: 1; } 100% { stroke-width: 0.02; opacity: .2; } }
+.pulse { animation: pulse 1.1s ease-out 1 both; }
+</style>
+
+<div class="wrap">
+  <div class="statusline" id="status" role="status" aria-live="polite">Loading the game list…</div>
+  <div class="sr-only" id="announce" aria-live="polite"></div>
+
+  <section id="picker" hidden aria-labelledby="pk-h1">
+    <header>
+      <div class="eyebrow" id="pk-eyebrow">Logged games</div>
+      <h1 id="pk-h1">Every game of the strength proof and the two benchmarks</h1>
+      <p class="sub">Every game here replays exactly from its action log. Open one to step through it; in the four public-information tests you can also see what our bot believed about each opponent's hand.</p>
+      <p class="sub small">Not included: ablation, league and tuning runs, and the blind controls C3 and C4 (SCRUTINY Q7).</p>
+      <p class="sub small" id="pk-sample" hidden></p>
+      <details class="counts"><summary>Check the counts</summary><ul id="pk-countlist"></ul></details>
+    </header>
+    <p class="msg" id="pk-msg" hidden></p>
+    <details class="filters card" id="pk-filters">
+      <summary>Filters <span class="n" id="pk-fcount"></span></summary>
+      <div class="fgrid">
+        <div class="fl wide"><span id="f-tests-l">Test</span><div class="tgroups" id="f-tests" role="group" aria-labelledby="f-tests-l"></div></div>
+        <label class="fl">Format<select id="f-fmt"></select></label>
+        <label class="fl">Information<select id="f-info">
+          <option value="">Any</option><option value="full">Saw all hands</option><option value="pub">Public info only</option></select></label>
+        <label class="fl">Opponent type (any seat)<select id="f-opp"></select></label>
+        <label class="fl">Result<select id="f-result">
+          <option value="">Any result</option><option value="won">Our win</option><option value="lost">Our loss</option></select></label>
+        <label class="fl">Our seat<select id="f-seat">
+          <option value="">Any of ours</option><option value="0">1st</option><option value="1">2nd</option><option value="2">3rd</option><option value="3">4th</option></select></label>
+        <label class="fl">Hidden VP<select id="f-hv">
+          <option value="">Any</option><option value="hvo">Our win that needed hidden VP</option><option value="hvx">Opponent win that needed hidden VP</option>
+          <option value="wp9">Won from ≤ 9 public VP</option><option value="wp8">Won from ≤ 8 public VP</option><option value="wp7">Won from ≤ 7 public VP</option><option value="wp6">Won from ≤ 6 public VP</option></select></label>
+        <div class="fl"><span id="f-behind-l">Was behind by (any result)</span><div class="frow">
+          <select id="f-behind" aria-labelledby="f-behind-l"><option value="">Any</option><option value="1">≥ 1</option><option value="2">≥ 2</option><option value="3">≥ 3</option><option value="4">≥ 4</option><option value="5">≥ 5</option></select>
+          <select id="f-behindpub" aria-label="Count true or public VP"><option value="">true VP</option><option value="p">public VP</option></select></div></div>
+        <div class="fl"><span id="f-rolls-l">Rolls</span><div class="frow">
+          <input type="number" id="f-rmin" min="0" inputmode="numeric" placeholder="min" aria-label="Fewest rolls">
+          <span class="to">to</span>
+          <input type="number" id="f-rmax" min="0" inputmode="numeric" placeholder="max" aria-label="Most rolls"></div></div>
+        <label class="fl">catanatron version<select id="f-ver"></select></label>
+        <label class="fl">Find a game<input type="search" id="f-q" placeholder="T8-123, game number or seed" autocomplete="off"></label>
+      </div>
+    </details>
+    <div class="fline"><span id="pk-fline">No filters</span><button type="button" class="linkish" id="pk-clear" hidden>Clear all</button></div>
+    <div class="card summary" id="pk-summary" aria-live="polite"></div>
+    <div class="tools">
+      <button type="button" id="pk-random">Random game</button>
+      <label class="fl">Sort by<select id="pk-sort"></select></label>
+      <label class="fl">Order<select id="pk-dir"><option value="">Ascending</option><option value="d">Descending</option></select></label>
+      <div class="share grow"><span>Link to this list:</span><input type="text" id="pk-token" readonly aria-label="Link token for this list"><button type="button" id="pk-copy">Copy</button><span id="pk-copied" aria-live="polite"></span></div>
+    </div>
+    <div class="tablewrap">
+      <table class="games" id="pk-table">
+        <caption class="sr-only">Logged games matching the filters</caption>
+        <thead><tr>
+          <th scope="col" data-sort="game"><button type="button">Game</button></th>
+          <th scope="col">Opponents</th>
+          <th scope="col">Info</th>
+          <th scope="col">Our seat</th>
+          <th scope="col">Winner</th>
+          <th scope="col" data-sort="margin"><button type="button">Final VP</button></th>
+          <th scope="col" data-sort="rolls" class="num"><button type="button">Rolls</button></th>
+          <th scope="col" data-sort="dev" class="num"><button type="button">Dev cards</button></th>
+          <th scope="col">LR / LA</th>
+          <th scope="col" data-sort="behind"><button type="button">Behind by</button></th>
+          <th scope="col" data-sort="meanp" class="wrap"><button type="button">Bot's avg. chance on real hands</button></th>
+          <th scope="col" class="wrap">Hidden VP</th>
+        </tr></thead>
+        <tbody id="pk-tbody"></tbody>
+      </table>
+    </div>
+    <nav class="pager" id="pk-pager" aria-label="Pages"></nav>
+  </section>
+
+  <section id="replay" hidden aria-labelledby="rp-h1">
+    <nav class="topbar" aria-label="Game navigation">
+      <button type="button" id="rp-back">← All games</button>
+      <span class="gid" id="rp-gid"></span>
+      <span class="pn"><button type="button" id="rp-prevgame">‹ Previous game</button><button type="button" id="rp-nextgame">Next game ›</button></span>
+    </nav>
+    <header>
+      <div class="eyebrow" id="rp-eyebrow"></div>
+      <h1 id="rp-h1">Loading…</h1>
+      <p class="badge" id="rp-badge"></p>
+      <p class="sub" id="rp-sub"></p>
+      <div class="result" id="rp-result"></div>
+    </header>
+    <p class="msg" id="rp-msg" hidden></p>
+    <fieldset class="seg" id="rp-mode" hidden>
+      <legend>Opponent hands</legend>
+      <span class="opts">
+        <label><input type="radio" name="rp-mode" value="truth" id="mode-truth">Real hands</label>
+        <label><input type="radio" name="rp-mode" value="both" id="mode-both">Real + bot's guess</label>
+        <label><input type="radio" name="rp-mode" value="bot" id="mode-bot">Bot's view only</label>
+      </span>
+    </fieldset>
+    <div class="layout">
+      <section class="card boardbox" aria-label="Board">
+        <svg class="boardsvg" id="board" role="img" aria-label="Catan board"></svg>
+        <div class="status">
+          <div class="now" id="now"></div>
+          <div class="dice" id="dice" aria-label="Last roll"></div>
+        </div>
+        <div class="lastact" id="lastact"></div>
+        <div class="controls">
+          <input type="range" id="scrub" min="0" max="1" value="0" aria-label="Position in the game">
+          <div class="btnrow">
+            <button type="button" id="bStart" title="Start (Home)">Start</button>
+            <button type="button" id="bPrevTurn" title="Previous roll (Shift+Left)">&laquo; Roll</button>
+            <button type="button" id="bBack" title="Previous action (Left)">&lsaquo; Back</button>
+            <button type="button" id="bPlay" class="primary" title="Play or pause (Space)">Play</button>
+            <button type="button" id="bFwd" title="Next action (Right)">Next &rsaquo;</button>
+            <button type="button" id="bNextTurn" title="Next roll (Shift+Right)">Roll &raquo;</button>
+            <button type="button" id="bEnd" title="End (End)">End</button>
+            <select id="speed" aria-label="Playback speed">
+              <option value="900">Slow</option>
+              <option value="380" selected>Normal</option>
+              <option value="120">Fast</option>
+            </select>
+            <span class="pos" id="pos"></span>
+          </div>
+          <div class="btnrow" id="hidnav" hidden>
+            <button type="button" id="bPrevHid" title="Previous hidden event ([)">&lsaquo; Previous hidden event</button>
+            <button type="button" id="bNextHid" title="Next hidden event (])">Next hidden event &rsaquo;</button>
+            <span class="pos" id="hidpos"></span>
+          </div>
+          <div class="moment">
+            <span>Link to this moment. Add this to the page's address to open this moment:</span>
+            <div class="share"><input type="text" id="rp-token" readonly aria-label="Link token for this moment"><button type="button" id="rp-copy">Copy</button><span id="rp-copied" aria-live="polite"></span></div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side">
+        <section class="card players" id="players" aria-label="Players"></section>
+        <section class="card chartbox" aria-labelledby="vp-h2">
+          <h2 id="vp-h2">Race to 10</h2>
+          <svg class="chartsvg" id="chart" viewBox="0 0 400 150" role="img" aria-label="Victory points over the game"></svg>
+          <p class="chartnote" id="chartnote"></p>
+        </section>
+        <section class="card chartbox" id="belbox" aria-labelledby="bel-h2" hidden>
+          <h2 id="bel-h2">Bot's chance on the real hand</h2>
+          <svg class="chartsvg" id="belchart" viewBox="0 0 400 130" role="img" aria-label="Belief over the game"></svg>
+          <div class="legend" id="bellegend"></div>
+          <p class="chartnote" id="belnote"></p>
+        </section>
+        <section class="card logbox" aria-labelledby="log-h2">
+          <h2 id="log-h2">Game log</h2>
+          <div class="log" id="log"></div>
+        </section>
+      </aside>
+    </div>
+    <section class="card knew" id="knew" aria-label="What our bot knew"></section>
+    <div class="notes" id="notes"></div>
+    <details class="card check" id="check"><summary>Check this yourself</summary><pre id="checktext"></pre></details>
+    <p class="samedeal" id="samedeal" hidden></p>
+  </section>
+
+  <section id="selftest" class="selftest" hidden aria-labelledby="st-h1">
+    <header>
+      <div class="eyebrow">Self-test</div>
+      <h1 id="st-h1">Decode check against this host</h1>
+      <p class="sub">Fetches the first shard of every test from this host, decodes every game in it and compares it with the index.</p>
+    </header>
+    <div class="card"><pre id="st-out"></pre></div>
+    <p><a href="#all" id="st-back">← All games</a></p>
+  </section>
+</div>
+
+<div class="bottombar" id="bottombar" aria-label="Step controls">
+  <button type="button" id="bbBack">&lsaquo; Back</button>
+  <button type="button" id="bbPlay" class="primary">Play</button>
+  <button type="button" id="bbFwd">Next &rsaquo;</button>
+  <span class="pos" id="bbPos"></span>
+</div>
+
+<script>/* BEGIN replay_core.js *//* END replay_core.js */</script>
+<script>
+(function () {
+  "use strict";
+  const RC = window.ReplayCore;
+  const NS = "http://www.w3.org/2000/svg";
+  const $ = id => document.getElementById(id);
+  function h(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function sv(tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  const nf = n => Number(n).toLocaleString("en-US");
+  const cn = s => RC.COLOR_NAMES[s];
+  const pcol = s => `var(--p-${RC.COLORS[s]})`;
+  const ORD = ["1st", "2nd", "3rd", "4th"];
+  const narrow = () => window.matchMedia("(max-width: 900px)").matches;
+  const PAGE = 50;
+  const SUITE_DOC = { proof: "docs/PROOF.md", bench_1v1: "docs/BENCH_1V1.md", bench_multi: "docs/BENCH_MULTI.md" };
+  const SORT_LABELS = { game: "Game (test, then number)", seed: "Seed", rolls: "Rolls", turns: "catanatron turns",
+    ourvp: "Our VP", oppvp: "Best opponent VP", margin: "Margin (our best − their best)", behind: "Behind by (true VP)",
+    dev: "Development cards bought", meanp: "Bot's avg. chance on real hands (lowest = hardest to count)",
+    exact: "Share of positions known exactly", hidden: "Most hidden events" };
+  function fmtPct(x) {
+    if (x == null || isNaN(x)) return "–";
+    if (x >= 0.9995) return "100 %";
+    if (x < 0.001) return "<0.1 %";
+    if (x < 0.1) return `${(100 * x).toFixed(1)} %`;
+    return `${Math.round(100 * x)} %`;
+  }
+  const pct1 = x => `${(100 * x).toFixed(1)} %`;
+  function dot(s) { const d = h("span", "dot"); d.style.background = pcol(s); return d; }
+  function meter(x) { const m = h("span", "meter"); m.setAttribute("aria-hidden", "true"); const i = h("i"); i.style.width = `${Math.max(0, Math.min(1, x)) * 100}%`; m.appendChild(i); return m; }
+  function checkIcon() {
+    const s = sv("svg", { viewBox: "0 0 16 16", width: 14, height: 14, "aria-hidden": "true" });
+    sv("path", { d: "M3 8.5l3.2 3.2L13 4.8", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" }, s);
+    return s;
+  }
+  const store = {
+    get(k, d) { try { const v = window.localStorage.getItem("rx." + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { window.localStorage.setItem("rx." + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } }
+  };
+  const MODES = ["truth", "both", "bot"];
+  const S = { index: null, filters: RC.defaultFilters(), list: [], seedNote: null, page: 0, view: null, lastRouted: null,
+    game: null, openToken: 0, shards: new Map(), lastOpenedId: null, timer: null, replaceTimer: null, hashTimer: null,
+    lastAnnounce: 0, mode: MODES.includes(store.get("mode", "both")) ? store.get("mode", "both") : "both",
+    expanded: store.get("expanded", {}) || {} };
+
+  // ---- status line ---------------------------------------------------------------------------------------------
+  function setStatus(text, o) {
+    const box = $("status");
+    box.replaceChildren();
+    box.classList.toggle("error", !!(o && o.error));
+    if (!text) { box.hidden = true; return; }
+    box.hidden = false;
+    box.appendChild(h("span", null, text));
+    if (o && o.retry) { const b = h("button", null, "Retry"); b.type = "button"; b.onclick = o.retry; box.appendChild(b); }
+    if (o && o.back) { const b = h("button", "linkish", "← All games"); b.type = "button"; b.onclick = closeGame; box.appendChild(b); }
+  }
+  function loadError(e, what) {
+    if (e && e.kind === "http") return `Could not load ${what} (HTTP ${e.status}).`;
+    if (e && e.kind === "notdata") return "The server returned something other than game data.";
+    if (e && e.kind === "nogzip") return "This browser cannot unpack the game data. Use a current Chrome, Edge, Firefox or Safari.";
+    return `Could not load ${what} (${e && e.message ? e.message : "network error"}).`;
+  }
+  function setHash(token, push) {
+    S.lastRouted = token;
+    try { history[push ? "pushState" : "replaceState"](null, "", "#" + token); } catch (e) { /* history unavailable in this frame */ }
+  }
+  function showView(v) {
+    S.view = v;
+    $("picker").hidden = v !== "picker";
+    $("replay").hidden = v !== "replay";
+    $("selftest").hidden = v !== "selftest";
+    document.body.classList.toggle("replaying", v === "replay");
+  }
+
+  // ---- boot and routing ----------------------------------------------------------------------------------------
+  async function boot() {
+    setStatus("Loading the game list…");
+    let doc;
+    try { doc = await RC.fetchJson("index.json.gz"); }
+    catch (e) {
+      const text = e && e.kind === "http" ? `Could not load the game list (index.json.gz, HTTP ${e.status}).` : loadError(e, "the game list (index.json.gz)");
+      setStatus(text, { error: true, retry: boot });
+      return;
+    }
+    S.index = RC.parseIndex(doc);
+    setStatus(null);
+    buildPicker();
+    route(location.hash, true);
+  }
+  window.addEventListener("hashchange", () => { if (S.index) route(location.hash); });
+  window.addEventListener("popstate", () => { if (S.index) route(location.hash); });
+
+  function route(hash, first) {
+    const tok = String(hash || "").replace(/^#/, "");
+    if (!first && tok === S.lastRouted) return;
+    S.lastRouted = tok;
+    const r = RC.parseHash(hash, S.index);
+    if (r.view === "selftest") { runSelftest(); return; }
+    if (r.view === "game") { openGame(r.id, r.k, { message: r.message }); return; }
+    if (r.filters) { S.filters = r.filters; saveFilters(); } else S.filters = loadFilters();
+    S.page = 0;
+    showPicker(r.message);
+  }
+  function saveFilters() { store.set("filters", S.filters); }
+  function loadFilters() {
+    const f = store.get("filters", null), d = RC.defaultFilters();
+    if (!f || typeof f !== "object") return d;
+    const out = Object.assign(d, f);
+    out.tests = (out.tests || []).filter(t => S.index.tests[t]);
+    return out;
+  }
+
+  // ---- picker ----------------------------------------------------------------------------------------------------
+  function buildPicker() {
+    const ix = S.index;
+    const vers = [...new Set(ix.order.map(t => ix.tests[t].catanatron))].sort().reverse();
+    $("pk-eyebrow").textContent = `${nf(ix.rows.length)} logged games · catanatron ${vers.join(" and ")}`;
+    if (ix.order.length < RC.TEST_ORDER.length) {
+      $("pk-sample").hidden = false;
+      $("pk-sample").textContent = `This copy holds ${ix.order.length} of the 18 tests (${ix.order.join(", ")}); the full archive has 9,600 games.`;
+    }
+    const ul = $("pk-countlist");
+    ul.replaceChildren();
+    for (const t of ix.order) {
+      const m = ix.tests[t], rows = ix.rows.filter(r => r.t === t), w = rows.filter(r => r.won).length;
+      const ok = m.published && m.published.games === rows.length && m.published.wins === w;
+      const li = h("li", ok ? null : "off",
+        `${t}: ${nf(rows.length)} of ${nf(m.games)} games · our bot won ${nf(w)} (${pct1(w / rows.length)}), ` +
+        (ok ? `as in the run's results files and ${SUITE_DOC[m.suite] || "the docs"}` : "which DIFFERS from the run's results files"));
+      ul.appendChild(li);
+    }
+    // test chips, grouped
+    const box = $("f-tests");
+    box.replaceChildren();
+    const groups = [];
+    for (const t of ix.order) {
+      const g = ix.tests[t].group || "Other";
+      let grp = groups.find(x => x.name === g);
+      if (!grp) { grp = { name: g, tests: [] }; groups.push(grp); }
+      grp.tests.push(t);
+    }
+    for (const grp of groups) {
+      const row = h("div", "tgroup");
+      row.appendChild(h("span", "glabel", grp.name));
+      for (const t of grp.tests) {
+        const b = h("button", "fchip");
+        b.type = "button";
+        b.dataset.t = t;
+        b.appendChild(h("b", null, t));
+        b.appendChild(h("span", null, `${ix.tests[t].fmt} · ${ix.tests[t].label}`));
+        b.onclick = () => {
+          const set = new Set(S.filters.tests);
+          if (set.has(t)) set.delete(t); else set.add(t);
+          S.filters.tests = ix.order.filter(x => set.has(x));
+          filtersChanged();
+        };
+        row.appendChild(b);
+      }
+      box.appendChild(row);
+    }
+    const fill = (sel, opts) => { sel.replaceChildren(); for (const [v, t] of opts) { const o = h("option", null, t); o.value = v; sel.appendChild(o); } };
+    const fmts = [...new Set(ix.order.map(t => ix.tests[t].fmt))];
+    fill($("f-fmt"), [["", "Any format"]].concat(fmts.map(f => [f, f])));
+    const opps = new Set();
+    for (const r of ix.rows) for (const c of r.lineup) if (c !== "c") opps.add(c);
+    fill($("f-opp"), [["", "Any opponent"]].concat(["v", "a", "s", "f", "b"].filter(c => opps.has(c)).map(c => [c, RC.OPP[c]])));
+    fill($("f-ver"), [["", "Any version"]].concat(vers.map(v => [v, v])));
+    fill($("pk-sort"), RC.SORT_KEYS.filter(k => k !== "meanp" && k !== "exact" && k !== "hidden" || ix.rows.some(r => r.bk)).map(k => [k, SORT_LABELS[k]]));
+    const onChange = () => { readFilterUI(); filtersChanged(); };
+    for (const id of ["f-fmt", "f-info", "f-opp", "f-result", "f-seat", "f-hv", "f-behind", "f-behindpub", "f-ver", "pk-sort", "pk-dir"]) $(id).addEventListener("change", onChange);
+    for (const id of ["f-rmin", "f-rmax", "f-q"]) $(id).addEventListener("input", onChange);
+    $("pk-clear").onclick = () => { const sort = S.filters.sort, desc = S.filters.desc; S.filters = RC.defaultFilters(); S.filters.sort = sort; S.filters.desc = desc; filtersChanged(); };
+    $("pk-random").onclick = () => { if (S.list.length) openFromPicker(S.list[Math.floor(Math.random() * S.list.length)].id); };
+    $("pk-copy").onclick = () => copyToken($("pk-token"), $("pk-copied"));
+    for (const th of document.querySelectorAll("#pk-table th[data-sort]")) {
+      th.querySelector("button").onclick = () => {
+        const k = th.dataset.sort;
+        if (S.filters.sort === k) S.filters.desc = !S.filters.desc; else { S.filters.sort = k; S.filters.desc = k === "meanp" ? false : k !== "game"; }
+        filtersChanged();
+      };
+    }
+    $("pk-filters").open = !narrow();
+  }
+  function readFilterUI() {
+    const f = S.filters;
+    const v = id => $(id).value;
+    f.fmt = v("f-fmt") ? [v("f-fmt")] : [];
+    f.info = v("f-info") || null;
+    f.opp = v("f-opp") ? [v("f-opp")] : [];
+    f.result = v("f-result") || null;
+    f.seat = v("f-seat") === "" ? null : +v("f-seat");
+    const hv = v("f-hv");
+    f.hv = hv === "hvo" || hv === "hvx" ? hv : null;
+    f.wp = /^wp/.test(hv) ? +hv.slice(2) : null;
+    f.behind = v("f-behind") === "" ? null : +v("f-behind");
+    f.behindPub = v("f-behindpub") === "p";
+    const num = id => { const x = v(id).trim(); return x === "" || isNaN(+x) ? null : Math.max(0, Math.floor(+x)); };
+    f.rmin = num("f-rmin"); f.rmax = num("f-rmax");
+    f.ver = v("f-ver") || null;
+    f.q = v("f-q").trim();
+    f.sort = v("pk-sort") || "game";
+    f.desc = v("pk-dir") === "d";
+  }
+  function syncFilterUI() {
+    const f = S.filters;
+    const set = (id, val) => { const e = $(id); if (e.value !== val) e.value = val; };
+    for (const b of document.querySelectorAll("#f-tests .fchip")) b.setAttribute("aria-pressed", f.tests.includes(b.dataset.t) ? "true" : "false");
+    set("f-fmt", f.fmt[0] || "");
+    set("f-info", f.info || "");
+    set("f-opp", f.opp[0] || "");
+    set("f-result", f.result || "");
+    set("f-seat", f.seat == null ? "" : String(f.seat));
+    set("f-hv", f.hv ? f.hv : f.wp != null ? `wp${f.wp}` : "");
+    set("f-behind", f.behind == null ? "" : String(Math.min(5, f.behind)));
+    set("f-behindpub", f.behindPub ? "p" : "");
+    if (document.activeElement !== $("f-rmin")) set("f-rmin", f.rmin == null ? "" : String(f.rmin));
+    if (document.activeElement !== $("f-rmax")) set("f-rmax", f.rmax == null ? "" : String(f.rmax));
+    set("f-ver", f.ver || "");
+    if (document.activeElement !== $("f-q")) set("f-q", f.q || "");
+    set("pk-sort", f.sort || "game");
+    set("pk-dir", f.desc ? "d" : "");
+  }
+  function filtersChanged() {
+    S.page = 0;
+    saveFilters();
+    renderPicker();
+    clearTimeout(S.hashTimer);
+    S.hashTimer = setTimeout(() => { if (S.view === "picker") setHash(RC.filterToken(S.filters), false); }, 300);
+  }
+  function showPicker(message) {
+    stopPlay();
+    showView("picker");
+    const msg = $("pk-msg");
+    msg.hidden = !message;
+    msg.textContent = message || "";
+    renderPicker();
+  }
+  function renderPicker() {
+    syncFilterUI();
+    const res = RC.applyFilters(S.index, S.filters);
+    S.list = res.rows;
+    S.seedNote = res.seedNote;
+    const nOn = RC.countFilters(S.filters);
+    $("pk-fcount").textContent = nOn ? `(${nOn} on)` : "";
+    $("pk-fline").textContent = nOn ? `${nOn} filter${nOn > 1 ? "s" : ""} on ·` : "No filters";
+    $("pk-clear").hidden = !nOn;
+    $("pk-token").value = "#" + RC.filterToken(S.filters);
+    $("pk-copied").textContent = "";
+    const pages = Math.max(1, Math.ceil(S.list.length / PAGE));
+    S.page = Math.max(0, Math.min(S.page, pages - 1));
+    renderSummary();
+    renderTable();
+    renderPager();
+  }
+  const mean = xs => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+  function renderSummary() {
+    const box = $("pk-summary"), rows = S.list, n = rows.length;
+    box.replaceChildren();
+    if (!n) { box.appendChild(h("div", "big", "No games match these filters.")); return; }
+    const w = rows.filter(r => r.won).length;
+    const fair = 100 * mean(rows.map(r => r.ours.length / r.n));
+    const hvN = rows.filter(r => r.hvp).length, hvO = rows.filter(r => r.hvp && r.won).length;
+    const big = h("div", "big");
+    const add = (text, bold) => { if (big.childNodes.length) big.append(" · "); if (bold) { const b = h("b", null, bold); big.append(b, text); } else big.append(text); };
+    add(" games", nf(n));
+    if (RC.selectsByOutcome(S.filters)) add("win rate not meaningful: this filter picks by result");
+    else {
+      const [lo, hi] = RC.wilson(w, n);
+      add(`our bot won ${nf(w)} (${pct1(w / n)}; 95 % interval ${(100 * lo).toFixed(1)}–${(100 * hi).toFixed(1)} %)`);
+    }
+    add(`fair share if all seats were equally strong: ${+fair.toFixed(1)} %`);
+    add(`mean ${mean(rows.map(r => r.rolls)).toFixed(1)} rolls`);
+    add(`${nf(hvN)} winners needed hidden VP (${nf(hvO)} of them our bot)`);
+    box.appendChild(big);
+    const tests = new Set(rows.map(r => r.t));
+    if (tests.size > 1 && !RC.selectsByOutcome(S.filters)) box.appendChild(h("div", "note", "Games that share a deal (same board and development deck, T1–T6, T7–T9, T1/T4 and R1/R2) are not independent, so across several tests the interval is approximate."));
+    if (S.seedNote) {
+      const p = h("div", "note");
+      p.append(`${S.seedNote.count} game${S.seedNote.count > 1 ? "s" : ""} share this deal (same board and development deck, different opponents): `);
+      S.seedNote.ids.forEach((id, i) => { if (i) p.append(", "); p.appendChild(gameLink(id)); });
+      box.appendChild(p);
+    }
+    const exc = S.index.dealExceptions || [];
+    if (exc.length && S.seedNote) box.appendChild(h("div", "note", "Same seed, different deal: " + exc.map(x => JSON.stringify(x)).join("; ")));
+  }
+  function gameLink(id) {
+    const a = h("a", null, id);
+    a.href = "#" + id;
+    a.dataset.id = id;
+    a.addEventListener("click", e => { e.preventDefault(); openFromPicker(id); });
+    return a;
+  }
+  function renderTable() {
+    const tb = $("pk-tbody");
+    tb.replaceChildren();
+    const start = S.page * PAGE;
+    for (const r of S.list.slice(start, start + PAGE)) tb.appendChild(rowEl(r));
+    if (!S.list.length) {
+      const tr = h("tr"), td = h("td", "empty", "No games match these filters. Clear a filter to see more.");
+      td.colSpan = 12; tr.appendChild(td); tb.appendChild(tr);
+    }
+    for (const th of document.querySelectorAll("#pk-table th[data-sort]")) {
+      const on = th.dataset.sort === S.filters.sort;
+      th.setAttribute("aria-sort", on ? (S.filters.desc ? "descending" : "ascending") : "none");
+    }
+  }
+  function rowEl(r) {
+    const m = S.index.tests[r.t];
+    const tr = h("tr");
+    const td = (cls, ...kids) => { const c = h("td", cls); for (const k of kids) if (k != null) c.append(k); tr.appendChild(c); return c; };
+    td("c-id", gameLink(r.id));
+    td("c-opp rest", `${m.fmt} · ${m.label}`);
+    td("c-info rest", r.counted ? "Public info only" : "Saw all hands");
+    const seat = td("c-seat rest");
+    seat.appendChild(h("span", "m-only", "our seat "));
+    r.ours.forEach((s, i) => { if (i) seat.append(" "); seat.append(dot(s), ` ${ORD[s]}`, h("span", "sr-only", ` (${cn(s)})`)); });
+    const win = td("c-win");
+    win.append(dot(r.win), r.won ? " ours" : ` ${cn(r.win)}`, h("span", "m-only", " won"));
+    td("c-vp", `ours ${r.ourVp} · best opp ${r.oppVp}`);
+    tr.appendChild(h("td", "c-break"));
+    const rolls = td("num rest", String(r.rolls)); rolls.appendChild(h("span", "m-only", " rolls"));
+    const dev = td("num rest", String(r.dev)); dev.appendChild(h("span", "m-only", " dev cards"));
+    const tt = td("c-titles rest");
+    const title = (label, s) => { if (s < 0) return; if (tt.childNodes.length) tt.append(" "); tt.append(`${label} `, dot(s), h("span", "sr-only", ` ${cn(s)}`)); };
+    title("LR", r.lr); title("LA", r.la);
+    if (!tt.childNodes.length) { tt.append(h("span", "muted", "–")); tt.classList.add("blank"); }
+    const beh = td("c-behind rest");
+    if (r.def > 0) beh.append(h("span", "m-only", "behind by "), `${r.def} true VP`);
+    else { beh.append(h("span", "muted", "–")); beh.classList.add("blank"); }
+    beh.title = `Largest deficit before the final turn: ${r.def} true VP, ${r.defp} public VP`;
+    const bot = td("c-bot rest");
+    if (r.bk) { bot.append(meter(r.bk[1]), fmtPct(r.bk[1])); bot.appendChild(h("span", "m-only", " avg. chance on real hands")); bot.title = `Known exactly at ${fmtPct(r.bk[0])} of positions`; }
+    else bot.append(h("span", "muted", "saw all"));
+    const hv = td("c-hv rest");
+    if (r.hvp) hv.appendChild(h("span", "hvtag", `won with ${r.hv} hidden VP`));
+    return tr;
+  }
+  function renderPager() {
+    const nav = $("pk-pager"), n = S.list.length, pages = Math.max(1, Math.ceil(n / PAGE));
+    nav.replaceChildren();
+    const btn = (label, page, dis) => { const b = h("button", null, label); b.type = "button"; b.disabled = dis; b.onclick = () => { S.page = page; renderTable(); renderPager(); $("pk-table").scrollIntoView({ block: "start" }); }; nav.appendChild(b); };
+    btn("First", 0, S.page === 0);
+    btn("Previous", S.page - 1, S.page === 0);
+    btn("Next", S.page + 1, S.page >= pages - 1);
+    const a = n ? S.page * PAGE + 1 : 0, b = Math.min(n, (S.page + 1) * PAGE);
+    nav.appendChild(h("span", "where", `Page ${S.page + 1} of ${pages} · rows ${nf(a)}–${nf(b)} of ${nf(n)}`));
+  }
+  function copyToken(input, note) {
+    const text = input.value;
+    const fallback = () => { input.focus(); input.select(); note.textContent = "Selected: copy it with your keyboard"; };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => { note.textContent = "Copied"; }, fallback);
+      } else fallback();
+    } catch (e) { fallback(); }
+  }
+
+  // ---- shards --------------------------------------------------------------------------------------------------
+  function getShard(path) {
+    if (S.shards.has(path)) { const p = S.shards.get(path); S.shards.delete(path); S.shards.set(path, p); return p; }
+    const p = RC.fetchJson(path);
+    S.shards.set(path, p);
+    p.catch(() => { if (S.shards.get(path) === p) S.shards.delete(path); });
+    while (S.shards.size > 8) S.shards.delete(S.shards.keys().next().value);
+    return p;
+  }
+  function neighbours(row) {
+    let list = S.list, i = list.indexOf(row);
+    if (i < 0) { list = S.index.rows; i = list.indexOf(row); }
+    return { prev: i > 0 ? list[i - 1] : null, next: i >= 0 && i < list.length - 1 ? list[i + 1] : null };
+  }
+
+  // ---- replay ----------------------------------------------------------------------------------------------------
+  function openFromPicker(id) { S.lastOpenedId = id; setHash(id, true); openGame(id, null, {}); }
+  function closeGame() {
+    stopPlay();
+    setHash(RC.filterToken(S.filters), true);
+    const id = S.lastOpenedId;
+    const i = S.list.findIndex(r => r.id === id);
+    if (i >= 0) S.page = Math.floor(i / PAGE);
+    showPicker(null);
+    setStatus(null);
+    const a = id ? document.querySelector(`#pk-tbody a[data-id="${id}"]`) : null;
+    if (a) { a.focus(); a.scrollIntoView({ block: "center" }); }
+  }
+  const curMode = () => (S.game && S.game.D.counted ? S.mode : "full");
+
+  async function openGame(id, k, opts) {
+    stopPlay();
+    const row = S.index.byId.get(id);
+    if (!row) { showPicker(`There is no game ${id}`); return; }
+    const token = ++S.openToken;
+    S.lastOpenedId = id;
+    S.game = null;
+    showView("replay");
+    renderShell(row, opts && opts.message);
+    const sp = RC.shardPath(row.t, row.g, S.index.shardSize);
+    if (!S.shards.has(sp)) {
+      const from = Math.floor(row.g / S.index.shardSize) * S.index.shardSize;
+      setStatus(`Loading games ${from}–${Math.min(from + S.index.shardSize, S.index.tests[row.t].games) - 1} of ${row.t}…`);
+    }
+    let shard;
+    try { shard = await getShard(sp); }
+    catch (e) {
+      if (token !== S.openToken) return;
+      setStatus(loadError(e, sp), { error: true, retry: () => openGame(id, k, opts), back: true });
+      return;
+    }
+    if (token !== S.openToken) return;
+    setStatus(null);
+    const rec = shard.games[row.g - shard.from];
+    if (!rec || rec.id !== id) { setStatus(`${sp} does not hold game ${id}.`, { error: true, back: true }); return; }
+    let D, BV, PV;
+    try {
+      D = RC.decodeGame(rec, S.index.geo);
+      BV = RC.botView(rec, D);
+      PV = D.counted ? RC.publicView(D, D.me) : null;
+    } catch (e) { setStatus(`Could not decode ${id}: ${e.message}`, { error: true, back: true }); return; }
+    S.game = { row, rec, D, BV, PV, BVpub: BV ? BV.publicPart() : null, meta: S.index.tests[row.t], k: k == null ? D.N : Math.min(k, D.N) };
+    renderGame();
+    go(S.game.k, { quiet: true, noHash: true });
+    const nb = neighbours(row);
+    for (const r of [nb.prev, nb.next]) if (r) getShard(RC.shardPath(r.t, r.g, S.index.shardSize)).catch(() => {});
+  }
+
+  function lineupText(row) {
+    const opp = {};
+    for (const c of row.lineup) if (c !== "c") opp[c] = (opp[c] || 0) + 1;
+    const parts = Object.entries(opp).map(([c, n]) => (n > 1 ? `${n}× ` : "") + RC.OPP[c]);
+    return `Our bot${row.ours.length > 1 ? ` (${row.ours.length} seats)` : ""} vs ${parts.join(", ")}`;
+  }
+  function renderShell(row, message) {
+    const m = S.index.tests[row.t];
+    $("rp-gid").textContent = `${row.id} · seed ${row.seed}`;
+    $("rp-eyebrow").textContent = `${m.group} · ${row.t} ${m.label} · game ${row.g} · catanatron ${m.catanatron}`;
+    $("rp-h1").textContent = lineupText(row);
+    const badge = $("rp-badge");
+    badge.replaceChildren();
+    if (row.counted) {
+      badge.append(h("span", "tag soft", "Public information only"),
+        h("span", null, "Our bot saw the dice, builds, bank and port trades, the bank's card counts, hand sizes, played development cards and its own cards. It did not see stolen cards between other players, other players' discards (which Colonist does show, so this is stricter than Colonist) or unplayed development cards. Catanatron's bots saw every hand."));
+    } else {
+      const old = m.info && m.info.logged === false;
+      badge.append(h("span", "tag known", "Full information"),
+        h("span", null, "Our bot saw every hand and development card, as Catanatron's bots do." + (old ? " (These runs predate the information switch; SCRUTINY Q7.)" : "")));
+    }
+    const msg = $("rp-msg");
+    msg.hidden = !message;
+    msg.textContent = message || "";
+    $("rp-sub").textContent = "";
+    $("rp-result").replaceChildren();
+    $("rp-mode").hidden = true;
+    const nb = neighbours(row);
+    $("rp-prevgame").disabled = !nb.prev;
+    $("rp-nextgame").disabled = !nb.next;
+    $("rp-prevgame").title = nb.prev ? nb.prev.id : "";
+    $("rp-nextgame").title = nb.next ? nb.next.id : "";
+    // skeleton: the board outline and empty scoreboard rows
+    drawBoardStatic(null);
+    const pl = $("players");
+    pl.replaceChildren();
+    row.lineup.split("").forEach((c, s) => {
+      const r = h("div", "pl");
+      const sw = h("div", "swatch"); sw.style.background = pcol(s); r.appendChild(sw);
+      r.appendChild(h("div", "name", cn(s)));
+      r.appendChild(h("div", "vp", "–"));
+      r.appendChild(h("div", "meta", c === "c" ? "our bot" : RC.OPP[c]));
+      pl.appendChild(r);
+    });
+    for (const id of ["chart", "belchart"]) $(id).replaceChildren();
+    $("log").replaceChildren();
+    $("knew").replaceChildren();
+    $("notes").replaceChildren();
+    $("lastact").textContent = "";
+    $("now").textContent = "";
+    $("dice").replaceChildren();
+    $("pos").textContent = "";
+    $("belbox").hidden = true;
+    $("hidnav").hidden = true;
+    $("samedeal").hidden = true;
+    setControlsEnabled(false);
+  }
+  function setControlsEnabled(on) {
+    for (const id of ["scrub", "bStart", "bPrevTurn", "bBack", "bPlay", "bFwd", "bNextTurn", "bEnd", "speed", "bbBack", "bbPlay", "bbFwd", "bPrevHid", "bNextHid", "rp-copy"]) $(id).disabled = !on;
+  }
+
+  function renderGame() {
+    const G = S.game, D = G.D, row = G.row;
+    const w = row.win, vps = row.vps, pvps = row.pvps;
+    const me = D.ours[0];
+    $("rp-sub").textContent = `Our bot plays ${row.ours.map(s => `${cn(s)}, seat ${s + 1}`).join(" and ")} of ${D.n}` +
+      `${row.ours.length === 1 && me === D.n - 1 ? " (moves last)" : row.ours.length === 1 && me === 0 ? " (moves first)" : ""}. ` +
+      `${cn(w)}${row.won ? " (ours)" : ""} wins after ${row.rolls} rolls` +
+      (vps[w] > pvps[w] ? ` with ${vps[w]} points, ${vps[w] - pvps[w]} of them from hidden Victory Point cards (the table could see ${pvps[w]})` : ` with ${vps[w]} points`) +
+      ". Every position below is the engine's own state, rebuilt from the game's action log.";
+    const res = $("rp-result");
+    res.replaceChildren();
+    vps.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).forEach(([v, i]) => {
+      const c = h("span", "chip" + (i === w ? " win" : ""));
+      c.append(dot(i), `${cn(i)} ${v} VP${row.ours.includes(i) ? " · ours" : ""}${i === w ? " · winner" : ""}`);
+      res.appendChild(c);
+    });
+    $("rp-mode").hidden = !D.counted;
+    for (const m of MODES) $("mode-" + m).checked = S.mode === m;
+    $("scrub").max = D.N;
+    $("hidnav").hidden = !D.counted;
+    setControlsEnabled(true);
+    drawBoardStatic(D.board);
+    buildPlayers();
+    renderModeParts();
+    // same deal
+    const same = (S.index.byDeal.get(row.d) || []).filter(r => r.id !== row.id);
+    const sd = $("samedeal");
+    sd.replaceChildren();
+    sd.hidden = !same.length;
+    if (same.length) {
+      sd.append("Same board and development deck, other opponents: ");
+      same.forEach((r, i) => { if (i) sd.append(", "); sd.appendChild(gameLink(r.id)); });
+    }
+  }
+  // everything that depends on the mode (log text, charts, belief card, notes)
+  function renderModeParts() {
+    buildVpChart();
+    buildBeliefChart();
+    buildLog();
+    buildKnew();
+    buildNotes();
+  }
+
+  // ---- board ------------------------------------------------------------------------------------------------------
+  const SC = 50;
+  const hexPts = (cx, cy, r) => [...Array(6)].map((_, i) => { const a = Math.PI / 180 * (60 * i - 90); return `${(cx + r * Math.cos(a)) * SC},${(cy + r * Math.sin(a)) * SC}`; }).join(" ");
+  let gRob, gRoads, gBld, gHi;
+  function drawBoardStatic(board) {
+    const geo = S.index.geo, svg = $("board");
+    svg.replaceChildren();
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    const pts = geo.tiles.map(t => [t[1], t[2]]).concat(geo.ports.map(p => [p[0], p[1]]));
+    for (const [x, y] of pts) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); }
+    const pad = 1.05;
+    svg.setAttribute("viewBox", `${(minX - pad) * SC} ${(minY - pad) * SC} ${(maxX - minX + 2 * pad) * SC} ${(maxY - minY + 2 * pad) * SC}`);
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    sv("polygon", { points: hexPts(cx, cy, (maxX - minX) / 2 + 1.35), fill: "var(--sea)", stroke: "var(--sea-edge)", "stroke-width": 3, transform: `rotate(30 ${cx * SC} ${cy * SC})` }, svg);
+    const gTiles = sv("g", {}, svg), gPorts = sv("g", {}, svg);
+    gRob = sv("g", {}, svg); gRoads = sv("g", {}, svg); gBld = sv("g", {}, svg); gHi = sv("g", {}, svg);
+    if (!board) {
+      for (const t of geo.tiles) sv("polygon", { points: hexPts(t[1], t[2], 0.97), fill: "var(--panel)", opacity: 0.35, stroke: "var(--sea-edge)", "stroke-width": 1.2 }, gTiles);
+      svg.setAttribute("aria-label", "Catan board (loading)");
+      return;
+    }
+    svg.setAttribute("aria-label", "Catan board");
+    for (const t of board.tiles) {
+      const g = sv("g", {}, gTiles);
+      sv("polygon", { points: hexPts(t.x, t.y, 0.97), fill: `var(--${t.res >= 0 ? RC.RES[t.res] : "desert"})`, stroke: "var(--sea-edge)", "stroke-width": 1.2 }, g);
+      if (t.num) {
+        const hot = t.num === 6 || t.num === 8;
+        sv("circle", { cx: t.x * SC, cy: t.y * SC, r: 0.3 * SC, fill: "var(--token)", stroke: "rgba(0,0,0,.25)", "stroke-width": 1 }, g);
+        const tx = sv("text", { x: t.x * SC, y: t.y * SC + 1, "text-anchor": "middle", "dominant-baseline": "middle", "font-family": "var(--display)", "font-weight": 700, "font-size": 0.27 * SC, fill: hot ? "var(--token-hot)" : "var(--token-ink)" }, g);
+        tx.textContent = t.num;
+        const p = 6 - Math.abs(7 - t.num);
+        for (let i = 0; i < p; i++) sv("circle", { cx: (t.x + (i - (p - 1) / 2) * 0.065) * SC, cy: (t.y + 0.17) * SC, r: 0.022 * SC, fill: hot ? "var(--token-hot)" : "var(--token-ink)" }, g);
+      }
+    }
+    for (const p of board.ports) {
+      const [a, b] = p.nodes.map(n => geo.nodes[n]);
+      const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+      const px = mx + (p.x - mx) * 0.55, py = my + (p.y - my) * 0.55;
+      for (const q of [a, b]) sv("line", { x1: q[0] * SC, y1: q[1] * SC, x2: px * SC, y2: py * SC, stroke: "var(--port-line)", "stroke-width": 3, "stroke-linecap": "round", opacity: 0.85 }, gPorts);
+      sv("circle", { cx: px * SC, cy: py * SC, r: 0.27 * SC, fill: p.res >= 0 ? `var(--${RC.RES[p.res]})` : "var(--port)", stroke: "var(--port-ink)", "stroke-width": 1.2 }, gPorts);
+      const t = sv("text", { x: px * SC, y: py * SC + 1, "text-anchor": "middle", "dominant-baseline": "middle", "font-family": "var(--mono)", "font-weight": 600, "font-size": 0.2 * SC, fill: "var(--port-ink)" }, gPorts);
+      t.textContent = p.res >= 0 ? "2:1" : "3:1";
+    }
+  }
+  function drawPieces(vm) {
+    const geo = S.index.geo, board = S.game.D.board;
+    gRoads.replaceChildren(); gBld.replaceChildren(); gRob.replaceChildren(); gHi.replaceChildren();
+    const fresh = new Set(vm.pieces.fresh.map(([t, w]) => `${t === "r" ? "r" : "b"}${w}`));
+    for (const [edge, seat] of vm.pieces.roads) {
+      const [na, nb] = geo.edges[edge], a = geo.nodes[na], b = geo.nodes[nb];
+      const sh = 0.2;
+      const x1 = a[0] + (b[0] - a[0]) * sh, y1 = a[1] + (b[1] - a[1]) * sh, x2 = b[0] + (a[0] - b[0]) * sh, y2 = b[1] + (a[1] - b[1]) * sh;
+      sv("line", { x1: x1 * SC, y1: y1 * SC, x2: x2 * SC, y2: y2 * SC, stroke: "var(--piece-edge)", "stroke-width": 9, "stroke-linecap": "round" }, gRoads);
+      sv("line", { x1: x1 * SC, y1: y1 * SC, x2: x2 * SC, y2: y2 * SC, stroke: pcol(seat), "stroke-width": 6, "stroke-linecap": "round" }, gRoads);
+      if (fresh.has(`r${edge}`)) sv("circle", { cx: (a[0] + b[0]) / 2 * SC, cy: (a[1] + b[1]) / 2 * SC, r: 0.36 * SC, fill: "none", stroke: "var(--ours)", class: "pulse" }, gHi).style.strokeWidth = "4";
+    }
+    for (const [node, type, seat] of vm.pieces.bld) {
+      const [x, y] = geo.nodes[node], c = pcol(seat);
+      if (type === "s") {
+        const s = 0.17;
+        sv("path", { d: `M${(x - s) * SC},${(y + s * 0.9) * SC} L${(x - s) * SC},${(y - s * 0.2) * SC} L${x * SC},${(y - s * 1.15) * SC} L${(x + s) * SC},${(y - s * 0.2) * SC} L${(x + s) * SC},${(y + s * 0.9) * SC} Z`, fill: c, stroke: "var(--piece-edge)", "stroke-width": 2, "stroke-linejoin": "round" }, gBld);
+      } else {
+        const s = 0.2;
+        sv("path", { d: `M${(x - s * 1.25) * SC},${(y + s) * SC} L${(x - s * 1.25) * SC},${(y - s * 0.15) * SC} L${(x - s * 0.5) * SC},${(y - s * 0.15) * SC} L${(x - s * 0.5) * SC},${(y - s * 0.7) * SC} L${(x + s * 0.1) * SC},${(y - s * 1.3) * SC} L${(x + s * 0.7) * SC},${(y - s * 0.7) * SC} L${(x + s * 0.7) * SC},${(y - s * 0.15) * SC} L${(x + s * 1.25) * SC},${(y - s * 0.15) * SC} L${(x + s * 1.25) * SC},${(y + s) * SC} Z`, fill: c, stroke: "var(--piece-edge)", "stroke-width": 2, "stroke-linejoin": "round" }, gBld);
+      }
+      if (fresh.has(`b${node}`)) sv("circle", { cx: x * SC, cy: y * SC, r: 0.4 * SC, fill: "none", stroke: "var(--ours)", class: "pulse" }, gHi).style.strokeWidth = "4";
+    }
+    const rt = board.tiles[vm.robber];
+    if (rt) {
+      const g = sv("g", {}, gRob);
+      sv("polygon", { points: hexPts(rt.x, rt.y, 0.97), fill: "rgba(20,20,20,.38)" }, g);
+      sv("ellipse", { cx: (rt.x + 0.34) * SC, cy: (rt.y + 0.05) * SC, rx: 0.11 * SC, ry: 0.19 * SC, fill: "#2a2a2a", stroke: "#f2f2f2", "stroke-width": 1.2 }, g);
+      sv("circle", { cx: (rt.x + 0.34) * SC, cy: (rt.y - 0.2) * SC, r: 0.085 * SC, fill: "#2a2a2a", stroke: "#f2f2f2", "stroke-width": 1.2 }, g);
+    }
+  }
+
+  // ---- players and the bot-view layer --------------------------------------------------------------------------
+  function buildPlayers() {
+    const G = S.game, D = G.D, box = $("players");
+    box.replaceChildren();
+    const allx = h("div", "allexact");
+    allx.append(checkIcon(), h("span", null, "Our bot knew every opponent's hand exactly here."));
+    allx.hidden = true;
+    box.appendChild(allx);
+    G.allExactEl = allx;
+    G.plEls = [];
+    for (let s = 0; s < D.n; s++) {
+      const ch = G.row.lineup[s], ours = D.ours.includes(s);
+      const row = h("div", "pl");
+      const sw = h("div", "swatch"); sw.style.background = pcol(s); row.appendChild(sw);
+      const nm = h("div", "name");
+      nm.append(cn(s));
+      if (ours) nm.appendChild(h("span", "tag", "our bot"));
+      nm.appendChild(h("span", "role", ours ? "catanbot" : RC.OPP[ch]));
+      if (!ours && !D.counted) nm.appendChild(h("span", "tag known", "seen by our bot"));
+      row.appendChild(nm);
+      const vp = h("div", "vp"); row.appendChild(vp);
+      const hand = h("div", "hand"); row.appendChild(hand);
+      const meta = h("div", "meta full"); row.appendChild(meta);
+      const bel = h("div", "bel full"); bel.hidden = true; row.appendChild(bel);
+      const devl = h("p", "devline full"); devl.hidden = true; row.appendChild(devl);
+      box.appendChild(row);
+      G.plEls.push({ row, vp, hand, meta, bel, devl });
+    }
+  }
+  function chip(res, n, d) {
+    const c = h("span", "rc" + (n ? "" : " zero"));
+    const sq = h("i"); sq.style.background = `var(--${RC.RES[res]})`; c.appendChild(sq);
+    c.append(String(n));
+    if (d) c.appendChild(h("span", "d " + (d > 0 ? "up" : "down"), (d > 0 ? "+" : "−") + Math.abs(d)));
+    c.title = `${RC.RES[res]}: ${n}${d ? ` (${d > 0 ? "+" : "−"}${Math.abs(d)})` : ""}`;
+    return c;
+  }
+  function drawPlayers(vm) {
+    const G = S.game, mode = vm.mode;
+    const bel = vm.belief;
+    const beliefOn = !!bel;
+    G.allExactEl.hidden = !(beliefOn && bel.allExact);
+    for (const p of vm.players) {
+      const e = G.plEls[p.seat];
+      e.row.classList.toggle("turn", p.seat === vm.actor);
+      e.vp.replaceChildren();
+      if (p.vp != null) {
+        e.vp.append(String(p.vp));
+        e.vp.appendChild(h("small", null, p.vp !== p.pvp ? `${p.pvp} seen · ${p.vp - p.pvp} hidden` : "VP"));
+      } else {
+        e.vp.append(String(p.pvp));
+        e.vp.appendChild(h("small", null, "public VP"));
+      }
+      e.hand.replaceChildren();
+      if (p.hand) p.hand.forEach((n, r) => e.hand.appendChild(chip(r, n, p.delta ? p.delta[r] : 0)));
+      else {
+        const c = h("span", "rc size", `${p.size} card${p.size === 1 ? "" : "s"}`);
+        if (p.sizeDelta) c.appendChild(h("span", "d " + (p.sizeDelta > 0 ? "up" : "down"), ` ${p.sizeDelta > 0 ? "+" : "−"}${Math.abs(p.sizeDelta)} card${Math.abs(p.sizeDelta) === 1 ? "" : "s"}`));
+        e.hand.appendChild(c);
+      }
+      e.meta.replaceChildren();
+      const add = (label, value) => { const x = h("span"); if (value != null) { x.append(label); x.appendChild(h("b", null, value)); } else x.append(label); e.meta.appendChild(x); };
+      if (p.hand) add("", `${p.size} cards`);
+      if (p.held) {
+        const heldTxt = p.held.map((n, j) => n ? `${n} ${RC.DEV[j]}` : null).filter(Boolean).join(", ");
+        add("dev held: ", heldTxt || "none");
+      } else add("dev cards: ", `${p.devCount}, types unseen`);
+      if (p.played[0]) add("knights played ", String(p.played[0]));
+      add("road ", String(p.lr));
+      if (p.LR) e.meta.appendChild(h("span", "title-on", "Longest Road"));
+      if (p.LA) e.meta.appendChild(h("span", "title-on", "Largest Army"));
+      const b = beliefOn ? bel.opps.find(o => o.seat === p.seat) : null;
+      e.bel.hidden = !b || bel.allExact;
+      if (b && !bel.allExact) drawBelief(e.bel, b, mode);
+      e.devl.hidden = !b || b.vpLaw.length < 2;
+      if (b && b.vpLaw.length >= 2) e.devl.textContent = devLine(b, bel, mode);
+    }
+  }
+  function isExpanded(seat, uncertain) {
+    const v = S.expanded[String(seat)];
+    if (typeof v === "boolean") return v;
+    return uncertain && !narrow();
+  }
+  function drawBelief(box, b, mode) {
+    box.replaceChildren();
+    const open = isExpanded(b.seat, !b.exact);
+    const btn = h("button", "belline" + (b.exact ? " known" : ""));
+    btn.type = "button";
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    btn.dataset.seat = b.seat;
+    if (b.exact) {
+      btn.append(checkIcon(), h("span", null, `${b.size} card${b.size === 1 ? "" : "s"} · known exactly`));
+    } else {
+      const x = mode === "both" ? b.p : b.top;
+      const label = mode === "both" ? "bot's chance on the real hand" : "bot's top guess";
+      btn.append(h("span", null, `${b.size} card${b.size === 1 ? "" : "s"} · ${label} ${fmtPct(x)} · unsure about ${b.unsure.join(", ")}`), meter(x));
+    }
+    btn.appendChild(h("span", "chev", open ? "▴" : "▾"));
+    btn.onclick = () => {
+      S.expanded[String(b.seat)] = !open;
+      store.set("expanded", S.expanded);
+      go(S.game.k, { quiet: true, noHash: true });
+      const nb = S.game.plEls[b.seat].bel.querySelector("button");
+      if (nb) nb.focus();
+    };
+    box.appendChild(btn);
+    if (!open) return;
+    const tbl = h("table", "belgrid");
+    const cap = h("caption", "sr-only", `${cn(b.seat)}: ${mode === "both" ? "real hand and our bot's guess" : "our bot's guess"}`);
+    tbl.appendChild(cap);
+    const thead = h("thead"), trh = h("tr");
+    trh.appendChild(h("th", null, "")).appendChild(h("span", "sr-only", "row"));
+    RC.RES.forEach(r => { const th = h("th"); th.scope = "col"; const i = h("i"); i.style.background = `var(--${r})`; th.append(i, r); trh.appendChild(th); });
+    thead.appendChild(trh); tbl.appendChild(thead);
+    const tb = h("tbody");
+    if (mode === "both") {
+      const tr = h("tr"); const th = h("th", null, "real"); th.scope = "row"; tr.appendChild(th);
+      b.real.forEach(n => tr.appendChild(h("td", null, String(n))));
+      tb.appendChild(tr);
+    }
+    const tr = h("tr"); const th = h("th", null, "bot's guess"); th.scope = "row"; tr.appendChild(th);
+    b.E.forEach((e, r) => {
+      const td = h("td", null, b.exact ? String(b.own[r]) : e.toFixed(1));
+      if (mode === "both" && b.differs[r]) {
+        td.className = "diff";
+        td.appendChild(h("span", "ne", "≠")).setAttribute("aria-hidden", "true");
+        td.appendChild(h("span", "sr-only", " differs from the real count"));
+        td.title = "differs from the real count by half a card or more";
+      }
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+    tbl.appendChild(tb);
+    const wrap = h("div"); wrap.style.overflowX = "auto"; wrap.appendChild(tbl);
+    box.appendChild(wrap);
+    if (!b.exact) {
+      const note = mode === "both"
+        ? `The chance is for the exact whole hand (all five counts right), so it drops right after a hidden steal or discard; that is normal. The guess row is the bot's average count.`
+        : `The top guess is the single hand the bot rated most likely, as a chance for the whole hand. The guess row is the bot's average count.`;
+      box.appendChild(h("p", "belnote", note));
+    }
+  }
+  function devLine(b, bel, mode) {
+    const law = b.vpLaw, c = law.length - 1;
+    const parts = law.map((w, v) => `${v} with ${v === 0 ? "chance " : ""}${Math.round(100 * w)} %`).join(", ");
+    const share = bel.poolTot ? bel.poolVp / bel.poolTot : 0;
+    let s = `Our bot's guess: ${c} unseen development card${c === 1 ? "" : "s"}, about ${b.vpMean.toFixed(2)} hidden points (${parts}). ` +
+      `Before ruling out deals that would already have won, each card is a VP with chance ${bel.poolVp} in ${bel.poolTot} (${Math.round(100 * share)} %). `;
+    if (mode === "both") s += `Real: ${b.realVpCards}. `;
+    return s + "(The guess ignores how long a card was held.)";
+  }
+
+  // ---- charts ----------------------------------------------------------------------------------------------------
+  function chartSeries() {
+    const G = S.game, mode = curMode(), src = mode === "bot" ? G.PV : G.D, n = G.D.n, N = G.D.N;
+    const vp = [], pvp = [];
+    for (let s = 0; s < n; s++) { vp.push([]); pvp.push([]); }
+    for (let k = 0; k <= N; k++) {
+      const sn = src.snap(k);
+      for (let s = 0; s < n; s++) { vp[s].push(sn.P[s].vp != null ? sn.P[s].vp : null); pvp[s].push(sn.P[s].pvp); }
+    }
+    return { vp, pvp, mode };
+  }
+  function xTicks(svg, X, H, B, N) {
+    const steps = S.game.D.steps;
+    let lastR = 0;
+    steps.forEach((s, i) => {
+      if (s.r !== lastR && s.r % 20 === 0) {
+        sv("line", { x1: X(i), x2: X(i), y1: H - B, y2: H - B + 4, stroke: "var(--muted)", "stroke-width": 1 }, svg);
+        const t = sv("text", { x: X(i), y: H - 6, "text-anchor": "middle", "font-size": 10, "font-family": "var(--mono)", fill: "var(--muted)" }, svg);
+        t.textContent = `roll ${s.r}`;
+      }
+      lastR = s.r;
+    });
+  }
+  function buildVpChart() {
+    const G = S.game, svg = $("chart"), N = G.D.N, n = G.D.n;
+    svg.replaceChildren();
+    const { vp, pvp, mode } = chartSeries();
+    const W = 400, H = 150, L = 26, R = 8, T = 8, B = 22, target = RC.VPS_TO_WIN;
+    const maxV = Math.max(target, ...G.row.vps);
+    const X = i => L + (W - L - R) * i / Math.max(1, N), Y = v => T + (H - T - B) * (1 - v / maxV);
+    for (let v = 0; v <= maxV; v += 2) {
+      sv("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: "var(--line)", "stroke-width": v === target ? 1.4 : 0.7, "stroke-dasharray": v === target ? "4 3" : "" }, svg);
+      const t = sv("text", { x: L - 6, y: Y(v) + 3.5, "text-anchor": "end", "font-size": 10, "font-family": "var(--mono)", fill: "var(--muted)" }, svg);
+      t.textContent = v;
+    }
+    xTicks(svg, X, H, B, N);
+    let hidden = false;
+    const path = arr => arr.map((v, k) => `${k ? "L" : "M"}${X(k).toFixed(1)},${Y(v).toFixed(1)}`).join(" ");
+    for (let s = 0; s < n; s++) {
+      const ours = G.D.ours.includes(s), white = RC.COLORS[s] === "WHITE";
+      const main = vp[s][0] != null ? vp[s] : pvp[s];
+      const d = path(main);
+      if (white) sv("path", { d, fill: "none", stroke: "var(--piece-edge)", "stroke-width": ours ? 4.2 : 3, "stroke-linejoin": "round" }, svg);
+      sv("path", { d, fill: "none", stroke: pcol(s), "stroke-width": ours ? 2.8 : 1.7, "stroke-linejoin": "round" }, svg);
+      if (vp[s][0] != null && vp[s].some((v, k) => v !== pvp[s][k])) {
+        const dp = path(pvp[s]);
+        if (white) sv("path", { d: dp, fill: "none", stroke: "var(--piece-edge)", "stroke-width": 2.6, "stroke-dasharray": "3 3" }, svg);
+        sv("path", { d: dp, fill: "none", stroke: pcol(s), "stroke-width": 1.6, "stroke-dasharray": "3 3", opacity: 0.9 }, svg);
+        hidden = true;
+      }
+    }
+    sv("line", { id: "cursor", x1: X(0), x2: X(0), y1: T, y2: H - B, stroke: "var(--ink)", "stroke-width": 1, opacity: 0.6 }, svg);
+    svg._X = X;
+    $("vp-h2").textContent = `Race to ${target}`;
+    const note = $("chartnote");
+    if (mode === "bot") note.textContent = "Bot's view: opponents' lines are their public points, the only points our bot saw. Our own line is solid for true points" + (hidden ? " and dashed for what the table could see." : ".");
+    else note.textContent = hidden ? "Solid line: true points. Dashed line: the points the other players can see. The gap is hidden Victory Point cards." : "Solid lines: true points (no hidden Victory Point cards changed the picture in this game).";
+  }
+  function buildBeliefChart() {
+    const G = S.game, mode = curMode(), box = $("belbox"), svg = $("belchart");
+    svg.replaceChildren();
+    box.hidden = !(mode === "both" || mode === "bot");
+    if (box.hidden) return;
+    const N = G.D.N, BV = G.BV, opps = BV.opps;
+    const series = opps.map(() => []);
+    for (let k = 0; k <= N; k++) {
+      if (mode === "both") opps.forEach((j, i) => series[i].push(BV.p(k, j)));
+      else { const pb = G.BVpub.pub(k); opps.forEach((j, i) => series[i].push(pb.opps[i].top)); }
+    }
+    const W = 400, H = 130, L = 34, R = 8, T = 8, B = 22;
+    const X = i => L + (W - L - R) * i / Math.max(1, N), Y = v => T + (H - T - B) * (1 - v);
+    for (const v of [0, 0.5, 1]) {
+      sv("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: "var(--line)", "stroke-width": 0.7 }, svg);
+      const t = sv("text", { x: L - 6, y: Y(v) + 3.5, "text-anchor": "end", "font-size": 10, "font-family": "var(--mono)", fill: "var(--muted)" }, svg);
+      t.textContent = `${Math.round(v * 100)} %`;
+    }
+    for (const i of G.D.hiddenIdx) sv("line", { x1: X(i + 1), x2: X(i + 1), y1: H - B, y2: H - B + 5, stroke: "var(--hidden)", "stroke-width": 1 }, svg);
+    xTicks(svg, X, H, B, N);
+    opps.forEach((j, i) => {
+      let d = "";
+      series[i].forEach((v, k) => { d += k === 0 ? `M${X(0).toFixed(1)},${Y(v).toFixed(1)}` : ` H${X(k).toFixed(1)} V${Y(v).toFixed(1)}`; });
+      if (RC.COLORS[j] === "WHITE") sv("path", { d, fill: "none", stroke: "var(--piece-edge)", "stroke-width": 3, "stroke-linejoin": "round" }, svg);
+      sv("path", { d, fill: "none", stroke: pcol(j), "stroke-width": 1.7, "stroke-linejoin": "round" }, svg);
+    });
+    sv("line", { id: "belcursor", x1: X(0), x2: X(0), y1: T, y2: H - B, stroke: "var(--ink)", "stroke-width": 1, opacity: 0.6 }, svg);
+    svg._X = X;
+    $("bel-h2").textContent = mode === "both" ? "Bot's chance on the real hand" : "Bot's confidence in its top guess";
+    svg.setAttribute("aria-label", mode === "both" ? "Our bot's chance on each opponent's real hand, by position" : "Our bot's confidence in its top guess for each opponent's hand, by position");
+    const lg = $("bellegend");
+    lg.replaceChildren();
+    opps.forEach(j => { const s = h("span"); s.append(dot(j), cn(j)); lg.appendChild(s); });
+    const tk = h("span"); const tick = h("span"); tick.style.cssText = "display:inline-block;width:1px;height:9px;background:var(--hidden)"; tk.append(tick, "hidden event"); lg.appendChild(tk);
+    $("belnote").textContent = mode === "both"
+      ? "Chance our bot gave to each opponent's exact real hand. It is 100 % while the hand is known exactly and drops at hidden events (ticks below the axis)."
+      : "How sure our bot was of its single most likely hand for each opponent. Drawn from the bot's belief only.";
+  }
+
+  // ---- log -------------------------------------------------------------------------------------------------------
+  function splitHiddenTag(text) {
+    const m = / · (?:type )?hidden from our bot.*$/.exec(text);
+    return m ? [text.slice(0, m.index), text.slice(m.index)] : [text, ""];
+  }
+  function buildLog() {
+    const G = S.game, mode = curMode(), src = mode === "bot" ? G.PV : G.D;
+    const view = mode === "bot" ? "bot" : mode === "full" ? "full" : "truth";
+    const box = $("log");
+    box.replaceChildren();
+    G.logRows = [];
+    let lastR = -1;
+    src.steps.forEach((s, i) => {
+      if (s.r !== lastR) {
+        box.appendChild(h("div", "lrh", s.r === 0 ? "Setup: two settlements and roads each" : `Roll ${s.r} · ${cn(s.a)}`));
+        lastR = s.r;
+      }
+      const row = h("button", "lr");
+      row.type = "button";
+      row.appendChild(h("span", "t", `#${i + 1}`));
+      row.appendChild(dot(s.a));
+      const [main, tag] = splitHiddenTag(RC.stepText(src, i, { view }));
+      const tx = h("span", null, `${cn(s.a)}${G.D.ours.includes(s.a) ? " (ours)" : ""} ${main}`);
+      if (tag) tx.appendChild(h("span", "hidtag", tag));
+      else if (view === "bot" && s.hidden) tx.appendChild(h("span", "hidtag", " · content hidden from our bot"));
+      row.appendChild(tx);
+      row.addEventListener("click", () => { stopPlay(); go(i + 1); });
+      box.appendChild(row);
+      G.logRows.push(row);
+    });
+  }
+
+  // ---- "what our bot knew", notes, check block -------------------------------------------------------------------
+  function buildKnew() {
+    const G = S.game, box = $("knew"), mode = curMode();
+    box.replaceChildren();
+    box.appendChild(h("h2", null, "What our bot knew"));
+    if (!G.D.counted) {
+      box.appendChild(h("p", "numbers", "No belief layer: our bot saw every card in this game."));
+      return;
+    }
+    const s = G.BV.summary, c = G.BV.chk, meta = G.meta;
+    const ol = h("ol");
+    const li = t => ol.appendChild(h("li", null, t));
+    li(`Card counter re-run afterwards from the public log, with the run's own code (commit ${c.code}) and settings.`);
+    li(c.stats === 1 ? "Its statistics equal those the live bot logged." : "Its statistics DIFFER from those the live bot logged.");
+    li(`${nf(c.audit[0])} inputs audited, ${nf(c.audit[1])} violation${c.audit[1] === 1 ? "" : "s"}.`);
+    li(c.twin === 1 ? "A twin given the hidden cards becomes exact at every step." : "The twin given the hidden cards was NOT exact at every step.");
+    if (c.head === 1) li("The repository's current card counter gives the same belief at every position.");
+    const last = h("li", null, "The move search only receives the public view and guesses drawn from this counter (");
+    last.append(h("code", null, "tests/test_public_info.py::test_counted_player_never_reads_hidden_information"), " swaps the hidden cards and requires the same choice).");
+    ol.appendChild(last);
+    box.appendChild(ol);
+    box.appendChild(h("div", "label", "This game's numbers · the calibration part is a consistency check, not a proof"));
+    const hid = s.hidden || [0, 0, 0];
+    const hiddenTxt = `Hidden from it: ${hid[0]} steal${hid[0] === 1 ? "" : "s"}, ${hid[1]} discarded card${hid[1] === 1 ? "" : "s"}, ${hid[2]} development card${hid[2] === 1 ? "" : "s"}.`;
+    let t = `Our bot knew every opponent hand exactly at ${fmtPct(s.allExact)} of positions. `;
+    if (mode !== "bot") {
+      if (s.nu) t += `When it was unsure, it gave the real hand ${fmtPct(s.meanPu)} on average; if its guesses were honest they should average ${fmtPct(s.calPu)}. `;
+      t += "A twin that sees the hidden cards scores 100 %. It never ruled out the real hand. ";
+    }
+    t += `${hiddenTxt} At most ${nf(s.maxH)} joint hypotheses were in play.`;
+    box.appendChild(h("p", "numbers", t));
+    if (meta.counted && mode !== "bot") {
+      const a = meta.counted;
+      box.appendChild(h("p", "belnote", `Across all ${nf(meta.games)} games of ${G.row.t}: known exactly at ${fmtPct(a.allExact)} of positions; when unsure, ${fmtPct(a.meanPu)} on the real hand against ${fmtPct(a.calPu)} expected.`));
+    }
+  }
+  function buildNotes() {
+    const G = S.game, mode = curMode(), box = $("notes");
+    box.replaceChildren();
+    const what = {
+      full: "Every hand and development card is shown because the log records the full state. In this game our bot saw them too, as did Catanatron's bots.",
+      truth: "These are the real hands from the log. Our bot did not see them; choose 'Real + bot's guess' to compare.",
+      both: "Each opponent shows the real hand and, below it, our bot's guess at that moment.",
+      bot: "Only what our bot saw: hand sizes, public VP, played development cards and its own belief. The real hands are not used to draw this view."
+    }[mode];
+    const p = (label, text) => { const x = h("p"); x.appendChild(h("b", null, label)); x.append(" " + text); box.appendChild(x); };
+    p("What you see.", what);
+    p("Trades.", "Every test ran with player-to-player trading off, as Catanatron's bots cannot trade with each other. Only bank and port trades happen.");
+    const keys = h("p");
+    keys.appendChild(h("b", null, "Keys."));
+    keys.append(" ");
+    const k = t => keys.appendChild(h("kbd", null, t));
+    k("←"); keys.append(" "); k("→"); keys.append(" step one action, "); k("Shift"); keys.append(" + arrows jump a roll, "); k("Space"); keys.append(" plays or pauses, "); k("Home"); keys.append(" / "); k("End");
+    if (G.D.counted) { keys.append(", "); k("["); keys.append(" / "); k("]"); keys.append(" jump to the previous or next hidden event"); }
+    keys.append(". Click any line of the log to jump there.");
+    box.appendChild(keys);
+  }
+  function checkText(k) {
+    const G = S.game, meta = G.meta, row = G.row;
+    const f = RC.logFileOf(meta, row.g);
+    const code = meta.code || {};
+    const suite = meta.suite;
+    const doc = SUITE_DOC[suite] || "the docs";
+    const py = meta.catanatron === "3.2.1" ? "`python3` with catanatron 3.2.1 (PyPI)" : `a Python that has catanatron ${meta.catanatron} (GitHub commit ecf9311)`;
+    const logsDir = f ? f.path.replace(/\/[^/]+$/, "") : `${suite}/${row.t}/logs`;
+    return (f ? `Game ${row.id} is line ${f.line} of ${f.path}\n(sha256 ${f.sha256.slice(0, 12)}…${f.manifest ? `, listed in ${suite}/MANIFEST.sha256` : ""}). ` : `Game ${row.id}. `) +
+      `Played by commit ${code.commit || code.played || "?"} (${code.worktree || "frozen worktree of that commit"}; ${doc}, SCRUTINY Q20).\n` +
+      `Rebuild this position with ${py}:\n` +
+      `  python scripts/replay_catanatron.py ${logsDir} --game ${row.g} --action ${k} --json\n` +
+      `--action K stops after K actions, which is this page's position. SCRUTINY Q18 ("Can I replay a specific game?") explains the script.`;
+  }
+
+  // ---- stepping --------------------------------------------------------------------------------------------------
+  function go(k, o) {
+    const G = S.game;
+    if (!G) return;
+    o = o || {};
+    const D = G.D, N = D.N;
+    k = Math.max(0, Math.min(N, k | 0));
+    G.k = k;
+    const mode = curMode();
+    const src = mode === "bot" ? G.PV : G.D;
+    const bvArg = mode === "both" ? G.BV : mode === "bot" ? G.BVpub : null;
+    const vm = RC.viewModel(src, bvArg, k, mode);
+    $("scrub").value = k;
+    drawPieces(vm);
+    drawPlayers(vm);
+    const now = $("now");
+    now.replaceChildren();
+    if (vm.actor == null) now.textContent = "Before the first placement";
+    else {
+      now.appendChild(dot(vm.actor));
+      now.append(" ");
+      now.appendChild(h("span", "who", `${cn(vm.actor)}${D.ours.includes(vm.actor) ? " (our bot)" : ""}`));
+      now.append(vm.rolls ? ` · roll ${vm.rolls}` : " · setup");
+    }
+    const la = $("lastact");
+    la.replaceChildren();
+    let spoken = "Start of the game.";
+    if (vm.text) {
+      const [main, tag] = splitHiddenTag(vm.text);
+      const lead = `${cn(vm.actor)}${D.ours.includes(vm.actor) ? " (our bot)" : ""} ${main}`;
+      la.append(lead);
+      if (tag) la.appendChild(h("span", "hidtag", tag));
+      else if (mode === "bot" && vm.hidden) la.appendChild(h("span", "hidtag", " · content hidden from our bot"));
+      spoken = lead + tag;
+      if (k === N) {
+        const w = G.row.win, hv = G.row.vps[w] - G.row.pvps[w];
+        const end = `. ${cn(w)} wins${hv ? `, revealing ${hv} Victory Point card${hv > 1 ? "s" : ""}` : ""}.`;
+        la.append(end);
+        spoken += end;
+      }
+    } else la.textContent = "Press Play to watch the game from the first placement.";
+    const dice = $("dice");
+    dice.replaceChildren();
+    if (vm.dice) for (const v of vm.dice) dice.appendChild(h("span", "die", String(v)));
+    const posText = `action ${k} of ${N} · roll ${vm.rolls} · catanatron turn ${vm.turns}`;
+    $("pos").textContent = posText;
+    $("bbPos").textContent = `${k} / ${N}`;
+    for (const [svgId, curId] of [["chart", "cursor"], ["belchart", "belcursor"]]) {
+      const svg = $(svgId), cur = svg.querySelector("#" + curId);
+      if (cur && svg._X) { cur.setAttribute("x1", svg._X(k)); cur.setAttribute("x2", svg._X(k)); }
+    }
+    G.logRows.forEach((r, i) => { r.classList.toggle("cur", i === k - 1); r.classList.toggle("future", i >= k); });
+    const row = G.logRows[k - 1], logBox = $("log");
+    if (row) {
+      const top = row.offsetTop - logBox.offsetTop, bottom = top + row.offsetHeight;
+      if (top < logBox.scrollTop + 30 || bottom > logBox.scrollTop + logBox.clientHeight - 30) logBox.scrollTop = top - logBox.clientHeight / 2;
+    }
+    if (D.counted) {
+      const hi = D.hiddenIdx;
+      $("bPrevHid").disabled = !hi.some(i => i + 1 < k);
+      $("bNextHid").disabled = !hi.some(i => i + 1 > k);
+      const seen = hi.filter(i => i + 1 <= k).length;
+      $("hidpos").textContent = `${seen} of ${hi.length} hidden events so far`;
+    }
+    const token = `${G.row.id}.${k}`;
+    $("rp-token").value = "#" + token;
+    $("rp-copied").textContent = "";
+    $("checktext").textContent = checkText(k);
+    if (!o.quiet) announce(`Action ${k} of ${N}. ${spoken}`, !!S.timer);
+    if (!o.noHash) {
+      clearTimeout(S.replaceTimer);
+      S.replaceTimer = setTimeout(() => { if (S.view === "replay" && S.game === G) setHash(token, false); }, 300);
+    }
+  }
+  function announce(text, playing) {
+    const t = Date.now();
+    if (playing && t - S.lastAnnounce < 3000) return;
+    S.lastAnnounce = t;
+    $("announce").textContent = text;
+  }
+  function stopPlay() {
+    if (S.timer) { clearInterval(S.timer); S.timer = null; }
+    $("bPlay").textContent = "Play";
+    $("bbPlay").textContent = "Play";
+  }
+  function play() {
+    const G = S.game;
+    if (!G) return;
+    if (S.timer) { stopPlay(); return; }
+    if (G.k >= G.D.N) go(0);
+    $("bPlay").textContent = "Pause";
+    $("bbPlay").textContent = "Pause";
+    S.timer = setInterval(() => { if (!S.game || S.game.k >= S.game.D.N) { stopPlay(); return; } go(S.game.k + 1); }, +$("speed").value);
+  }
+  function rollStarts() {
+    const out = [0];
+    S.game.D.steps.forEach((s, i) => { if (s.kind === RC.K.ROLL) out.push(i); });
+    out.push(S.game.D.N);
+    return out;
+  }
+  function prevRoll() { const k = S.game.k, t = rollStarts().filter(x => x < k - 1); go(t.length ? t[t.length - 1] : 0); }
+  function nextRoll() { const k = S.game.k, t = rollStarts().find(x => x > k - 1); go(t === undefined ? S.game.D.N : Math.max(t, k + 1)); }
+  function prevHidden() { const k = S.game.k, c = S.game.D.hiddenIdx.filter(i => i + 1 < k); if (c.length) go(c[c.length - 1] + 1); }
+  function nextHidden() { const k = S.game.k, c = S.game.D.hiddenIdx.find(i => i + 1 > k); if (c !== undefined) go(c + 1); }
+
+  $("bStart").onclick = () => { stopPlay(); go(0); };
+  $("bEnd").onclick = () => { stopPlay(); go(S.game.D.N); };
+  $("bBack").onclick = $("bbBack").onclick = () => { stopPlay(); go(S.game.k - 1); };
+  $("bFwd").onclick = $("bbFwd").onclick = () => { stopPlay(); go(S.game.k + 1); };
+  $("bPrevTurn").onclick = () => { stopPlay(); prevRoll(); };
+  $("bNextTurn").onclick = () => { stopPlay(); nextRoll(); };
+  $("bPrevHid").onclick = () => { stopPlay(); prevHidden(); };
+  $("bNextHid").onclick = () => { stopPlay(); nextHidden(); };
+  $("bPlay").onclick = $("bbPlay").onclick = play;
+  $("speed").onchange = () => { if (S.timer) { stopPlay(); play(); } };
+  $("scrub").oninput = () => { stopPlay(); go(+$("scrub").value); };
+  $("rp-back").onclick = closeGame;
+  $("rp-copy").onclick = () => copyToken($("rp-token"), $("rp-copied"));
+  $("st-back").onclick = e => { e.preventDefault(); S.filters = loadFilters(); setHash(RC.filterToken(S.filters), true); showPicker(null); setStatus(null); };
+  const hop = dir => { const nb = neighbours(S.game ? S.game.row : S.index.byId.get(S.lastOpenedId)); const r = dir < 0 ? nb.prev : nb.next; if (r) { setHash(r.id, true); openGame(r.id, null, {}); } };
+  $("rp-prevgame").onclick = () => hop(-1);
+  $("rp-nextgame").onclick = () => hop(1);
+  for (const m of MODES) $("mode-" + m).addEventListener("change", () => {
+    if (!$("mode-" + m).checked || !S.game) return;
+    S.mode = m;
+    store.set("mode", m);
+    renderModeParts();
+    go(S.game.k, { quiet: true, noHash: true });
+  });
+  document.addEventListener("keydown", e => {
+    if (S.view !== "replay" || !S.game) return;
+    const t = e.target;
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (t && t.closest && t.closest("select, textarea, .seg, .fchip, table.games, input:not([type=range])")) return;
+    const G = S.game;
+    if (e.key === "ArrowRight") { e.preventDefault(); stopPlay(); e.shiftKey ? nextRoll() : go(G.k + 1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); stopPlay(); e.shiftKey ? prevRoll() : go(G.k - 1); }
+    else if (e.key === " " && t.tagName !== "BUTTON") { e.preventDefault(); play(); }
+    else if (e.key === "Home") { e.preventDefault(); stopPlay(); go(0); }
+    else if (e.key === "End") { e.preventDefault(); stopPlay(); go(G.D.N); }
+    else if (e.key === "[" && G.D.counted) { e.preventDefault(); stopPlay(); prevHidden(); }
+    else if (e.key === "]" && G.D.counted) { e.preventDefault(); stopPlay(); nextHidden(); }
+  });
+
+  // ---- #selftest -------------------------------------------------------------------------------------------------
+  async function runSelftest() {
+    stopPlay();
+    showView("selftest");
+    const out = $("st-out");
+    const lines = [];
+    const put = t => { lines.push(t); out.textContent = lines.join("\n"); };
+    setStatus("Self-test running…");
+    try {
+      const ix = await RC.fetchJsonEx("index.json.gz");
+      put(`index.json.gz: ${ix.path === "gzip" ? "gzip bytes, unpacked here" : "already decompressed by the host"}`);
+    } catch (e) { put(`index.json.gz: ${loadError(e, "index.json.gz")}`); }
+    let shards = 0, games = 0, bad = 0;
+    const fields = ["win", "turns", "rolls", "acts", "hvp", "hv", "dev", "lr", "la", "def", "defp"];
+    for (const t of S.index.order) {
+      const sp = RC.shardPath(t, 0, S.index.shardSize);
+      try {
+        const res = await RC.fetchJsonEx(sp);
+        shards++;
+        let n = 0, m = 0;
+        for (const g of res.data.games) {
+          const row = S.index.byId.get(g.id), D = RC.decodeGame(g, S.index.geo), f = RC.indexFields(D);
+          n++;
+          const diff = !row || fields.some(k => f[k] !== row[k]) || JSON.stringify(f.vps) !== JSON.stringify(row.vps) || JSON.stringify(f.pvps) !== JSON.stringify(row.pvps);
+          if (diff) { m++; if (bad + m <= 20) put(`  mismatch: ${g.id}`); }
+        }
+        games += n; bad += m;
+        put(`${sp}: ${res.path === "gzip" ? "gzip bytes, unpacked here" : "already decompressed by the host"}; ${n} games, ${m} mismatches`);
+      } catch (e) { bad++; put(`${sp}: ${loadError(e, sp)}`); }
+    }
+    const summary = `selftest: ${shards} shards, ${nf(games)} games, ${nf(bad)} mismatches`;
+    put(summary);
+    setStatus(summary, { error: bad > 0 });
+  }
+
+  boot();
+})();
+</script>
