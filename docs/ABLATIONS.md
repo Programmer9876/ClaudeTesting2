@@ -731,6 +731,10 @@ They are all off by default outside the queue, and arm keys are unchanged when t
 | `acq_calib` | trades | **stopped by hand** (09:22 UTC) | its gate failed, so the 1,200-game politics screen was switched off after about 1.6 CPU-h.  The simpler fallback (`acq_reject_streak_native@value`, then the human-testing list) runs next.  Why calibration does not cut offers against Catanatron's bots is not yet diagnosed |
 | `acq_reject_streak_native@value` | trades | ESTIMATE (behaviour check) | the rejection-streak fallback (stop offering to a seat after 3 rejections in a row) cut offers against never-accepting bots only from 59.6 to 48.9 a game, far above 10.  Win rate -10.0 +- 7.8 pp at 40 pairs (smoke).  Its human-testing row stays deferred.  This supports the diagnosis in docs/PRIORITY_PLAN.md "Backlog": a rejected offer costs nothing in the search |
 | `acq_floor_selfplay` | trades | SHELVE | the player-trade premium floor in self-play: -1.2 +- 1.6 pp at 960 pairs, no gain; default unchanged |
+| `acq_floor_vrule@value` | trades | SHELVE | -0.1 +- 1.0 pp at 800 pairs |
+| `t1_openings@vf` `standin_book` | diversification | **ADOPT** (one opponent set) | +3.8 +- 1.4 pp at 1,600 pairs vs the vf stand-ins, p = 0.006.  Not a default change: the confirmation row and the league gate decide |
+| `t1_openings@value` `standin_book` | diversification | SHELVE | -1.1 +- 2.0 pp at 800 pairs vs Catanatron's ValueFunction |
+| `t1_openings` `pips_diversity`, `conversion`, `setup_pick` | diversification | SHELVE | within +-1.5 pp at 800-1,600 pairs against both opponent sets |
 
 ## Queue after the strength proof (2026-09-26): every strategy the user asked to test
 

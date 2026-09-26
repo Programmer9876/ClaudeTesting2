@@ -4,6 +4,21 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 13:40 UTC - multi-seat benchmark: all three pass; first queue ADOPT (openings, one opponent set)
+
+- **Multi-seat benchmark** (pre-registered at `332775b`; docs/BENCH_MULTI.md, evidence in bench_multi/):
+  - M1: a lone AlphaBeta against 3 of ours won 9.8 % (fair share 25 %);
+  - M2: a lone ValueFunction won 5.2 %;
+  - M3: our two seats against ValueFunction + AlphaBeta won 78.5 % (fair share 50 %).
+  - All rejected under Holm; 1,200 games, 0 replay mismatches, 0 crashes.
+- **Queue, openings** (`t1_openings`):
+  - `standin_book` ADOPT against the vf stand-ins: +3.8 +- 1.4 pp at 1,600 pairs, p = 0.006.
+  - But SHELVE against Catanatron's ValueFunction: -1.1 +- 2.0 pp at 800 pairs.
+  - Every other opening policy (pips_diversity, conversion, setup_pick) was shelved against both.
+  - An ADOPT on one opponent set does not change the default.  The confirmation row (`t3_openings@alphabeta`,
+    Holm family) and the league gate decide.
+- **Queue, trades:** `acq_floor_vrule@value` SHELVE, -0.1 +- 1.0 pp at 800 pairs.
+
 ## 2026-09-26 13:30 UTC - ports step 4 finished and reviewed (off by default)
 
 - **One real bug fixed** in the earlier agent's code: with conversion (conv=1) on, the flow provider stood down

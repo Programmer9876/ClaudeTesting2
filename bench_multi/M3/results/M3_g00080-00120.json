@@ -1,0 +1,7648 @@
+{
+ "spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
+ "opponent": "value,alphabeta",
+ "opponent_class": "ValueFunctionPlayer+AlphaBetaPlayer",
+ "opponent_params": {},
+ "trades": "off",
+ "catanatron": "3.3.0",
+ "hash_seed": "0",
+ "seed": 910901,
+ "games": 40,
+ "wins": 27,
+ "win_rate": 0.675,
+ "avg_vp": 7.5875,
+ "avg_opp_vp": 6.3125,
+ "avg_best_opp_vp": 7.6,
+ "avg_turns": 89.475,
+ "avg_duration": 7.775791751449742,
+ "truncated": 0,
+ "by_seat": {
+  "0": {
+   "wins": 5,
+   "games": 19
+  },
+  "1": {
+   "wins": 7,
+   "games": 20
+  },
+  "2": {
+   "wins": 8,
+   "games": 20
+  },
+  "3": {
+   "wins": 7,
+   "games": 21
+  }
+ },
+ "stats": {
+  "decisions": 6766,
+  "searched": 3143,
+  "trivial": 2916,
+  "pending_robber": 228,
+  "pending_discard": 479,
+  "trade_prompts": 0,
+  "unmapped_top": 0,
+  "fallback": 0,
+  "errors": 0,
+  "observe_errors": 0,
+  "observed": 22725,
+  "search_time": 40.791692429877,
+  "offers": 0,
+  "offers_accepted": 0,
+  "trades_confirmed": 0,
+  "trades_cancelled": 0,
+  "offers_received": 0,
+  "offers_accepted_by_us": 0,
+  "self_offer_prompts": 0
+ },
+ "trade_totals": {
+  "offers": 0,
+  "offers_accepted": 0,
+  "confirmed": 0,
+  "cancelled": 0,
+  "offers_received": 0,
+  "accepted_by_us": 0,
+  "opp_asked": 0,
+  "opp_accepted": 0,
+  "opp_rejected": 0,
+  "opp_cannot_pay": 0,
+  "opp_errors": 0
+ },
+ "timing": {
+  "ours": {
+   "n": 6766,
+   "mean_ms": 7.141131330479106,
+   "p50_ms": 2.592601998912869,
+   "p95_ms": 28.623285998037318,
+   "max_ms": 165.71998600193183,
+   "total_s": 48.31689458202163
+  },
+  "ours_choice": {
+   "n": 3968,
+   "mean_ms": 10.997448790814794,
+   "p50_ms": 5.235163000179455,
+   "p95_ms": 46.35647399845766,
+   "max_ms": 165.71998600193183,
+   "total_s": 43.6378768019531
+  },
+  "opp": {
+   "n": 6301,
+   "mean_ms": 41.56112776668529,
+   "p50_ms": 1.016158999846084,
+   "p95_ms": 61.92587899931823,
+   "max_ms": 2948.4004210025887,
+   "total_s": 261.876666057884
+  },
+  "opp_choice": {
+   "n": 3608,
+   "mean_ms": 72.58120057954199,
+   "p50_ms": 5.686426000465872,
+   "p95_ms": 166.19628100306727,
+   "max_ms": 2948.4004210025887,
+   "total_s": 261.87297169098747
+  },
+  "our_s_per_game": 0.6039611822752704,
+  "our_search_s_per_game": 0.5098961553734626,
+  "opp_s_per_game_per_seat": 3.27345832572355,
+  "our_decisions_per_game": 84.575,
+  "opp_decisions_per_game_per_seat": 78.7625,
+  "opp_by_name": {
+   "alphabeta": {
+    "all": {
+     "n": 3126,
+     "mean_ms": 81.5718095431816,
+     "p50_ms": 3.9784549990145024,
+     "p95_ms": 689.3039179994958,
+     "max_ms": 2948.4004210025887,
+     "total_s": 254.9934766319857
+    },
+    "choice": {
+     "n": 1686,
+     "mean_ms": 151.2402654573042,
+     "p50_ms": 12.272907999431482,
+     "p95_ms": 1161.7066760009038,
+     "max_ms": 2948.4004210025887,
+     "total_s": 254.99108756101487
+    },
+    "s_per_game": 6.3748369157996425
+   },
+   "value": {
+    "all": {
+     "n": 3175,
+     "mean_ms": 2.167933677448286,
+     "p50_ms": 0.8910870019462891,
+     "p95_ms": 9.487287999945693,
+     "max_ms": 51.12322900095023,
+     "total_s": 6.883189425898308
+    },
+    "choice": {
+     "n": 1922,
+     "mean_ms": 3.5805848751158194,
+     "p50_ms": 1.7024189983203541,
+     "p95_ms": 11.243463999562664,
+     "max_ms": 51.12322900095023,
+     "total_s": 6.881884129972605
+    },
+    "s_per_game": 0.1720797356474577
+   }
+  }
+ },
+ "unmapped_kinds": {},
+ "format": "2v2-mixed",
+ "our_seats": 2,
+ "null_win_rate": 0.5,
+ "crashed_games": 0,
+ "crash_attempts": 0,
+ "info": {
+  "mode": "full"
+ },
+ "opponents": [
+  "value",
+  "alphabeta"
+ ],
+ "mixed": {
+  "wins": {
+   "catanbot": 27,
+   "value": 3,
+   "alphabeta": 10,
+   "none": 0
+  },
+  "win_rate": {
+   "catanbot": 0.675,
+   "value": 0.075,
+   "alphabeta": 0.25
+  },
+  "avg_vp": {
+   "catanbot": 7.5875,
+   "value": 5.975,
+   "alphabeta": 6.65
+  },
+  "by_seat": {
+   "catanbot": {
+    "0": {
+     "wins": 5,
+     "games": 19
+    },
+    "1": {
+     "wins": 7,
+     "games": 20
+    },
+    "2": {
+     "wins": 8,
+     "games": 20
+    },
+    "3": {
+     "wins": 7,
+     "games": 21
+    }
+   },
+   "value": {
+    "0": {
+     "wins": 0,
+     "games": 9
+    },
+    "1": {
+     "wins": 1,
+     "games": 10
+    },
+    "2": {
+     "wins": 1,
+     "games": 11
+    },
+    "3": {
+     "wins": 1,
+     "games": 10
+    }
+   },
+   "alphabeta": {
+    "0": {
+     "wins": 3,
+     "games": 12
+    },
+    "1": {
+     "wins": 4,
+     "games": 10
+    },
+    "2": {
+     "wins": 0,
+     "games": 9
+    },
+    "3": {
+     "wins": 3,
+     "games": 9
+    }
+   }
+  },
+  "placements": {
+   "alphabeta/catanbot/catanbot/value": {
+    "wins": 4,
+    "games": 4
+   },
+   "alphabeta/catanbot/value/catanbot": {
+    "wins": 1,
+    "games": 4
+   },
+   "alphabeta/value/catanbot/catanbot": {
+    "wins": 3,
+    "games": 4
+   },
+   "catanbot/alphabeta/catanbot/value": {
+    "wins": 1,
+    "games": 3
+   },
+   "catanbot/alphabeta/value/catanbot": {
+    "wins": 1,
+    "games": 4
+   },
+   "catanbot/catanbot/alphabeta/value": {
+    "wins": 3,
+    "games": 3
+   },
+   "catanbot/catanbot/value/alphabeta": {
+    "wins": 2,
+    "games": 3
+   },
+   "catanbot/value/alphabeta/catanbot": {
+    "wins": 3,
+    "games": 3
+   },
+   "catanbot/value/catanbot/alphabeta": {
+    "wins": 1,
+    "games": 3
+   },
+   "value/alphabeta/catanbot/catanbot": {
+    "wins": 3,
+    "games": 3
+   },
+   "value/catanbot/alphabeta/catanbot": {
+    "wins": 3,
+    "games": 3
+   },
+   "value/catanbot/catanbot/alphabeta": {
+    "wins": 2,
+    "games": 3
+   }
+  }
+ },
+ "by_arrangement": {
+  "CCoo": {
+   "wins": 5,
+   "games": 6
+  },
+  "CoCo": {
+   "wins": 2,
+   "games": 6
+  },
+  "CooC": {
+   "wins": 4,
+   "games": 7
+  },
+  "oCCo": {
+   "wins": 6,
+   "games": 7
+  },
+  "oCoC": {
+   "wins": 4,
+   "games": 7
+  },
+  "ooCC": {
+   "wins": 6,
+   "games": 7
+  }
+ },
+ "game_range": [
+  80,
+  120
+ ],
+ "results": [
+  {
+   "seed": 91092832784,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    4,
+    10,
+    3,
+    8
+   ],
+   "turns": 83,
+   "actions": 313,
+   "duration": 9.078918311999587,
+   "game": 80,
+   "seat": null,
+   "arrangement": 8,
+   "pattern": "CooC",
+   "our_vps": [
+    4,
+    8
+   ],
+   "our_vp": 6.0,
+   "opp_vps": [
+    10,
+    3
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 159,
+    "trivial": 64,
+    "searched": 74,
+    "pending_robber": 5,
+    "pending_discard": 16,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 530,
+    "search_time": 0.9993169379995379,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 71,
+     "trivial": 31,
+     "searched": 35,
+     "pending_robber": 2,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 269,
+     "search_time": 0.48572554999918793,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 88,
+     "trivial": 33,
+     "searched": 39,
+     "pending_robber": 3,
+     "pending_discard": 13,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 261,
+     "search_time": 0.51359138800035,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 159,
+     "mean_ms": 7.395659547132395,
+     "p50_ms": 2.8424000011000317,
+     "p95_ms": 32.321955000952585,
+     "max_ms": 91.49703300136025,
+     "total_s": 1.1759098679940507
+    },
+    "ours_choice": {
+     "n": 100,
+     "mean_ms": 10.782114020003064,
+     "p50_ms": 7.432401002006372,
+     "p95_ms": 36.91590800008271,
+     "max_ms": 91.49703300136025,
+     "total_s": 1.0782114020003064
+    },
+    "opp": {
+     "n": 154,
+     "mean_ms": 51.16844130538225,
+     "p50_ms": 1.4050999998289626,
+     "p95_ms": 107.35804800060578,
+     "max_ms": 1364.2538370004331,
+     "total_s": 7.879939961028867
+    },
+    "opp_choice": {
+     "n": 92,
+     "mean_ms": 85.65068679375975,
+     "p50_ms": 5.894835001527099,
+     "p95_ms": 870.8544039982371,
+     "max_ms": 1364.2538370004331,
+     "total_s": 7.879863185025897
+    },
+    "our_search_s": 0.9993169379995379,
+    "opp_seat_s": [
+     7.777005700023437,
+     0.10293426100543002
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 91,
+      "mean_ms": 85.46160109915866,
+      "p50_ms": 5.253590999927837,
+      "p95_ms": 870.8544039982371,
+      "max_ms": 1364.2538370004331,
+      "total_s": 7.777005700023437
+     },
+     "value": {
+      "n": 63,
+      "mean_ms": 1.6338771588163494,
+      "p50_ms": 0.0013189965102355927,
+      "p95_ms": 7.666969999263529,
+      "max_ms": 17.600657000002684,
+      "total_s": 0.10293426100543002
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    3
+   ],
+   "lineup": [
+    "catanbot",
+    "alphabeta",
+    "value",
+    "catanbot"
+   ],
+   "winner_name": "alphabeta",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832785,
+   "winner": "ORANGE",
+   "winner_seat": 2,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    4,
+    5,
+    10,
+    5
+   ],
+   "turns": 56,
+   "actions": 184,
+   "duration": 1.5948856709983374,
+   "game": 81,
+   "seat": null,
+   "arrangement": 9,
+   "pattern": "oCCo",
+   "our_vps": [
+    5,
+    10
+   ],
+   "our_vp": 7.5,
+   "opp_vps": [
+    4,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 95,
+    "trivial": 38,
+    "searched": 52,
+    "pending_robber": 2,
+    "pending_discard": 3,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 331,
+    "search_time": 1.1195554940022703,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 45,
+     "trivial": 26,
+     "searched": 16,
+     "pending_robber": 0,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 166,
+     "search_time": 0.1727503140027693,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 50,
+     "trivial": 12,
+     "searched": 36,
+     "pending_robber": 2,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 165,
+     "search_time": 0.946805179999501,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 95,
+     "mean_ms": 12.945185926525339,
+     "p50_ms": 4.499718997976743,
+     "p95_ms": 67.09634499929962,
+     "max_ms": 134.3763670010958,
+     "total_s": 1.2297926630199072
+    },
+    "ours_choice": {
+     "n": 57,
+     "mean_ms": 20.45727598267963,
+     "p50_ms": 12.669950003328267,
+     "p95_ms": 72.03778699840768,
+     "max_ms": 134.3763670010958,
+     "total_s": 1.1660647310127388
+    },
+    "opp": {
+     "n": 89,
+     "mean_ms": 3.971554550466198,
+     "p50_ms": 0.7266309985425323,
+     "p95_ms": 29.246927999338368,
+     "max_ms": 51.018859001487726,
+     "total_s": 0.35346835499149165
+    },
+    "opp_choice": {
+     "n": 47,
+     "mean_ms": 7.519543552994134,
+     "p50_ms": 3.520790000038687,
+     "p95_ms": 35.90197999801603,
+     "max_ms": 51.018859001487726,
+     "total_s": 0.3534185469907243
+    },
+    "our_search_s": 1.1195554940022703,
+    "opp_seat_s": [
+     0.26416090699422057,
+     0.08930744799727108
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 41,
+      "mean_ms": 6.4429489510785505,
+      "p50_ms": 0.0015369987522717565,
+      "p95_ms": 35.90197999801603,
+      "max_ms": 51.018859001487726,
+      "total_s": 0.26416090699422057
+     },
+     "value": {
+      "n": 48,
+      "mean_ms": 1.860571833276481,
+      "p50_ms": 0.7564320003439207,
+      "p95_ms": 9.586806998413522,
+      "max_ms": 11.822667998785619,
+      "total_s": 0.08930744799727108
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    2
+   ],
+   "lineup": [
+    "alphabeta",
+    "catanbot",
+    "catanbot",
+    "value"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832786,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    6,
+    10,
+    7,
+    4
+   ],
+   "turns": 127,
+   "actions": 444,
+   "duration": 10.59109406999778,
+   "game": 82,
+   "seat": null,
+   "arrangement": 10,
+   "pattern": "oCoC",
+   "our_vps": [
+    10,
+    4
+   ],
+   "our_vp": 7.0,
+   "opp_vps": [
+    6,
+    7
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 215,
+    "trivial": 110,
+    "searched": 96,
+    "pending_robber": 6,
+    "pending_discard": 3,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 777,
+    "search_time": 1.0296780819735432,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 112,
+     "trivial": 53,
+     "searched": 53,
+     "pending_robber": 3,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 392,
+     "search_time": 0.5616082419874147,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 103,
+     "trivial": 57,
+     "searched": 43,
+     "pending_robber": 3,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 385,
+     "search_time": 0.4680698399861285,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 215,
+     "mean_ms": 5.935957172051679,
+     "p50_ms": 2.6644150020729285,
+     "p95_ms": 20.425260001502465,
+     "max_ms": 72.63363799938816,
+     "total_s": 1.276230791991111
+    },
+    "ours_choice": {
+     "n": 110,
+     "mean_ms": 10.074553545299834,
+     "p50_ms": 6.5985399996861815,
+     "p95_ms": 30.165070998918964,
+     "max_ms": 72.63363799938816,
+     "total_s": 1.1082008899829816
+    },
+    "opp": {
+     "n": 229,
+     "mean_ms": 40.55113752822338,
+     "p50_ms": 0.8605969997006468,
+     "p95_ms": 97.41241799929412,
+     "max_ms": 1614.8521239992988,
+     "total_s": 9.286210493963154
+    },
+    "opp_choice": {
+     "n": 130,
+     "mean_ms": 71.43136457679458,
+     "p50_ms": 4.75775000086287,
+     "p95_ms": 842.4403620010708,
+     "max_ms": 1614.8521239992988,
+     "total_s": 9.286077394983295
+    },
+    "our_search_s": 1.0296780819735432,
+    "opp_seat_s": [
+     9.122120182979415,
+     0.16409031098373816
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 114,
+      "mean_ms": 80.01859809631065,
+      "p50_ms": 4.152666002482874,
+      "p95_ms": 844.8391260026256,
+      "max_ms": 1614.8521239992988,
+      "total_s": 9.122120182979415
+     },
+     "value": {
+      "n": 115,
+      "mean_ms": 1.42687226942381,
+      "p50_ms": 0.725686000805581,
+      "p95_ms": 7.001996000326471,
+      "max_ms": 13.077062998490874,
+      "total_s": 0.16409031098373816
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    3
+   ],
+   "lineup": [
+    "alphabeta",
+    "catanbot",
+    "value",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832787,
+   "winner": "ORANGE",
+   "winner_seat": 2,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    7,
+    6,
+    10,
+    6
+   ],
+   "turns": 100,
+   "actions": 360,
+   "duration": 10.081400600000052,
+   "game": 83,
+   "seat": null,
+   "arrangement": 11,
+   "pattern": "ooCC",
+   "our_vps": [
+    10,
+    6
+   ],
+   "our_vp": 8.0,
+   "opp_vps": [
+    7,
+    6
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 197,
+    "trivial": 88,
+    "searched": 80,
+    "pending_robber": 5,
+    "pending_discard": 24,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 608,
+    "search_time": 0.7437305879866472,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "2": {
+     "decisions": 100,
+     "trivial": 45,
+     "searched": 40,
+     "pending_robber": 3,
+     "pending_discard": 12,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 309,
+     "search_time": 0.3650724939907377,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 97,
+     "trivial": 43,
+     "searched": 40,
+     "pending_robber": 2,
+     "pending_discard": 12,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 299,
+     "search_time": 0.37865809399590944,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 197,
+     "mean_ms": 4.825580142091825,
+     "p50_ms": 2.216951997979777,
+     "p95_ms": 18.063176001305692,
+     "max_ms": 46.65293899961398,
+     "total_s": 0.9506392879920895
+    },
+    "ours_choice": {
+     "n": 113,
+     "mean_ms": 7.236368185731086,
+     "p50_ms": 4.450740998436231,
+     "p95_ms": 22.663561001536436,
+     "max_ms": 46.65293899961398,
+     "total_s": 0.8177096049876127
+    },
+    "opp": {
+     "n": 163,
+     "mean_ms": 55.891367429584385,
+     "p50_ms": 1.410994998877868,
+     "p95_ms": 72.314686000027,
+     "max_ms": 2579.4309570010228,
+     "total_s": 9.110292891022254
+    },
+    "opp_choice": {
+     "n": 94,
+     "mean_ms": 96.9171642979184,
+     "p50_ms": 5.641226998704951,
+     "p95_ms": 224.55215199806844,
+     "max_ms": 2579.4309570010228,
+     "total_s": 9.11021344400433
+    },
+    "our_search_s": 0.7437305879866472,
+    "opp_seat_s": [
+     8.972133798011782,
+     0.13815909301047213
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 91,
+      "mean_ms": 98.59487690122837,
+      "p50_ms": 4.820109999855049,
+      "p95_ms": 224.55215199806844,
+      "max_ms": 2579.4309570010228,
+      "total_s": 8.972133798011782
+     },
+     "value": {
+      "n": 72,
+      "mean_ms": 1.918876291812113,
+      "p50_ms": 0.5856420029886067,
+      "p95_ms": 9.370396001031622,
+      "max_ms": 13.072061999992002,
+      "total_s": 0.13815909301047213
+     }
+    }
+   },
+   "our_seats": [
+    2,
+    3
+   ],
+   "lineup": [
+    "alphabeta",
+    "value",
+    "catanbot",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832788,
+   "winner": "WHITE",
+   "winner_seat": 3,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    9,
+    8,
+    7,
+    10
+   ],
+   "turns": 105,
+   "actions": 402,
+   "duration": 11.737807256999076,
+   "game": 84,
+   "seat": null,
+   "arrangement": 0,
+   "pattern": "CCoo",
+   "our_vps": [
+    9,
+    8
+   ],
+   "our_vp": 8.5,
+   "opp_vps": [
+    7,
+    10
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 205,
+    "trivial": 92,
+    "searched": 90,
+    "pending_robber": 7,
+    "pending_discard": 16,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 686,
+    "search_time": 0.8940509559834027,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 113,
+     "trivial": 46,
+     "searched": 53,
+     "pending_robber": 4,
+     "pending_discard": 10,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 343,
+     "search_time": 0.5128224289910577,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "1": {
+     "decisions": 92,
+     "trivial": 46,
+     "searched": 37,
+     "pending_robber": 3,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 343,
+     "search_time": 0.381228526992345,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 205,
+     "mean_ms": 5.559077229306085,
+     "p50_ms": 2.347312998608686,
+     "p95_ms": 21.92521799952374,
+     "max_ms": 54.928953999478836,
+     "total_s": 1.1396108320077474
+    },
+    "ours_choice": {
+     "n": 119,
+     "mean_ms": 8.472653848828088,
+     "p50_ms": 5.464843998197466,
+     "p95_ms": 30.659502001071814,
+     "max_ms": 54.928953999478836,
+     "total_s": 1.0082458080105425
+    },
+    "opp": {
+     "n": 197,
+     "mean_ms": 53.65559351772335,
+     "p50_ms": 1.325810000707861,
+     "p95_ms": 85.15589799935697,
+     "max_ms": 2948.4004210025887,
+     "total_s": 10.5701519229915
+    },
+    "opp_choice": {
+     "n": 115,
+     "mean_ms": 91.91344422604585,
+     "p50_ms": 6.670735998341115,
+     "p95_ms": 133.38956799998414,
+     "max_ms": 2948.4004210025887,
+     "total_s": 10.570046085995273
+    },
+    "our_search_s": 0.8940509559834027,
+    "opp_seat_s": [
+     0.2190255139794317,
+     10.351126409012068
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 104,
+      "mean_ms": 99.53006162511603,
+      "p50_ms": 4.9403850025555585,
+      "p95_ms": 133.38956799998414,
+      "max_ms": 2948.4004210025887,
+      "total_s": 10.351126409012068
+     },
+     "value": {
+      "n": 93,
+      "mean_ms": 2.3551130535422766,
+      "p50_ms": 0.8602520028944127,
+      "p95_ms": 9.797671998967417,
+      "max_ms": 13.28734699927736,
+      "total_s": 0.2190255139794317
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    1
+   ],
+   "lineup": [
+    "catanbot",
+    "catanbot",
+    "value",
+    "alphabeta"
+   ],
+   "winner_name": "alphabeta",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832789,
+   "winner": "WHITE",
+   "winner_seat": 3,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    6,
+    5,
+    3,
+    10
+   ],
+   "turns": 81,
+   "actions": 303,
+   "duration": 7.161375076000695,
+   "game": 85,
+   "seat": null,
+   "arrangement": 1,
+   "pattern": "CoCo",
+   "our_vps": [
+    6,
+    3
+   ],
+   "our_vp": 4.5,
+   "opp_vps": [
+    5,
+    10
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 153,
+    "trivial": 60,
+    "searched": 68,
+    "pending_robber": 2,
+    "pending_discard": 23,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 511,
+    "search_time": 0.9480236849885841,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 78,
+     "trivial": 27,
+     "searched": 38,
+     "pending_robber": 0,
+     "pending_discard": 13,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 254,
+     "search_time": 0.6134241229920008,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 75,
+     "trivial": 33,
+     "searched": 30,
+     "pending_robber": 2,
+     "pending_discard": 10,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 257,
+     "search_time": 0.33459956199658336,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 153,
+     "mean_ms": 7.330891777896528,
+     "p50_ms": 2.989838001667522,
+     "p95_ms": 29.964492001454346,
+     "max_ms": 79.69559699995443,
+     "total_s": 1.1216264420181687
+    },
+    "ours_choice": {
+     "n": 93,
+     "mean_ms": 10.633619720621976,
+     "p50_ms": 5.647938000038266,
+     "p95_ms": 37.29333800220047,
+     "max_ms": 79.69559699995443,
+     "total_s": 0.9889266340178438
+    },
+    "opp": {
+     "n": 150,
+     "mean_ms": 40.10400616680272,
+     "p50_ms": 1.5044369974930305,
+     "p95_ms": 118.81739100135746,
+     "max_ms": 1266.3333160016919,
+     "total_s": 6.015600925020408
+    },
+    "opp_choice": {
+     "n": 92,
+     "mean_ms": 65.38598471766106,
+     "p50_ms": 7.219438000902301,
+     "p95_ms": 185.72449699786375,
+     "max_ms": 1266.3333160016919,
+     "total_s": 6.015510594024818
+    },
+    "our_search_s": 0.9480236849885841,
+    "opp_seat_s": [
+     0.13260262600670103,
+     5.882998299013707
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 85,
+      "mean_ms": 69.2117446942789,
+      "p50_ms": 6.5691790005075745,
+      "p95_ms": 185.72449699786375,
+      "max_ms": 1266.3333160016919,
+      "total_s": 5.882998299013707
+     },
+     "value": {
+      "n": 65,
+      "mean_ms": 2.0400404001030927,
+      "p50_ms": 1.1135280001326464,
+      "p95_ms": 8.302310001454316,
+      "max_ms": 12.685172998317285,
+      "total_s": 0.13260262600670103
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    2
+   ],
+   "lineup": [
+    "catanbot",
+    "value",
+    "catanbot",
+    "alphabeta"
+   ],
+   "winner_name": "alphabeta",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832790,
+   "winner": "RED",
+   "winner_seat": 0,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    10,
+    4,
+    6,
+    4
+   ],
+   "turns": 94,
+   "actions": 327,
+   "duration": 5.764958576000936,
+   "game": 86,
+   "seat": null,
+   "arrangement": 2,
+   "pattern": "CooC",
+   "our_vps": [
+    10,
+    4
+   ],
+   "our_vp": 7.0,
+   "opp_vps": [
+    4,
+    6
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 167,
+    "trivial": 81,
+    "searched": 73,
+    "pending_robber": 10,
+    "pending_discard": 3,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 587,
+    "search_time": 1.1070008849928854,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 100,
+     "trivial": 40,
+     "searched": 49,
+     "pending_robber": 8,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 299,
+     "search_time": 0.8586973050005327,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 67,
+     "trivial": 41,
+     "searched": 24,
+     "pending_robber": 2,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 288,
+     "search_time": 0.24830357999235275,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 167,
+     "mean_ms": 7.999507215572521,
+     "p50_ms": 3.1231120010488667,
+     "p95_ms": 41.1472119994869,
+     "max_ms": 93.71587399800774,
+     "total_s": 1.335917705000611
+    },
+    "ours_choice": {
+     "n": 88,
+     "mean_ms": 13.342983102244364,
+     "p50_ms": 6.204561999766156,
+     "p95_ms": 49.75805499998387,
+     "max_ms": 93.71587399800774,
+     "total_s": 1.174182512997504
+    },
+    "opp": {
+     "n": 160,
+     "mean_ms": 27.550273424890293,
+     "p50_ms": 0.5759359992225654,
+     "p95_ms": 51.51876699892455,
+     "max_ms": 1046.8592850011191,
+     "total_s": 4.408043747982447
+    },
+    "opp_choice": {
+     "n": 83,
+     "mean_ms": 53.10783245772929,
+     "p50_ms": 5.7709759967110585,
+     "p95_ms": 81.16694199998165,
+     "max_ms": 1046.8592850011191,
+     "total_s": 4.407950093991531
+    },
+    "our_search_s": 1.1070008849928854,
+    "opp_seat_s": [
+     0.1958964949917572,
+     4.21214725299069
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 74,
+      "mean_ms": 56.920908824198506,
+      "p50_ms": 0.0017809979908633977,
+      "p95_ms": 695.765954998933,
+      "max_ms": 1046.8592850011191,
+      "total_s": 4.21214725299069
+     },
+     "value": {
+      "n": 86,
+      "mean_ms": 2.2778662208343863,
+      "p50_ms": 1.013648998196004,
+      "p95_ms": 8.457263000309467,
+      "max_ms": 14.072411999222822,
+      "total_s": 0.1958964949917572
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    3
+   ],
+   "lineup": [
+    "catanbot",
+    "value",
+    "alphabeta",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832791,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    5,
+    10,
+    8,
+    6
+   ],
+   "turns": 103,
+   "actions": 395,
+   "duration": 10.447500337999372,
+   "game": 87,
+   "seat": null,
+   "arrangement": 3,
+   "pattern": "oCCo",
+   "our_vps": [
+    10,
+    8
+   ],
+   "our_vp": 9.0,
+   "opp_vps": [
+    5,
+    6
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 193,
+    "trivial": 80,
+    "searched": 89,
+    "pending_robber": 3,
+    "pending_discard": 21,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 663,
+    "search_time": 0.7789827280103054,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 93,
+     "trivial": 41,
+     "searched": 46,
+     "pending_robber": 3,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 334,
+     "search_time": 0.3546460590005154,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 100,
+     "trivial": 39,
+     "searched": 43,
+     "pending_robber": 0,
+     "pending_discard": 18,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 329,
+     "search_time": 0.42433666900979006,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 193,
+     "mean_ms": 5.131446875646437,
+     "p50_ms": 2.439015999698313,
+     "p95_ms": 19.56539299862925,
+     "max_ms": 44.843421997939004,
+     "total_s": 0.9903692469997623
+    },
+    "ours_choice": {
+     "n": 115,
+     "mean_ms": 7.470142391242047,
+     "p50_ms": 4.107892000320135,
+     "p95_ms": 25.931552998372354,
+     "max_ms": 44.843421997939004,
+     "total_s": 0.8590663749928353
+    },
+    "opp": {
+     "n": 202,
+     "mean_ms": 46.68791306926998,
+     "p50_ms": 1.3121709998813458,
+     "p95_ms": 59.785363999253605,
+     "max_ms": 2410.6311540017487,
+     "total_s": 9.430958439992537
+    },
+    "opp_choice": {
+     "n": 126,
+     "mean_ms": 74.84815304748722,
+     "p50_ms": 4.453869998542359,
+     "p95_ms": 131.07609300277545,
+     "max_ms": 2410.6311540017487,
+     "total_s": 9.430867283983389
+    },
+    "our_search_s": 0.7789827280103054,
+    "opp_seat_s": [
+     0.20379666000008,
+     9.227161779992457
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 97,
+      "mean_ms": 95.12537917517997,
+      "p50_ms": 4.966832999343751,
+      "p95_ms": 161.2850060009805,
+      "max_ms": 2410.6311540017487,
+      "total_s": 9.227161779992457
+     },
+     "value": {
+      "n": 105,
+      "mean_ms": 1.9409205714293334,
+      "p50_ms": 1.107973999751266,
+      "p95_ms": 8.890305998647818,
+      "max_ms": 13.059469998552231,
+      "total_s": 0.20379666000008
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    2
+   ],
+   "lineup": [
+    "value",
+    "catanbot",
+    "catanbot",
+    "alphabeta"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832792,
+   "winner": "WHITE",
+   "winner_seat": 3,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    7,
+    5,
+    5,
+    10
+   ],
+   "turns": 101,
+   "actions": 366,
+   "duration": 7.999314800999855,
+   "game": 88,
+   "seat": null,
+   "arrangement": 4,
+   "pattern": "oCoC",
+   "our_vps": [
+    5,
+    10
+   ],
+   "our_vp": 7.5,
+   "opp_vps": [
+    7,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 180,
+    "trivial": 81,
+    "searched": 87,
+    "pending_robber": 3,
+    "pending_discard": 9,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 642,
+    "search_time": 1.3167512660002103,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 76,
+     "trivial": 47,
+     "searched": 26,
+     "pending_robber": 0,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 320,
+     "search_time": 0.1461444280030264,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 104,
+     "trivial": 34,
+     "searched": 61,
+     "pending_robber": 3,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 322,
+     "search_time": 1.170606837997184,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 180,
+     "mean_ms": 8.6017599834223,
+     "p50_ms": 3.6562179993779864,
+     "p95_ms": 36.24692799712648,
+     "max_ms": 159.08081200177548,
+     "total_s": 1.5483167970160139
+    },
+    "ours_choice": {
+     "n": 102,
+     "mean_ms": 13.602526627472994,
+     "p50_ms": 7.356516998697771,
+     "p95_ms": 48.060668999823974,
+     "max_ms": 159.08081200177548,
+     "total_s": 1.3874577160022454
+    },
+    "opp": {
+     "n": 186,
+     "mean_ms": 34.54067411834702,
+     "p50_ms": 0.9811909985728562,
+     "p95_ms": 42.92007300318801,
+     "max_ms": 1748.8945219993184,
+     "total_s": 6.424565386012546
+    },
+    "opp_choice": {
+     "n": 109,
+     "mean_ms": 58.9400102570159,
+     "p50_ms": 5.480218002048787,
+     "p95_ms": 162.03563300223323,
+     "max_ms": 1748.8945219993184,
+     "total_s": 6.424461118014733
+    },
+    "our_search_s": 1.3167512660002103,
+    "opp_seat_s": [
+     0.2522322739896481,
+     6.172333112022898
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 83,
+      "mean_ms": 74.36545918099877,
+      "p50_ms": 4.050699000799796,
+      "p95_ms": 162.81418700236827,
+      "max_ms": 1748.8945219993184,
+      "total_s": 6.172333112022898
+     },
+     "value": {
+      "n": 103,
+      "mean_ms": 2.4488570290257097,
+      "p50_ms": 0.9811909985728562,
+      "p95_ms": 9.717913999338634,
+      "max_ms": 19.688938999024685,
+      "total_s": 0.2522322739896481
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    3
+   ],
+   "lineup": [
+    "value",
+    "catanbot",
+    "alphabeta",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832793,
+   "winner": "ORANGE",
+   "winner_seat": 2,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    4,
+    6,
+    10,
+    8
+   ],
+   "turns": 92,
+   "actions": 359,
+   "duration": 6.641456305002066,
+   "game": 89,
+   "seat": null,
+   "arrangement": 5,
+   "pattern": "ooCC",
+   "our_vps": [
+    10,
+    8
+   ],
+   "our_vp": 9.0,
+   "opp_vps": [
+    4,
+    6
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 196,
+    "trivial": 76,
+    "searched": 89,
+    "pending_robber": 8,
+    "pending_discard": 23,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 589,
+    "search_time": 1.1509142429968051,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "2": {
+     "decisions": 110,
+     "trivial": 40,
+     "searched": 51,
+     "pending_robber": 6,
+     "pending_discard": 13,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 301,
+     "search_time": 0.8791305479935545,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 86,
+     "trivial": 36,
+     "searched": 38,
+     "pending_robber": 2,
+     "pending_discard": 10,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 288,
+     "search_time": 0.2717836950032506,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 196,
+     "mean_ms": 6.870684132675762,
+     "p50_ms": 2.078649999020854,
+     "p95_ms": 26.356225997005822,
+     "max_ms": 154.3463480011269,
+     "total_s": 1.3466540900044492
+    },
+    "ours_choice": {
+     "n": 123,
+     "mean_ms": 10.078154943222787,
+     "p50_ms": 3.8062120001995936,
+     "p95_ms": 46.98907799684093,
+     "max_ms": 154.3463480011269,
+     "total_s": 1.2396130580164026
+    },
+    "opp": {
+     "n": 163,
+     "mean_ms": 32.34845479113172,
+     "p50_ms": 0.7158570006140508,
+     "p95_ms": 41.24063100243802,
+     "max_ms": 1049.0821209969,
+     "total_s": 5.27279813095447
+    },
+    "opp_choice": {
+     "n": 92,
+     "mean_ms": 57.311930651928336,
+     "p50_ms": 4.187509999610484,
+     "p95_ms": 784.1345929991803,
+     "max_ms": 1049.0821209969,
+     "total_s": 5.272697619977407
+    },
+    "our_search_s": 1.1509142429968051,
+    "opp_seat_s": [
+     0.1430862559718662,
+     5.129711874982604
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 79,
+      "mean_ms": 64.93306170864055,
+      "p50_ms": 0.0028340000426396728,
+      "p95_ms": 797.5433859974146,
+      "max_ms": 1049.0821209969,
+      "total_s": 5.129711874982604
+     },
+     "value": {
+      "n": 84,
+      "mean_ms": 1.7034078091888833,
+      "p50_ms": 0.7791120006004348,
+      "p95_ms": 7.816184999683173,
+      "max_ms": 14.132195999991382,
+      "total_s": 0.1430862559718662
+     }
+    }
+   },
+   "our_seats": [
+    2,
+    3
+   ],
+   "lineup": [
+    "value",
+    "alphabeta",
+    "catanbot",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832794,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    7,
+    10,
+    5,
+    5
+   ],
+   "turns": 95,
+   "actions": 363,
+   "duration": 11.84142481100207,
+   "game": 90,
+   "seat": null,
+   "arrangement": 6,
+   "pattern": "CCoo",
+   "our_vps": [
+    7,
+    10
+   ],
+   "our_vp": 8.5,
+   "opp_vps": [
+    5,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 181,
+    "trivial": 82,
+    "searched": 87,
+    "pending_robber": 9,
+    "pending_discard": 3,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 641,
+    "search_time": 0.9800230459914019,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 95,
+     "trivial": 41,
+     "searched": 45,
+     "pending_robber": 6,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 320,
+     "search_time": 0.5445000169966079,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "1": {
+     "decisions": 86,
+     "trivial": 41,
+     "searched": 42,
+     "pending_robber": 3,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 321,
+     "search_time": 0.435523028994794,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 181,
+     "mean_ms": 6.653288071932502,
+     "p50_ms": 2.7166689978912473,
+     "p95_ms": 23.568879001686582,
+     "max_ms": 70.15726900135633,
+     "total_s": 1.2042451410197827
+    },
+    "ours_choice": {
+     "n": 102,
+     "mean_ms": 10.616154901999478,
+     "p50_ms": 6.431939997128211,
+     "p95_ms": 37.11093499805429,
+     "max_ms": 70.15726900135633,
+     "total_s": 1.0828478000039468
+    },
+    "opp": {
+     "n": 182,
+     "mean_ms": 58.32697076390844,
+     "p50_ms": 0.7929349994810764,
+     "p95_ms": 39.29060300288256,
+     "max_ms": 2526.7366359985317,
+     "total_s": 10.615508679031336
+    },
+    "opp_choice": {
+     "n": 113,
+     "mean_ms": 93.94184682309366,
+     "p50_ms": 3.931148003175622,
+     "p95_ms": 760.5323869975109,
+     "max_ms": 2526.7366359985317,
+     "total_s": 10.615428691009583
+    },
+    "our_search_s": 0.9800230459914019,
+    "opp_seat_s": [
+     10.481932647009671,
+     0.13357603202166501
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 93,
+      "mean_ms": 112.70895319365238,
+      "p50_ms": 3.931148003175622,
+      "p95_ms": 1151.7436809990613,
+      "max_ms": 2526.7366359985317,
+      "total_s": 10.481932647009671
+     },
+     "value": {
+      "n": 89,
+      "mean_ms": 1.5008542923782586,
+      "p50_ms": 0.709021001966903,
+      "p95_ms": 8.353276003617793,
+      "max_ms": 14.225255999917863,
+      "total_s": 0.13357603202166501
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    1
+   ],
+   "lineup": [
+    "catanbot",
+    "catanbot",
+    "alphabeta",
+    "value"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832795,
+   "winner": "WHITE",
+   "winner_seat": 3,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    6,
+    5,
+    7,
+    10
+   ],
+   "turns": 81,
+   "actions": 303,
+   "duration": 2.1776752890000353,
+   "game": 91,
+   "seat": null,
+   "arrangement": 7,
+   "pattern": "CoCo",
+   "our_vps": [
+    6,
+    7
+   ],
+   "our_vp": 6.5,
+   "opp_vps": [
+    5,
+    10
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 177,
+    "trivial": 62,
+    "searched": 84,
+    "pending_robber": 8,
+    "pending_discard": 23,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 521,
+    "search_time": 1.1178945660030877,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 84,
+     "trivial": 35,
+     "searched": 40,
+     "pending_robber": 3,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 259,
+     "search_time": 0.45430631200724747,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 93,
+     "trivial": 27,
+     "searched": 44,
+     "pending_robber": 5,
+     "pending_discard": 17,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 262,
+     "search_time": 0.6635882539958402,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 177,
+     "mean_ms": 7.387004417772925,
+     "p50_ms": 1.6983179993985686,
+     "p95_ms": 32.33038400139776,
+     "max_ms": 114.20372900101938,
+     "total_s": 1.3074997819458076
+    },
+    "ours_choice": {
+     "n": 119,
+     "mean_ms": 10.335794747662788,
+     "p50_ms": 3.3696639984555077,
+     "p95_ms": 54.25887499950477,
+     "max_ms": 114.20372900101938,
+     "total_s": 1.229959574971872
+    },
+    "opp": {
+     "n": 126,
+     "mean_ms": 6.752474547702438,
+     "p50_ms": 0.002229000529041514,
+     "p95_ms": 33.909136000147555,
+     "max_ms": 95.14149200185784,
+     "total_s": 0.8508117930105072
+    },
+    "opp_choice": {
+     "n": 58,
+     "mean_ms": 14.667656844941465,
+     "p50_ms": 8.822290998068638,
+     "p95_ms": 38.75088700078777,
+     "max_ms": 95.14149200185784,
+     "total_s": 0.850724097006605
+    },
+    "our_search_s": 1.1178945660030877,
+    "opp_seat_s": [
+     0.5756465200101957,
+     0.27516527300031157
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 55,
+      "mean_ms": 10.46630036382174,
+      "p50_ms": 0.002229000529041514,
+      "p95_ms": 38.75088700078777,
+      "max_ms": 95.14149200185784,
+      "total_s": 0.5756465200101957
+     },
+     "value": {
+      "n": 71,
+      "mean_ms": 3.875567225356501,
+      "p50_ms": 0.8067600028880406,
+      "p95_ms": 14.222768997569801,
+      "max_ms": 20.98301800288027,
+      "total_s": 0.27516527300031157
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    2
+   ],
+   "lineup": [
+    "catanbot",
+    "alphabeta",
+    "catanbot",
+    "value"
+   ],
+   "winner_name": "value",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832796,
+   "winner": "WHITE",
+   "winner_seat": 3,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    8,
+    7,
+    6,
+    10
+   ],
+   "turns": 89,
+   "actions": 327,
+   "duration": 7.596001444999274,
+   "game": 92,
+   "seat": null,
+   "arrangement": 8,
+   "pattern": "CooC",
+   "our_vps": [
+    8,
+    10
+   ],
+   "our_vp": 9.0,
+   "opp_vps": [
+    7,
+    6
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 183,
+    "trivial": 72,
+    "searched": 94,
+    "pending_robber": 4,
+    "pending_discard": 13,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 578,
+    "search_time": 1.030955657002778,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 95,
+     "trivial": 36,
+     "searched": 51,
+     "pending_robber": 2,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 288,
+     "search_time": 0.5132021559948043,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 88,
+     "trivial": 36,
+     "searched": 43,
+     "pending_robber": 2,
+     "pending_discard": 7,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 290,
+     "search_time": 0.5177535010079737,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 183,
+     "mean_ms": 6.6234462677532635,
+     "p50_ms": 2.755415000137873,
+     "p95_ms": 19.84758699836675,
+     "max_ms": 103.89632000078564,
+     "total_s": 1.2120906669988472
+    },
+    "ours_choice": {
+     "n": 117,
+     "mean_ms": 9.503682564063949,
+     "p50_ms": 6.130252000730252,
+     "p95_ms": 37.62021299917251,
+     "max_ms": 103.89632000078564,
+     "total_s": 1.111930859995482
+    },
+    "opp": {
+     "n": 144,
+     "mean_ms": 44.18448313190816,
+     "p50_ms": 1.0556660017755348,
+     "p95_ms": 52.531758999975864,
+     "max_ms": 1631.7882449984609,
+     "total_s": 6.362565570994775
+    },
+    "opp_choice": {
+     "n": 84,
+     "mean_ms": 75.74372409540263,
+     "p50_ms": 5.166647999431007,
+     "p95_ms": 761.7843650004943,
+     "max_ms": 1631.7882449984609,
+     "total_s": 6.362472824013821
+    },
+    "our_search_s": 1.030955657002778,
+    "opp_seat_s": [
+     6.252923267984443,
+     0.1096423030103324
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 75,
+      "mean_ms": 83.37231023979257,
+      "p50_ms": 5.05385599899455,
+      "p95_ms": 896.2298660007946,
+      "max_ms": 1631.7882449984609,
+      "total_s": 6.252923267984443
+     },
+     "value": {
+      "n": 69,
+      "mean_ms": 1.589018884207716,
+      "p50_ms": 0.634552001429256,
+      "p95_ms": 7.178746000136016,
+      "max_ms": 12.644237001950387,
+      "total_s": 0.1096423030103324
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    3
+   ],
+   "lineup": [
+    "catanbot",
+    "alphabeta",
+    "value",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832797,
+   "winner": "ORANGE",
+   "winner_seat": 2,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    4,
+    7,
+    10,
+    8
+   ],
+   "turns": 72,
+   "actions": 261,
+   "duration": 3.915403762999631,
+   "game": 93,
+   "seat": null,
+   "arrangement": 9,
+   "pattern": "oCCo",
+   "our_vps": [
+    7,
+    10
+   ],
+   "our_vp": 8.5,
+   "opp_vps": [
+    4,
+    8
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 139,
+    "trivial": 62,
+    "searched": 61,
+    "pending_robber": 6,
+    "pending_discard": 10,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 454,
+    "search_time": 0.5746767880118568,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 78,
+     "trivial": 33,
+     "searched": 32,
+     "pending_robber": 6,
+     "pending_discard": 7,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 227,
+     "search_time": 0.30622322400449775,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 61,
+     "trivial": 29,
+     "searched": 29,
+     "pending_robber": 0,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 227,
+     "search_time": 0.2684535640073591,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 139,
+     "mean_ms": 5.282872410154217,
+     "p50_ms": 2.413911002804525,
+     "p95_ms": 19.436604001384694,
+     "max_ms": 57.3647980017995,
+     "total_s": 0.7343192650114361
+    },
+    "ours_choice": {
+     "n": 77,
+     "mean_ms": 8.14649894830352,
+     "p50_ms": 4.003361002105521,
+     "p95_ms": 28.54176999971969,
+     "max_ms": 57.3647980017995,
+     "total_s": 0.627280419019371
+    },
+    "opp": {
+     "n": 122,
+     "mean_ms": 25.954901672134913,
+     "p50_ms": 1.100040000892477,
+     "p95_ms": 37.73229999933392,
+     "max_ms": 1284.2233330011368,
+     "total_s": 3.1664980040004593
+    },
+    "opp_choice": {
+     "n": 67,
+     "mean_ms": 47.25969619398507,
+     "p50_ms": 6.444028000260005,
+     "p95_ms": 77.81759999852511,
+     "max_ms": 1284.2233330011368,
+     "total_s": 3.166399644997
+    },
+    "our_search_s": 0.5746767880118568,
+    "opp_seat_s": [
+     3.0074596449958335,
+     0.15903835900462582
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 58,
+      "mean_ms": 51.852752499928165,
+      "p50_ms": 3.0787059986323584,
+      "p95_ms": 87.18986099847825,
+      "max_ms": 1284.2233330011368,
+      "total_s": 3.0074596449958335
+     },
+     "value": {
+      "n": 64,
+      "mean_ms": 2.4849743594472784,
+      "p50_ms": 1.0139059995708521,
+      "p95_ms": 9.767991999979131,
+      "max_ms": 13.528290997783188,
+      "total_s": 0.15903835900462582
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    2
+   ],
+   "lineup": [
+    "alphabeta",
+    "catanbot",
+    "catanbot",
+    "value"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832798,
+   "winner": "RED",
+   "winner_seat": 0,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    10,
+    9,
+    5,
+    8
+   ],
+   "turns": 86,
+   "actions": 343,
+   "duration": 12.03954012000031,
+   "game": 94,
+   "seat": null,
+   "arrangement": 10,
+   "pattern": "oCoC",
+   "our_vps": [
+    9,
+    8
+   ],
+   "our_vp": 8.5,
+   "opp_vps": [
+    10,
+    5
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 172,
+    "trivial": 74,
+    "searched": 74,
+    "pending_robber": 4,
+    "pending_discard": 20,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 571,
+    "search_time": 1.1432124999955704,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 93,
+     "trivial": 37,
+     "searched": 40,
+     "pending_robber": 2,
+     "pending_discard": 14,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 285,
+     "search_time": 0.7358270779914164,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 79,
+     "trivial": 37,
+     "searched": 34,
+     "pending_robber": 2,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 286,
+     "search_time": 0.40738542200415395,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 172,
+     "mean_ms": 7.794180784828292,
+     "p50_ms": 2.8057939998689108,
+     "p95_ms": 30.223710000427673,
+     "max_ms": 131.19360999917262,
+     "total_s": 1.3405990949904663
+    },
+    "ours_choice": {
+     "n": 101,
+     "mean_ms": 12.009898188096324,
+     "p50_ms": 6.852160000562435,
+     "p95_ms": 37.01755599831813,
+     "max_ms": 131.19360999917262,
+     "total_s": 1.2129997169977287
+    },
+    "opp": {
+     "n": 171,
+     "mean_ms": 62.42125100596251,
+     "p50_ms": 1.8605329969432205,
+     "p95_ms": 80.64704899879871,
+     "max_ms": 2220.165984999767,
+     "total_s": 10.67403392201959
+    },
+    "opp_choice": {
+     "n": 106,
+     "mean_ms": 100.69750478321095,
+     "p50_ms": 7.515281999076251,
+     "p95_ms": 145.76300699991407,
+     "max_ms": 2220.165984999767,
+     "total_s": 10.67393550702036
+    },
+    "our_search_s": 1.1432124999955704,
+    "opp_seat_s": [
+     10.474486872026318,
+     0.19954704999327078
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 99,
+      "mean_ms": 105.80289769723554,
+      "p50_ms": 6.5599900008237455,
+      "p95_ms": 1121.9044559984468,
+      "max_ms": 2220.165984999767,
+      "total_s": 10.474486872026318
+     },
+     "value": {
+      "n": 72,
+      "mean_ms": 2.7714868054620942,
+      "p50_ms": 1.1814440003945492,
+      "p95_ms": 11.439593999966746,
+      "max_ms": 14.063391001400305,
+      "total_s": 0.19954704999327078
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    3
+   ],
+   "lineup": [
+    "alphabeta",
+    "catanbot",
+    "value",
+    "catanbot"
+   ],
+   "winner_name": "alphabeta",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832799,
+   "winner": "WHITE",
+   "winner_seat": 3,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    3,
+    4,
+    8,
+    10
+   ],
+   "turns": 73,
+   "actions": 258,
+   "duration": 2.0059273450024193,
+   "game": 95,
+   "seat": null,
+   "arrangement": 11,
+   "pattern": "ooCC",
+   "our_vps": [
+    8,
+    10
+   ],
+   "our_vp": 9.0,
+   "opp_vps": [
+    3,
+    4
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 149,
+    "trivial": 61,
+    "searched": 68,
+    "pending_robber": 7,
+    "pending_discard": 13,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 448,
+    "search_time": 0.6450257980141032,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "2": {
+     "decisions": 77,
+     "trivial": 29,
+     "searched": 36,
+     "pending_robber": 5,
+     "pending_discard": 7,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 224,
+     "search_time": 0.36586635099956766,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 72,
+     "trivial": 32,
+     "searched": 32,
+     "pending_robber": 2,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 224,
+     "search_time": 0.27915944701453554,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 149,
+     "mean_ms": 5.140950261766986,
+     "p50_ms": 1.7377080002916045,
+     "p95_ms": 19.41840400104411,
+     "max_ms": 99.67949799829512,
+     "total_s": 0.766001589003281
+    },
+    "ours_choice": {
+     "n": 95,
+     "mean_ms": 7.407174621001008,
+     "p50_ms": 3.431601002375828,
+     "p95_ms": 27.082361000793753,
+     "max_ms": 99.67949799829512,
+     "total_s": 0.7036815889950958
+    },
+    "opp": {
+     "n": 109,
+     "mean_ms": 11.248310990737048,
+     "p50_ms": 0.002420001692371443,
+     "p95_ms": 16.57299899670761,
+     "max_ms": 840.834825001366,
+     "total_s": 1.2260658979903383
+    },
+    "opp_choice": {
+     "n": 48,
+     "mean_ms": 25.541404478948,
+     "p50_ms": 4.9888939975062385,
+     "p95_ms": 49.749689002055675,
+     "max_ms": 840.834825001366,
+     "total_s": 1.225987414989504
+    },
+    "our_search_s": 0.6450257980141032,
+    "opp_seat_s": [
+     1.1210602340106561,
+     0.10500566397968214
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 48,
+      "mean_ms": 23.35542154188867,
+      "p50_ms": 0.00246399940806441,
+      "p95_ms": 49.749689002055675,
+      "max_ms": 840.834825001366,
+      "total_s": 1.1210602340106561
+     },
+     "value": {
+      "n": 61,
+      "mean_ms": 1.7214043275357729,
+      "p50_ms": 0.0011539996194187552,
+      "p95_ms": 7.576906999020139,
+      "max_ms": 16.57299899670761,
+      "total_s": 0.10500566397968214
+     }
+    }
+   },
+   "our_seats": [
+    2,
+    3
+   ],
+   "lineup": [
+    "alphabeta",
+    "value",
+    "catanbot",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832800,
+   "winner": "RED",
+   "winner_seat": 0,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    10,
+    5,
+    5,
+    7
+   ],
+   "turns": 94,
+   "actions": 335,
+   "duration": 12.811507552996773,
+   "game": 96,
+   "seat": null,
+   "arrangement": 0,
+   "pattern": "CCoo",
+   "our_vps": [
+    10,
+    5
+   ],
+   "our_vp": 7.5,
+   "opp_vps": [
+    5,
+    7
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 172,
+    "trivial": 77,
+    "searched": 79,
+    "pending_robber": 7,
+    "pending_discard": 9,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 598,
+    "search_time": 1.0870717329889885,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 91,
+     "trivial": 44,
+     "searched": 37,
+     "pending_robber": 4,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 305,
+     "search_time": 0.4172119750001002,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "1": {
+     "decisions": 81,
+     "trivial": 33,
+     "searched": 42,
+     "pending_robber": 3,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 293,
+     "search_time": 0.6698597579888883,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 172,
+     "mean_ms": 7.54557890711514,
+     "p50_ms": 2.151241998944897,
+     "p95_ms": 25.619584001105977,
+     "max_ms": 91.72757000123966,
+     "total_s": 1.297839572023804
+    },
+    "ours_choice": {
+     "n": 100,
+     "mean_ms": 11.78945386018313,
+     "p50_ms": 5.386757002270315,
+     "p95_ms": 40.18700999949942,
+     "max_ms": 91.72757000123966,
+     "total_s": 1.178945386018313
+    },
+    "opp": {
+     "n": 163,
+     "mean_ms": 70.4966591350119,
+     "p50_ms": 0.8987420005723834,
+     "p95_ms": 210.02431400120258,
+     "max_ms": 1995.317860997602,
+     "total_s": 11.490955439006939
+    },
+    "opp_choice": {
+     "n": 91,
+     "mean_ms": 126.27312700007658,
+     "p50_ms": 5.965078998997342,
+     "p95_ms": 1121.3446029978513,
+     "max_ms": 1995.317860997602,
+     "total_s": 11.49085455700697
+    },
+    "our_search_s": 1.0870717329889885,
+    "opp_seat_s": [
+     0.14306451900483808,
+     11.3478909200021
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 81,
+      "mean_ms": 140.09741876545803,
+      "p50_ms": 5.573537000600481,
+      "p95_ms": 1121.3446029978513,
+      "max_ms": 1995.317860997602,
+      "total_s": 11.3478909200021
+     },
+     "value": {
+      "n": 82,
+      "mean_ms": 1.744689256156562,
+      "p50_ms": 0.8335060010722373,
+      "p95_ms": 7.036504001007415,
+      "max_ms": 15.123577002668753,
+      "total_s": 0.14306451900483808
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    1
+   ],
+   "lineup": [
+    "catanbot",
+    "catanbot",
+    "value",
+    "alphabeta"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832801,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    8,
+    10,
+    6,
+    3
+   ],
+   "turns": 91,
+   "actions": 321,
+   "duration": 8.980602483999974,
+   "game": 97,
+   "seat": null,
+   "arrangement": 1,
+   "pattern": "CoCo",
+   "our_vps": [
+    8,
+    6
+   ],
+   "our_vp": 7.0,
+   "opp_vps": [
+    10,
+    3
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 178,
+    "trivial": 71,
+    "searched": 85,
+    "pending_robber": 7,
+    "pending_discard": 15,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 580,
+    "search_time": 1.0307486679957947,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 88,
+     "trivial": 34,
+     "searched": 43,
+     "pending_robber": 5,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 295,
+     "search_time": 0.7037832410132978,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 90,
+     "trivial": 37,
+     "searched": 42,
+     "pending_robber": 2,
+     "pending_discard": 9,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 285,
+     "search_time": 0.32696542698249687,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 178,
+     "mean_ms": 6.98290153373369,
+     "p50_ms": 2.921962997788796,
+     "p95_ms": 22.978236000199104,
+     "max_ms": 111.18750600144267,
+     "total_s": 1.2429564730045968
+    },
+    "ours_choice": {
+     "n": 109,
+     "mean_ms": 10.283382623804863,
+     "p50_ms": 5.395254000177374,
+     "p95_ms": 44.45833799763932,
+     "max_ms": 111.18750600144267,
+     "total_s": 1.1208887059947301
+    },
+    "opp": {
+     "n": 143,
+     "mean_ms": 53.96037512573648,
+     "p50_ms": 0.0021649975678883493,
+     "p95_ms": 39.94105900346767,
+     "max_ms": 2265.595877997839,
+     "total_s": 7.716333642980317
+    },
+    "opp_choice": {
+     "n": 64,
+     "mean_ms": 120.56603884366268,
+     "p50_ms": 6.905654998263344,
+     "p95_ms": 1085.226260998752,
+     "max_ms": 2265.595877997839,
+     "total_s": 7.716226485994412
+    },
+    "our_search_s": 1.0307486679957947,
+    "opp_seat_s": [
+     0.24996660098986467,
+     7.466367041990452
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 63,
+      "mean_ms": 118.51376257127701,
+      "p50_ms": 0.0019430008251219988,
+      "p95_ms": 1085.226260998752,
+      "max_ms": 2265.595877997839,
+      "total_s": 7.466367041990452
+     },
+     "value": {
+      "n": 80,
+      "mean_ms": 3.1245825123733084,
+      "p50_ms": 0.9232060001522768,
+      "p95_ms": 13.125519999448443,
+      "max_ms": 15.071556998009328,
+      "total_s": 0.24996660098986467
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    2
+   ],
+   "lineup": [
+    "catanbot",
+    "value",
+    "catanbot",
+    "alphabeta"
+   ],
+   "winner_name": "value",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832802,
+   "winner": "RED",
+   "winner_seat": 0,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    10,
+    5,
+    6,
+    7
+   ],
+   "turns": 86,
+   "actions": 324,
+   "duration": 10.251687955998932,
+   "game": 98,
+   "seat": null,
+   "arrangement": 2,
+   "pattern": "CooC",
+   "our_vps": [
+    10,
+    7
+   ],
+   "our_vp": 8.5,
+   "opp_vps": [
+    5,
+    6
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 164,
+    "trivial": 68,
+    "searched": 77,
+    "pending_robber": 2,
+    "pending_discard": 17,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 539,
+    "search_time": 1.028667298007349,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 87,
+     "trivial": 34,
+     "searched": 40,
+     "pending_robber": 0,
+     "pending_discard": 13,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 274,
+     "search_time": 0.40450491999217775,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 77,
+     "trivial": 34,
+     "searched": 37,
+     "pending_robber": 2,
+     "pending_discard": 4,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 265,
+     "search_time": 0.6241623780151713,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 164,
+     "mean_ms": 7.327637756023295,
+     "p50_ms": 2.5118300000031013,
+     "p95_ms": 22.78008199937176,
+     "max_ms": 111.95041099927039,
+     "total_s": 1.2017325919878203
+    },
+    "ours_choice": {
+     "n": 96,
+     "mean_ms": 11.26940782277567,
+     "p50_ms": 5.9665029984898865,
+     "p95_ms": 34.8642179997114,
+     "max_ms": 111.95041099927039,
+     "total_s": 1.0818631509864645
+    },
+    "opp": {
+     "n": 160,
+     "mean_ms": 56.439725443669886,
+     "p50_ms": 1.1895659990841523,
+     "p95_ms": 65.46151500151609,
+     "max_ms": 2672.8050659985456,
+     "total_s": 9.030356070987182
+    },
+    "opp_choice": {
+     "n": 101,
+     "mean_ms": 89.40861752464367,
+     "p50_ms": 3.371589999005664,
+     "p95_ms": 95.79950599800213,
+     "max_ms": 2672.8050659985456,
+     "total_s": 9.030270369989012
+    },
+    "our_search_s": 1.028667298007349,
+    "opp_seat_s": [
+     0.1604684679878119,
+     8.86988760299937
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 77,
+      "mean_ms": 115.19334549349831,
+      "p50_ms": 3.0655049995402806,
+      "p95_ms": 1011.8945489994076,
+      "max_ms": 2672.8050659985456,
+      "total_s": 8.86988760299937
+     },
+     "value": {
+      "n": 83,
+      "mean_ms": 1.9333550359977336,
+      "p50_ms": 1.1479509994387627,
+      "p95_ms": 7.776389000355266,
+      "max_ms": 13.571029998274753,
+      "total_s": 0.1604684679878119
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    3
+   ],
+   "lineup": [
+    "catanbot",
+    "value",
+    "alphabeta",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832803,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    4,
+    10,
+    6,
+    5
+   ],
+   "turns": 83,
+   "actions": 297,
+   "duration": 8.60644091100039,
+   "game": 99,
+   "seat": null,
+   "arrangement": 3,
+   "pattern": "oCCo",
+   "our_vps": [
+    10,
+    6
+   ],
+   "our_vp": 8.0,
+   "opp_vps": [
+    4,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 164,
+    "trivial": 70,
+    "searched": 81,
+    "pending_robber": 7,
+    "pending_discard": 6,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 521,
+    "search_time": 1.1056911449995823,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 97,
+     "trivial": 39,
+     "searched": 52,
+     "pending_robber": 6,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 267,
+     "search_time": 0.8163237890075834,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 67,
+     "trivial": 31,
+     "searched": 29,
+     "pending_robber": 1,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 254,
+     "search_time": 0.2893673559919989,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 164,
+     "mean_ms": 7.761257408652099,
+     "p50_ms": 2.550341003370704,
+     "p95_ms": 36.969701999623794,
+     "max_ms": 102.89475600075093,
+     "total_s": 1.2728462150189443
+    },
+    "ours_choice": {
+     "n": 95,
+     "mean_ms": 12.396648200152221,
+     "p50_ms": 6.588291998923523,
+     "p95_ms": 40.47469400029513,
+     "max_ms": 102.89475600075093,
+     "total_s": 1.177681579014461
+    },
+    "opp": {
+     "n": 133,
+     "mean_ms": 54.99923671442574,
+     "p50_ms": 0.0031050003599375486,
+     "p95_ms": 218.8926700000593,
+     "max_ms": 1434.169333002501,
+     "total_s": 7.314898483018624
+    },
+    "opp_choice": {
+     "n": 63,
+     "mean_ms": 116.10753620652036,
+     "p50_ms": 8.754638001846615,
+     "p95_ms": 924.8193999992509,
+     "max_ms": 1434.169333002501,
+     "total_s": 7.314774781010783
+    },
+    "our_search_s": 1.1056911449995823,
+    "opp_seat_s": [
+     0.08815580100781517,
+     7.2267426820108085
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 74,
+      "mean_ms": 97.65868489203795,
+      "p50_ms": 6.451371002185624,
+      "p95_ms": 924.8193999992509,
+      "max_ms": 1434.169333002501,
+      "total_s": 7.2267426820108085
+     },
+     "value": {
+      "n": 59,
+      "mean_ms": 1.4941661187765283,
+      "p50_ms": 0.0009899995347950608,
+      "p95_ms": 9.044980000908254,
+      "max_ms": 14.776518000871874,
+      "total_s": 0.08815580100781517
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    2
+   ],
+   "lineup": [
+    "value",
+    "catanbot",
+    "catanbot",
+    "alphabeta"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832804,
+   "winner": "WHITE",
+   "winner_seat": 3,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    7,
+    4,
+    2,
+    10
+   ],
+   "turns": 65,
+   "actions": 221,
+   "duration": 4.291433007001615,
+   "game": 100,
+   "seat": null,
+   "arrangement": 4,
+   "pattern": "oCoC",
+   "our_vps": [
+    4,
+    10
+   ],
+   "our_vp": 7.0,
+   "opp_vps": [
+    7,
+    2
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 122,
+    "trivial": 48,
+    "searched": 62,
+    "pending_robber": 4,
+    "pending_discard": 8,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 391,
+    "search_time": 0.7870264229968598,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 45,
+     "trivial": 26,
+     "searched": 19,
+     "pending_robber": 0,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 193,
+     "search_time": 0.12968311599979643,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 77,
+     "trivial": 22,
+     "searched": 43,
+     "pending_robber": 4,
+     "pending_discard": 8,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 198,
+     "search_time": 0.6573433069970633,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 122,
+     "mean_ms": 7.328478057478024,
+     "p50_ms": 2.5523090007482097,
+     "p95_ms": 33.318336001684656,
+     "max_ms": 148.8900520016614,
+     "total_s": 0.8940743230123189
+    },
+    "ours_choice": {
+     "n": 76,
+     "mean_ms": 10.864124092222482,
+     "p50_ms": 3.723270001501078,
+     "p95_ms": 49.98070000146981,
+     "max_ms": 148.8900520016614,
+     "total_s": 0.8256734310089087
+    },
+    "opp": {
+     "n": 99,
+     "mean_ms": 34.191806525206005,
+     "p50_ms": 0.0018749997252598405,
+     "p95_ms": 36.02271799900336,
+     "max_ms": 1552.3747190018184,
+     "total_s": 3.3849888459953945
+    },
+    "opp_choice": {
+     "n": 43,
+     "mean_ms": 78.71914518579806,
+     "p50_ms": 5.864394999662181,
+     "p95_ms": 39.806867000152124,
+     "max_ms": 1552.3747190018184,
+     "total_s": 3.3849232429893163
+    },
+    "our_search_s": 0.7870264229968598,
+    "opp_seat_s": [
+     0.1503066040095291,
+     3.2346822419858654
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 41,
+      "mean_ms": 78.89468882892355,
+      "p50_ms": 0.0017940001271199435,
+      "p95_ms": 39.806867000152124,
+      "max_ms": 1552.3747190018184,
+      "total_s": 3.2346822419858654
+     },
+     "value": {
+      "n": 58,
+      "mean_ms": 2.591493172578088,
+      "p50_ms": 0.882285999978194,
+      "p95_ms": 12.228651998157147,
+      "max_ms": 14.776866999454796,
+      "total_s": 0.1503066040095291
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    3
+   ],
+   "lineup": [
+    "value",
+    "catanbot",
+    "alphabeta",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832805,
+   "winner": "WHITE",
+   "winner_seat": 3,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    4,
+    5,
+    9,
+    10
+   ],
+   "turns": 73,
+   "actions": 259,
+   "duration": 2.1967270269997243,
+   "game": 101,
+   "seat": null,
+   "arrangement": 5,
+   "pattern": "ooCC",
+   "our_vps": [
+    9,
+    10
+   ],
+   "our_vp": 9.5,
+   "opp_vps": [
+    4,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 141,
+    "trivial": 60,
+    "searched": 73,
+    "pending_robber": 5,
+    "pending_discard": 3,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 458,
+    "search_time": 0.7015181099923211,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "2": {
+     "decisions": 64,
+     "trivial": 34,
+     "searched": 27,
+     "pending_robber": 3,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 228,
+     "search_time": 0.17696134200377855,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 77,
+     "trivial": 26,
+     "searched": 46,
+     "pending_robber": 2,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 230,
+     "search_time": 0.5245567679885426,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 141,
+     "mean_ms": 5.9032209363273935,
+     "p50_ms": 2.6575470001262147,
+     "p95_ms": 16.81075799933751,
+     "max_ms": 119.51044399756938,
+     "total_s": 0.8323541520221625
+    },
+    "ours_choice": {
+     "n": 88,
+     "mean_ms": 8.65967832975333,
+     "p50_ms": 5.093030002171872,
+     "p95_ms": 23.499663999245968,
+     "max_ms": 119.51044399756938,
+     "total_s": 0.762051693018293
+    },
+    "opp": {
+     "n": 118,
+     "mean_ms": 11.440702084840623,
+     "p50_ms": 0.7674480002606288,
+     "p95_ms": 47.44160099653527,
+     "max_ms": 599.4616559983115,
+     "total_s": 1.3500028460111935
+    },
+    "opp_choice": {
+     "n": 61,
+     "mean_ms": 22.129944164127487,
+     "p50_ms": 4.747287999634864,
+     "p95_ms": 66.89272600124241,
+     "max_ms": 599.4616559983115,
+     "total_s": 1.3499265940117766
+    },
+    "our_search_s": 0.7015181099923211,
+    "opp_seat_s": [
+     0.08933482200154685,
+     1.2606680240096466
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 60,
+      "mean_ms": 21.01113373349411,
+      "p50_ms": 0.006152000423753634,
+      "p95_ms": 66.89272600124241,
+      "max_ms": 599.4616559983115,
+      "total_s": 1.2606680240096466
+     },
+     "value": {
+      "n": 58,
+      "mean_ms": 1.5402555517508079,
+      "p50_ms": 0.7674480002606288,
+      "p95_ms": 6.910030999279115,
+      "max_ms": 12.365137998131104,
+      "total_s": 0.08933482200154685
+     }
+    }
+   },
+   "our_seats": [
+    2,
+    3
+   ],
+   "lineup": [
+    "value",
+    "alphabeta",
+    "catanbot",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832806,
+   "winner": "RED",
+   "winner_seat": 0,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    10,
+    7,
+    9,
+    9
+   ],
+   "turns": 86,
+   "actions": 328,
+   "duration": 6.922798388997762,
+   "game": 102,
+   "seat": null,
+   "arrangement": 6,
+   "pattern": "CCoo",
+   "our_vps": [
+    10,
+    7
+   ],
+   "our_vp": 8.5,
+   "opp_vps": [
+    9,
+    9
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 168,
+    "trivial": 67,
+    "searched": 88,
+    "pending_robber": 8,
+    "pending_discard": 5,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 588,
+    "search_time": 1.3259586880121788,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 91,
+     "trivial": 34,
+     "searched": 46,
+     "pending_robber": 6,
+     "pending_discard": 5,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 303,
+     "search_time": 0.7610195020060928,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "1": {
+     "decisions": 77,
+     "trivial": 33,
+     "searched": 42,
+     "pending_robber": 2,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 285,
+     "search_time": 0.564939186006086,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 168,
+     "mean_ms": 9.013365357207347,
+     "p50_ms": 3.4593810014484916,
+     "p95_ms": 35.52121100074146,
+     "max_ms": 105.50962900015293,
+     "total_s": 1.5142453800108342
+    },
+    "ours_choice": {
+     "n": 105,
+     "mean_ms": 13.38410661898836,
+     "p50_ms": 7.569523000711342,
+     "p95_ms": 44.99485300038941,
+     "max_ms": 105.50962900015293,
+     "total_s": 1.405331194993778
+    },
+    "opp": {
+     "n": 160,
+     "mean_ms": 33.65014744999826,
+     "p50_ms": 4.282048001186922,
+     "p95_ms": 58.53985700014164,
+     "max_ms": 1531.7747439985396,
+     "total_s": 5.384023591999721
+    },
+    "opp_choice": {
+     "n": 102,
+     "mean_ms": 52.783727215700864,
+     "p50_ms": 6.989737998083001,
+     "p95_ms": 92.88504399955855,
+     "max_ms": 1531.7747439985396,
+     "total_s": 5.383940176001488
+    },
+    "our_search_s": 1.3259586880121788,
+    "opp_seat_s": [
+     5.169718494991685,
+     0.21430509700803668
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 89,
+      "mean_ms": 58.08672466282792,
+      "p50_ms": 6.134485000075074,
+      "p95_ms": 98.66445899751852,
+      "max_ms": 1531.7747439985396,
+      "total_s": 5.169718494991685
+     },
+     "value": {
+      "n": 71,
+      "mean_ms": 3.0183816480005166,
+      "p50_ms": 1.097496999136638,
+      "p95_ms": 9.745282997755567,
+      "max_ms": 13.766309999482473,
+      "total_s": 0.21430509700803668
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    1
+   ],
+   "lineup": [
+    "catanbot",
+    "catanbot",
+    "alphabeta",
+    "value"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832807,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    9,
+    10,
+    7,
+    5
+   ],
+   "turns": 91,
+   "actions": 310,
+   "duration": 4.508855242998834,
+   "game": 103,
+   "seat": null,
+   "arrangement": 7,
+   "pattern": "CoCo",
+   "our_vps": [
+    9,
+    7
+   ],
+   "our_vp": 8.0,
+   "opp_vps": [
+    10,
+    5
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 152,
+    "trivial": 81,
+    "searched": 64,
+    "pending_robber": 4,
+    "pending_discard": 3,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 557,
+    "search_time": 0.6197152239947172,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 77,
+     "trivial": 41,
+     "searched": 33,
+     "pending_robber": 0,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 284,
+     "search_time": 0.34027810398401925,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 75,
+     "trivial": 40,
+     "searched": 31,
+     "pending_robber": 4,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 273,
+     "search_time": 0.279437120010698,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 152,
+     "mean_ms": 5.1292612696143856,
+     "p50_ms": 2.037623002252076,
+     "p95_ms": 16.226725998421898,
+     "max_ms": 72.59412400162546,
+     "total_s": 0.7796477129813866
+    },
+    "ours_choice": {
+     "n": 72,
+     "mean_ms": 9.219518999897344,
+     "p50_ms": 4.800856000656495,
+     "p95_ms": 41.66657200039481,
+     "max_ms": 72.59412400162546,
+     "total_s": 0.6638053679926088
+    },
+    "opp": {
+     "n": 158,
+     "mean_ms": 23.487827183584436,
+     "p50_ms": 0.9219580024364404,
+     "p95_ms": 50.77403099858202,
+     "max_ms": 947.9251699995075,
+     "total_s": 3.7110766950063407
+    },
+    "opp_choice": {
+     "n": 94,
+     "mean_ms": 39.478651712999365,
+     "p50_ms": 4.938786998536671,
+     "p95_ms": 81.26457900289097,
+     "max_ms": 947.9251699995075,
+     "total_s": 3.7109932610219403
+    },
+    "our_search_s": 0.6197152239947172,
+    "opp_seat_s": [
+     3.548566484998446,
+     0.16251021000789478
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 74,
+      "mean_ms": 47.95360114862765,
+      "p50_ms": 0.00354500298271887,
+      "p95_ms": 101.62554099952104,
+      "max_ms": 947.9251699995075,
+      "total_s": 3.548566484998446
+     },
+     "value": {
+      "n": 84,
+      "mean_ms": 1.9346453572368427,
+      "p50_ms": 0.9219580024364404,
+      "p95_ms": 7.625883001310285,
+      "max_ms": 13.151936000213027,
+      "total_s": 0.16251021000789478
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    2
+   ],
+   "lineup": [
+    "catanbot",
+    "alphabeta",
+    "catanbot",
+    "value"
+   ],
+   "winner_name": "alphabeta",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832808,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    2,
+    10,
+    5,
+    8
+   ],
+   "turns": 99,
+   "actions": 344,
+   "duration": 8.11274733800019,
+   "game": 104,
+   "seat": null,
+   "arrangement": 8,
+   "pattern": "CooC",
+   "our_vps": [
+    2,
+    8
+   ],
+   "our_vp": 5.0,
+   "opp_vps": [
+    10,
+    5
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 168,
+    "trivial": 78,
+    "searched": 83,
+    "pending_robber": 4,
+    "pending_discard": 3,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 612,
+    "search_time": 1.148588167030539,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 70,
+     "trivial": 42,
+     "searched": 25,
+     "pending_robber": 0,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 310,
+     "search_time": 0.4834122850188578,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 98,
+     "trivial": 36,
+     "searched": 58,
+     "pending_robber": 4,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 302,
+     "search_time": 0.6651758820116811,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 168,
+     "mean_ms": 7.914799738002676,
+     "p50_ms": 3.142351000860799,
+     "p95_ms": 49.63322800176684,
+     "max_ms": 80.69128200077103,
+     "total_s": 1.3296863559844496
+    },
+    "ours_choice": {
+     "n": 92,
+     "mean_ms": 13.113631554282936,
+     "p50_ms": 6.703139002638636,
+     "p95_ms": 64.16791000083322,
+     "max_ms": 80.69128200077103,
+     "total_s": 1.20645410299403
+    },
+    "opp": {
+     "n": 176,
+     "mean_ms": 38.40911100556613,
+     "p50_ms": 1.5033720010251272,
+     "p95_ms": 103.22185300174169,
+     "max_ms": 2240.6628509997972,
+     "total_s": 6.760003536979639
+    },
+    "opp_choice": {
+     "n": 105,
+     "mean_ms": 64.3800907333484,
+     "p50_ms": 7.949625000037486,
+     "p95_ms": 145.78505199824576,
+     "max_ms": 2240.6628509997972,
+     "total_s": 6.759909527001582
+    },
+    "our_search_s": 1.148588167030539,
+    "opp_seat_s": [
+     6.58182602398665,
+     0.17817751299298834
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 92,
+      "mean_ms": 71.5415872172462,
+      "p50_ms": 6.33275899963337,
+      "p95_ms": 161.6665599976841,
+      "max_ms": 2240.6628509997972,
+      "total_s": 6.58182602398665
+     },
+     "value": {
+      "n": 84,
+      "mean_ms": 2.121160868964147,
+      "p50_ms": 0.6794069995521568,
+      "p95_ms": 9.713663999718847,
+      "max_ms": 13.337409000087064,
+      "total_s": 0.17817751299298834
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    3
+   ],
+   "lineup": [
+    "catanbot",
+    "alphabeta",
+    "value",
+    "catanbot"
+   ],
+   "winner_name": "alphabeta",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832809,
+   "winner": "ORANGE",
+   "winner_seat": 2,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    4,
+    8,
+    10,
+    5
+   ],
+   "turns": 76,
+   "actions": 281,
+   "duration": 4.091605482000887,
+   "game": 105,
+   "seat": null,
+   "arrangement": 9,
+   "pattern": "oCCo",
+   "our_vps": [
+    8,
+    10
+   ],
+   "our_vp": 9.0,
+   "opp_vps": [
+    4,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 147,
+    "trivial": 62,
+    "searched": 75,
+    "pending_robber": 6,
+    "pending_discard": 4,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 497,
+    "search_time": 1.062858591983968,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 70,
+     "trivial": 29,
+     "searched": 38,
+     "pending_robber": 3,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 247,
+     "search_time": 0.48449837998487055,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 77,
+     "trivial": 33,
+     "searched": 37,
+     "pending_robber": 3,
+     "pending_discard": 4,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 250,
+     "search_time": 0.5783602119990974,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 147,
+     "mean_ms": 8.256187979852603,
+     "p50_ms": 2.6297190015611704,
+     "p95_ms": 43.2623609995062,
+     "max_ms": 113.7604100003955,
+     "total_s": 1.2136596330383327
+    },
+    "ours_choice": {
+     "n": 88,
+     "mean_ms": 12.7419328297368,
+     "p50_ms": 5.052274998888606,
+     "p95_ms": 62.52967399996123,
+     "max_ms": 113.7604100003955,
+     "total_s": 1.1212900890168385
+    },
+    "opp": {
+     "n": 134,
+     "mean_ms": 21.34425014921715,
+     "p50_ms": 0.9691160012152977,
+     "p95_ms": 35.959638000349514,
+     "max_ms": 1161.7066760009038,
+     "total_s": 2.8601295199950982
+    },
+    "opp_choice": {
+     "n": 78,
+     "mean_ms": 36.6672754359733,
+     "p50_ms": 2.6015350013040006,
+     "p95_ms": 49.38244799996028,
+     "max_ms": 1161.7066760009038,
+     "total_s": 2.860047484005918
+    },
+    "our_search_s": 1.062858591983968,
+    "opp_seat_s": [
+     2.703650680996361,
+     0.15647883899873705
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 59,
+      "mean_ms": 45.82458781349765,
+      "p50_ms": 0.002878001396311447,
+      "p95_ms": 102.30770999987726,
+      "max_ms": 1161.7066760009038,
+      "total_s": 2.703650680996361
+     },
+     "value": {
+      "n": 75,
+      "mean_ms": 2.0863845199831608,
+      "p50_ms": 1.0088299968629144,
+      "p95_ms": 9.269001002394361,
+      "max_ms": 13.865512002666947,
+      "total_s": 0.15647883899873705
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    2
+   ],
+   "lineup": [
+    "alphabeta",
+    "catanbot",
+    "catanbot",
+    "value"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832810,
+   "winner": "ORANGE",
+   "winner_seat": 2,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    6,
+    6,
+    10,
+    8
+   ],
+   "turns": 100,
+   "actions": 375,
+   "duration": 22.371657317999052,
+   "game": 106,
+   "seat": null,
+   "arrangement": 10,
+   "pattern": "oCoC",
+   "our_vps": [
+    6,
+    8
+   ],
+   "our_vp": 7.0,
+   "opp_vps": [
+    6,
+    10
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 184,
+    "trivial": 72,
+    "searched": 88,
+    "pending_robber": 5,
+    "pending_discard": 19,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 655,
+    "search_time": 1.5542790109902853,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 88,
+     "trivial": 38,
+     "searched": 37,
+     "pending_robber": 3,
+     "pending_discard": 10,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 334,
+     "search_time": 0.3781185040024866,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 96,
+     "trivial": 34,
+     "searched": 51,
+     "pending_robber": 2,
+     "pending_discard": 9,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 321,
+     "search_time": 1.1761605069877987,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 184,
+     "mean_ms": 9.752778190174823,
+     "p50_ms": 3.4019310005533043,
+     "p95_ms": 49.17555499923765,
+     "max_ms": 142.3652659977961,
+     "total_s": 1.7945111869921675
+    },
+    "ours_choice": {
+     "n": 115,
+     "mean_ms": 14.350411825896868,
+     "p50_ms": 5.314611000358127,
+     "p95_ms": 70.67482200000086,
+     "max_ms": 142.3652659977961,
+     "total_s": 1.6502973599781399
+    },
+    "opp": {
+     "n": 191,
+     "mean_ms": 107.58419949727828,
+     "p50_ms": 1.5284809996956028,
+     "p95_ms": 1342.179491002753,
+     "max_ms": 2465.991960001702,
+     "total_s": 20.548582103980152
+    },
+    "opp_choice": {
+     "n": 113,
+     "mean_ms": 181.84485238050476,
+     "p50_ms": 6.585774000996025,
+     "p95_ms": 1902.0268979984394,
+     "max_ms": 2465.991960001702,
+     "total_s": 20.54846831899704
+    },
+    "our_search_s": 1.5542790109902853,
+    "opp_seat_s": [
+     20.250489579000714,
+     0.29809252497943817
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 95,
+      "mean_ms": 213.16304820000752,
+      "p50_ms": 2.863279998564394,
+      "p95_ms": 1939.9771229982434,
+      "max_ms": 2465.991960001702,
+      "total_s": 20.250489579000714
+     },
+     "value": {
+      "n": 96,
+      "mean_ms": 3.105130468535814,
+      "p50_ms": 1.2643549998756498,
+      "p95_ms": 12.351425997621845,
+      "max_ms": 21.388670997112058,
+      "total_s": 0.29809252497943817
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    3
+   ],
+   "lineup": [
+    "alphabeta",
+    "catanbot",
+    "value",
+    "catanbot"
+   ],
+   "winner_name": "value",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832811,
+   "winner": "ORANGE",
+   "winner_seat": 2,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    5,
+    5,
+    10,
+    5
+   ],
+   "turns": 108,
+   "actions": 426,
+   "duration": 7.342223327999818,
+   "game": 107,
+   "seat": null,
+   "arrangement": 11,
+   "pattern": "ooCC",
+   "our_vps": [
+    10,
+    5
+   ],
+   "our_vp": 7.5,
+   "opp_vps": [
+    5,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 248,
+    "trivial": 94,
+    "searched": 102,
+    "pending_robber": 10,
+    "pending_discard": 42,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 667,
+    "search_time": 1.6439726859789516,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "2": {
+     "decisions": 126,
+     "trivial": 48,
+     "searched": 52,
+     "pending_robber": 3,
+     "pending_discard": 23,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 338,
+     "search_time": 0.9944040909977048,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 122,
+     "trivial": 46,
+     "searched": 50,
+     "pending_robber": 7,
+     "pending_discard": 19,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 329,
+     "search_time": 0.6495685949812469,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 248,
+     "mean_ms": 7.52275436694148,
+     "p50_ms": 1.7502699993201531,
+     "p95_ms": 39.32021299988264,
+     "max_ms": 161.82493300220813,
+     "total_s": 1.865643083001487
+    },
+    "ours_choice": {
+     "n": 159,
+     "mean_ms": 10.855424666632466,
+     "p50_ms": 2.6689060032367706,
+     "p95_ms": 64.14520100224763,
+     "max_ms": 161.82493300220813,
+     "total_s": 1.7260125219945621
+    },
+    "opp": {
+     "n": 178,
+     "mean_ms": 30.653994117917104,
+     "p50_ms": 0.7343510005739518,
+     "p95_ms": 29.174396997404983,
+     "max_ms": 1484.5909519972338,
+     "total_s": 5.456410952989245
+    },
+    "opp_choice": {
+     "n": 98,
+     "mean_ms": 55.67662512227371,
+     "p50_ms": 3.920360999472905,
+     "p95_ms": 85.28939499956323,
+     "max_ms": 1484.5909519972338,
+     "total_s": 5.456309261982824
+    },
+    "our_search_s": 1.6439726859789516,
+    "opp_seat_s": [
+     5.332504332982353,
+     0.1239066200068919
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 85,
+      "mean_ms": 62.735345093910034,
+      "p50_ms": 2.784231000987347,
+      "p95_ms": 85.28939499956323,
+      "max_ms": 1484.5909519972338,
+      "total_s": 5.332504332982353
+     },
+     "value": {
+      "n": 93,
+      "mean_ms": 1.3323292473859345,
+      "p50_ms": 0.7182340013969224,
+      "p95_ms": 6.464038997364696,
+      "max_ms": 12.226399001519894,
+      "total_s": 0.1239066200068919
+     }
+    }
+   },
+   "our_seats": [
+    2,
+    3
+   ],
+   "lineup": [
+    "alphabeta",
+    "value",
+    "catanbot",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832812,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    8,
+    10,
+    5,
+    5
+   ],
+   "turns": 75,
+   "actions": 281,
+   "duration": 6.273732681998808,
+   "game": 108,
+   "seat": null,
+   "arrangement": 0,
+   "pattern": "CCoo",
+   "our_vps": [
+    8,
+    10
+   ],
+   "our_vp": 9.0,
+   "opp_vps": [
+    5,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 152,
+    "trivial": 56,
+    "searched": 83,
+    "pending_robber": 7,
+    "pending_discard": 6,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 505,
+    "search_time": 1.6215542160098266,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 55,
+     "trivial": 33,
+     "searched": 22,
+     "pending_robber": 0,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 252,
+     "search_time": 0.2590202440005669,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "1": {
+     "decisions": 97,
+     "trivial": 23,
+     "searched": 61,
+     "pending_robber": 7,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 253,
+     "search_time": 1.3625339720092597,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 152,
+     "mean_ms": 11.886432466948655,
+     "p50_ms": 3.347038000356406,
+     "p95_ms": 58.905818998027826,
+     "max_ms": 134.5332419987244,
+     "total_s": 1.8067377349761955
+    },
+    "ours_choice": {
+     "n": 97,
+     "mean_ms": 17.47255620614748,
+     "p50_ms": 6.741624001733726,
+     "p95_ms": 95.88498800076195,
+     "max_ms": 134.5332419987244,
+     "total_s": 1.6948379519963055
+    },
+    "opp": {
+     "n": 129,
+     "mean_ms": 34.472101062053206,
+     "p50_ms": 1.7824889982875902,
+     "p95_ms": 56.59808400014299,
+     "max_ms": 1244.4739809980092,
+     "total_s": 4.446901037004864
+    },
+    "opp_choice": {
+     "n": 84,
+     "mean_ms": 52.93845102386556,
+     "p50_ms": 6.198998999025207,
+     "p95_ms": 107.78010299691232,
+     "max_ms": 1244.4739809980092,
+     "total_s": 4.446829886004707
+    },
+    "our_search_s": 1.6215542160098266,
+    "opp_seat_s": [
+     0.20464811399870086,
+     4.242252923006163
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 65,
+      "mean_ms": 65.26542958471019,
+      "p50_ms": 6.024311998771736,
+      "p95_ms": 195.65578100082348,
+      "max_ms": 1244.4739809980092,
+      "total_s": 4.242252923006163
+     },
+     "value": {
+      "n": 64,
+      "mean_ms": 3.197626781229701,
+      "p50_ms": 1.0513879969948903,
+      "p95_ms": 9.987564997572917,
+      "max_ms": 51.12322900095023,
+      "total_s": 0.20464811399870086
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    1
+   ],
+   "lineup": [
+    "catanbot",
+    "catanbot",
+    "value",
+    "alphabeta"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832813,
+   "winner": "RED",
+   "winner_seat": 0,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    10,
+    8,
+    6,
+    8
+   ],
+   "turns": 86,
+   "actions": 322,
+   "duration": 6.477718891001132,
+   "game": 109,
+   "seat": null,
+   "arrangement": 1,
+   "pattern": "CoCo",
+   "our_vps": [
+    10,
+    6
+   ],
+   "our_vp": 8.0,
+   "opp_vps": [
+    8,
+    8
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 157,
+    "trivial": 78,
+    "searched": 64,
+    "pending_robber": 5,
+    "pending_discard": 10,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 573,
+    "search_time": 0.43994360398937715,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 90,
+     "trivial": 40,
+     "searched": 36,
+     "pending_robber": 4,
+     "pending_discard": 10,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 291,
+     "search_time": 0.3137473719980335,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 67,
+     "trivial": 38,
+     "searched": 28,
+     "pending_robber": 1,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 282,
+     "search_time": 0.12619623199134367,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 157,
+     "mean_ms": 3.9068524524186525,
+     "p50_ms": 1.8184569998993538,
+     "p95_ms": 14.97113200093736,
+     "max_ms": 47.86007200164022,
+     "total_s": 0.6133758350297285
+    },
+    "ours_choice": {
+     "n": 84,
+     "mean_ms": 5.9057795119553615,
+     "p50_ms": 3.1916489970171824,
+     "p95_ms": 21.610301002510823,
+     "max_ms": 47.86007200164022,
+     "total_s": 0.4960854790042504
+    },
+    "opp": {
+     "n": 165,
+     "mean_ms": 35.433679066706894,
+     "p50_ms": 1.4912760016159154,
+     "p95_ms": 38.61809299996821,
+     "max_ms": 1516.0658989989315,
+     "total_s": 5.846557046006637
+    },
+    "opp_choice": {
+     "n": 104,
+     "mean_ms": 56.21600249049572,
+     "p50_ms": 5.478151997522218,
+     "p95_ms": 94.22242100117728,
+     "max_ms": 1516.0658989989315,
+     "total_s": 5.8464642590115545
+    },
+    "our_search_s": 0.43994360398937715,
+    "opp_seat_s": [
+     0.2292785480058228,
+     5.617278498000815
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 76,
+      "mean_ms": 73.91155918422125,
+      "p50_ms": 4.596821003360674,
+      "p95_ms": 813.8599660014734,
+      "max_ms": 1516.0658989989315,
+      "total_s": 5.617278498000815
+     },
+     "value": {
+      "n": 89,
+      "mean_ms": 2.5761634607395822,
+      "p50_ms": 1.3133470019965898,
+      "p95_ms": 10.683828997571254,
+      "max_ms": 14.290056999016088,
+      "total_s": 0.2292785480058228
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    2
+   ],
+   "lineup": [
+    "catanbot",
+    "value",
+    "catanbot",
+    "alphabeta"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832814,
+   "winner": "WHITE",
+   "winner_seat": 3,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    7,
+    8,
+    5,
+    10
+   ],
+   "turns": 105,
+   "actions": 366,
+   "duration": 8.525006481999299,
+   "game": 110,
+   "seat": null,
+   "arrangement": 2,
+   "pattern": "CooC",
+   "our_vps": [
+    7,
+    10
+   ],
+   "our_vp": 8.5,
+   "opp_vps": [
+    8,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 178,
+    "trivial": 93,
+    "searched": 70,
+    "pending_robber": 9,
+    "pending_discard": 6,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 653,
+    "search_time": 0.5533366239833413,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 87,
+     "trivial": 46,
+     "searched": 37,
+     "pending_robber": 4,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 326,
+     "search_time": 0.31237170998429065,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 91,
+     "trivial": 47,
+     "searched": 33,
+     "pending_robber": 5,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 327,
+     "search_time": 0.24096491399905062,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 178,
+     "mean_ms": 4.252207123540705,
+     "p50_ms": 1.6128649986058008,
+     "p95_ms": 17.006494999805,
+     "max_ms": 57.606393998867134,
+     "total_s": 0.7568928679902456
+    },
+    "ours_choice": {
+     "n": 89,
+     "mean_ms": 6.997262022277835,
+     "p50_ms": 3.3767290005926043,
+     "p95_ms": 29.17096099918126,
+     "max_ms": 57.606393998867134,
+     "total_s": 0.6227563199827273
+    },
+    "opp": {
+     "n": 188,
+     "mean_ms": 41.20885123948609,
+     "p50_ms": 1.2193899965495802,
+     "p95_ms": 54.43994300003396,
+     "max_ms": 1488.162273002672,
+     "total_s": 7.747264033023384
+    },
+    "opp_choice": {
+     "n": 106,
+     "mean_ms": 73.08648955672051,
+     "p50_ms": 5.628302998957224,
+     "p95_ms": 781.372810000903,
+     "max_ms": 1488.162273002672,
+     "total_s": 7.747167893012374
+    },
+    "our_search_s": 0.5533366239833413,
+    "opp_seat_s": [
+     0.2265723079945019,
+     7.5206917250288825
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 87,
+      "mean_ms": 86.44473247159635,
+      "p50_ms": 2.299879997735843,
+      "p95_ms": 988.4663640004874,
+      "max_ms": 1488.162273002672,
+      "total_s": 7.5206917250288825
+     },
+     "value": {
+      "n": 101,
+      "mean_ms": 2.243290178163385,
+      "p50_ms": 1.2193899965495802,
+      "p95_ms": 9.063507000973914,
+      "max_ms": 17.42832499803626,
+      "total_s": 0.2265723079945019
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    3
+   ],
+   "lineup": [
+    "catanbot",
+    "value",
+    "alphabeta",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832815,
+   "winner": "WHITE",
+   "winner_seat": 3,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    3,
+    4,
+    4,
+    10
+   ],
+   "turns": 61,
+   "actions": 197,
+   "duration": 7.2610778599992045,
+   "game": 111,
+   "seat": null,
+   "arrangement": 3,
+   "pattern": "oCCo",
+   "our_vps": [
+    4,
+    4
+   ],
+   "our_vp": 4.0,
+   "opp_vps": [
+    3,
+    10
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 97,
+    "trivial": 44,
+    "searched": 48,
+    "pending_robber": 2,
+    "pending_discard": 3,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 355,
+    "search_time": 0.5829670639941469,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 52,
+     "trivial": 20,
+     "searched": 27,
+     "pending_robber": 2,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 176,
+     "search_time": 0.3230935729916382,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 45,
+     "trivial": 24,
+     "searched": 21,
+     "pending_robber": 0,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 179,
+     "search_time": 0.25987349100250867,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 97,
+     "mean_ms": 7.169697546412431,
+     "p50_ms": 3.060752998862881,
+     "p95_ms": 44.712470000376925,
+     "max_ms": 85.17081199897802,
+     "total_s": 0.6954606620020058
+    },
+    "ours_choice": {
+     "n": 53,
+     "mean_ms": 11.616203056652218,
+     "p50_ms": 6.127431999630062,
+     "p95_ms": 48.222635999991326,
+     "max_ms": 85.17081199897802,
+     "total_s": 0.6156587620025675
+    },
+    "opp": {
+     "n": 100,
+     "mean_ms": 65.47707637997519,
+     "p50_ms": 0.7186429975263309,
+     "p95_ms": 114.9511910007277,
+     "max_ms": 1768.393312999251,
+     "total_s": 6.547707637997519
+    },
+    "opp_choice": {
+     "n": 56,
+     "mean_ms": 116.92235923231108,
+     "p50_ms": 7.442797999829054,
+     "p95_ms": 1668.128080000315,
+     "max_ms": 1768.393312999251,
+     "total_s": 6.54765211700942
+    },
+    "our_search_s": 0.5829670639941469,
+    "opp_seat_s": [
+     0.07872551098989788,
+     6.468982127007621
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 54,
+      "mean_ms": 119.79596531495594,
+      "p50_ms": 6.164491998788435,
+      "p95_ms": 1668.128080000315,
+      "max_ms": 1768.393312999251,
+      "total_s": 6.468982127007621
+     },
+     "value": {
+      "n": 46,
+      "mean_ms": 1.7114241519543019,
+      "p50_ms": 0.5510379996849224,
+      "p95_ms": 10.146206001081737,
+      "max_ms": 12.818441002309555,
+      "total_s": 0.07872551098989788
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    2
+   ],
+   "lineup": [
+    "value",
+    "catanbot",
+    "catanbot",
+    "alphabeta"
+   ],
+   "winner_name": "alphabeta",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832816,
+   "winner": "WHITE",
+   "winner_seat": 3,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    7,
+    5,
+    5,
+    10
+   ],
+   "turns": 81,
+   "actions": 294,
+   "duration": 1.9935132350001368,
+   "game": 112,
+   "seat": null,
+   "arrangement": 4,
+   "pattern": "oCoC",
+   "our_vps": [
+    5,
+    10
+   ],
+   "our_vp": 7.5,
+   "opp_vps": [
+    7,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 150,
+    "trivial": 66,
+    "searched": 74,
+    "pending_robber": 7,
+    "pending_discard": 3,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 534,
+    "search_time": 0.7571745269997336,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 70,
+     "trivial": 35,
+     "searched": 29,
+     "pending_robber": 3,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 266,
+     "search_time": 0.14437421701222775,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 80,
+     "trivial": 31,
+     "searched": 45,
+     "pending_robber": 4,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 268,
+     "search_time": 0.6128003099875059,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 150,
+     "mean_ms": 6.077449286531191,
+     "p50_ms": 2.2106659998826217,
+     "p95_ms": 18.331366998609155,
+     "max_ms": 92.4144399978104,
+     "total_s": 0.9116173929796787
+    },
+    "ours_choice": {
+     "n": 86,
+     "mean_ms": 9.452735651034027,
+     "p50_ms": 4.086032000486739,
+     "p95_ms": 41.90979999839328,
+     "max_ms": 92.4144399978104,
+     "total_s": 0.8129352659889264
+    },
+    "opp": {
+     "n": 144,
+     "mean_ms": 7.389115298539966,
+     "p50_ms": 1.37568400168675,
+     "p95_ms": 39.79881999839563,
+     "max_ms": 135.6152460029989,
+     "total_s": 1.064032602989755
+    },
+    "opp_choice": {
+     "n": 90,
+     "mean_ms": 11.821611833107049,
+     "p50_ms": 5.060431001766119,
+     "p95_ms": 44.26218599837739,
+     "max_ms": 135.6152460029989,
+     "total_s": 1.0639450649796345
+    },
+    "our_search_s": 0.7571745269997336,
+    "opp_seat_s": [
+     0.2528856069948233,
+     0.8111469959949318
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 60,
+      "mean_ms": 13.51911659991553,
+      "p50_ms": 3.698673001053976,
+      "p95_ms": 49.70107999906759,
+      "max_ms": 135.6152460029989,
+      "total_s": 0.8111469959949318
+     },
+     "value": {
+      "n": 84,
+      "mean_ms": 3.010542940414563,
+      "p50_ms": 1.3102470002195332,
+      "p95_ms": 11.237841998081421,
+      "max_ms": 13.41061299899593,
+      "total_s": 0.2528856069948233
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    3
+   ],
+   "lineup": [
+    "value",
+    "catanbot",
+    "alphabeta",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832817,
+   "winner": "ORANGE",
+   "winner_seat": 2,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    7,
+    5,
+    11,
+    4
+   ],
+   "turns": 96,
+   "actions": 348,
+   "duration": 6.8392016739999235,
+   "game": 113,
+   "seat": null,
+   "arrangement": 5,
+   "pattern": "ooCC",
+   "our_vps": [
+    11,
+    4
+   ],
+   "our_vp": 7.5,
+   "opp_vps": [
+    7,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 175,
+    "trivial": 81,
+    "searched": 77,
+    "pending_robber": 4,
+    "pending_discard": 13,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 592,
+    "search_time": 0.9765470579950488,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "2": {
+     "decisions": 103,
+     "trivial": 40,
+     "searched": 52,
+     "pending_robber": 4,
+     "pending_discard": 7,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 302,
+     "search_time": 0.8701363910113287,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 72,
+     "trivial": 41,
+     "searched": 25,
+     "pending_robber": 0,
+     "pending_discard": 6,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 290,
+     "search_time": 0.10641066698372015,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 175,
+     "mean_ms": 6.698938799984587,
+     "p50_ms": 2.289275998919038,
+     "p95_ms": 27.165758001501672,
+     "max_ms": 146.790538001369,
+     "total_s": 1.1723142899973027
+    },
+    "ours_choice": {
+     "n": 96,
+     "mean_ms": 10.810046468615534,
+     "p50_ms": 4.717724998045014,
+     "p95_ms": 37.029912000434706,
+     "max_ms": 146.790538001369,
+     "total_s": 1.0377644609870913
+    },
+    "opp": {
+     "n": 173,
+     "mean_ms": 32.634832948023,
+     "p50_ms": 0.8357570004591253,
+     "p95_ms": 43.268304001685465,
+     "max_ms": 1539.3789570007357,
+     "total_s": 5.64582610000798
+    },
+    "opp_choice": {
+     "n": 102,
+     "mean_ms": 55.35014501958144,
+     "p50_ms": 2.8503749999799766,
+     "p95_ms": 67.41013200007728,
+     "max_ms": 1539.3789570007357,
+     "total_s": 5.645714791997307
+    },
+    "our_search_s": 0.9765470579950488,
+    "opp_seat_s": [
+     0.16053475601802347,
+     5.485291343989957
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 71,
+      "mean_ms": 77.25762456323882,
+      "p50_ms": 0.0038479993236251175,
+      "p95_ms": 821.8632940006501,
+      "max_ms": 1539.3789570007357,
+      "total_s": 5.485291343989957
+     },
+     "value": {
+      "n": 102,
+      "mean_ms": 1.5738701570394458,
+      "p50_ms": 0.8511179985362105,
+      "p95_ms": 6.999072000326123,
+      "max_ms": 12.426807003066642,
+      "total_s": 0.16053475601802347
+     }
+    }
+   },
+   "our_seats": [
+    2,
+    3
+   ],
+   "lineup": [
+    "value",
+    "alphabeta",
+    "catanbot",
+    "catanbot"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832818,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    5,
+    10,
+    5,
+    3
+   ],
+   "turns": 63,
+   "actions": 210,
+   "duration": 4.263590195998404,
+   "game": 114,
+   "seat": null,
+   "arrangement": 6,
+   "pattern": "CCoo",
+   "our_vps": [
+    5,
+    10
+   ],
+   "our_vp": 7.5,
+   "opp_vps": [
+    5,
+    3
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 108,
+    "trivial": 50,
+    "searched": 52,
+    "pending_robber": 3,
+    "pending_discard": 3,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 382,
+    "search_time": 0.5811746990075335,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 42,
+     "trivial": 24,
+     "searched": 18,
+     "pending_robber": 0,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 191,
+     "search_time": 0.13016977000734187,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "1": {
+     "decisions": 66,
+     "trivial": 26,
+     "searched": 34,
+     "pending_robber": 3,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 191,
+     "search_time": 0.4510049290001916,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 108,
+     "mean_ms": 6.484631416713927,
+     "p50_ms": 1.948085002368316,
+     "p95_ms": 25.122758001089096,
+     "max_ms": 112.20513299849699,
+     "total_s": 0.7003401930051041
+    },
+    "ours_choice": {
+     "n": 60,
+     "mean_ms": 10.311954133248946,
+     "p50_ms": 4.561442998237908,
+     "p95_ms": 48.21897500005434,
+     "max_ms": 112.20513299849699,
+     "total_s": 0.6187172479949368
+    },
+    "opp": {
+     "n": 102,
+     "mean_ms": 34.8278099312059,
+     "p50_ms": 0.003073997504543513,
+     "p95_ms": 38.32890299963765,
+     "max_ms": 1138.7967240007129,
+     "total_s": 3.5524366129830014
+    },
+    "opp_choice": {
+     "n": 51,
+     "mean_ms": 69.65438576477098,
+     "p50_ms": 6.515421999210957,
+     "p95_ms": 969.1537660000904,
+     "max_ms": 1138.7967240007129,
+     "total_s": 3.55237367400332
+    },
+    "our_search_s": 0.5811746990075335,
+    "opp_seat_s": [
+     3.4487618199927965,
+     0.10367479299020488
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 46,
+      "mean_ms": 74.97308304332167,
+      "p50_ms": 0.0023719985620118678,
+      "p95_ms": 969.1537660000904,
+      "max_ms": 1138.7967240007129,
+      "total_s": 3.4487618199927965
+     },
+     "value": {
+      "n": 56,
+      "mean_ms": 1.8513355891108014,
+      "p50_ms": 0.6717989999742713,
+      "p95_ms": 7.966883000335656,
+      "max_ms": 14.125498000794323,
+      "total_s": 0.10367479299020488
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    1
+   ],
+   "lineup": [
+    "catanbot",
+    "catanbot",
+    "alphabeta",
+    "value"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832819,
+   "winner": "ORANGE",
+   "winner_seat": 2,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    7,
+    9,
+    10,
+    9
+   ],
+   "turns": 140,
+   "actions": 520,
+   "duration": 14.645807118999073,
+   "game": 115,
+   "seat": null,
+   "arrangement": 7,
+   "pattern": "CoCo",
+   "our_vps": [
+    7,
+    10
+   ],
+   "our_vp": 8.5,
+   "opp_vps": [
+    9,
+    9
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 274,
+    "trivial": 106,
+    "searched": 142,
+    "pending_robber": 11,
+    "pending_discard": 15,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 928,
+    "search_time": 3.0262744270148687,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 118,
+     "trivial": 59,
+     "searched": 50,
+     "pending_robber": 4,
+     "pending_discard": 5,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 462,
+     "search_time": 0.5942108660092345,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 156,
+     "trivial": 47,
+     "searched": 92,
+     "pending_robber": 7,
+     "pending_discard": 10,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 466,
+     "search_time": 2.4320635610056343,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 274,
+     "mean_ms": 12.24890867131656,
+     "p50_ms": 3.6496259999694303,
+     "p95_ms": 58.2377059981809,
+     "max_ms": 165.71998600193183,
+     "total_s": 3.3562009759407374
+    },
+    "ours_choice": {
+     "n": 174,
+     "mean_ms": 18.143410448055352,
+     "p50_ms": 9.737128999404376,
+     "p95_ms": 72.96657299957587,
+     "max_ms": 165.71998600193183,
+     "total_s": 3.156953417961631
+    },
+    "opp": {
+     "n": 246,
+     "mean_ms": 45.736359048666,
+     "p50_ms": 1.0764669968921226,
+     "p95_ms": 41.49730599965551,
+     "max_ms": 1900.5570840017754,
+     "total_s": 11.251144325971836
+    },
+    "opp_choice": {
+     "n": 141,
+     "mean_ms": 79.79409490048998,
+     "p50_ms": 5.372138999518938,
+     "p95_ms": 137.7595129997644,
+     "max_ms": 1900.5570840017754,
+     "total_s": 11.250967380969087
+    },
+    "our_search_s": 3.0262744270148687,
+    "opp_seat_s": [
+     10.952080767987354,
+     0.29906355798448203
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 121,
+      "mean_ms": 90.5130641982426,
+      "p50_ms": 0.0026430025172885507,
+      "p95_ms": 486.65333800090593,
+      "max_ms": 1900.5570840017754,
+      "total_s": 10.952080767987354
+     },
+     "value": {
+      "n": 125,
+      "mean_ms": 2.3925084638758563,
+      "p50_ms": 1.1743430004571564,
+      "p95_ms": 9.764931000972865,
+      "max_ms": 15.290636001736857,
+      "total_s": 0.29906355798448203
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    2
+   ],
+   "lineup": [
+    "catanbot",
+    "alphabeta",
+    "catanbot",
+    "value"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832820,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    9,
+    10,
+    8,
+    6
+   ],
+   "turns": 131,
+   "actions": 517,
+   "duration": 8.7865721019989,
+   "game": 116,
+   "seat": null,
+   "arrangement": 8,
+   "pattern": "CooC",
+   "our_vps": [
+    9,
+    6
+   ],
+   "our_vp": 7.5,
+   "opp_vps": [
+    10,
+    8
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 276,
+    "trivial": 107,
+    "searched": 123,
+    "pending_robber": 12,
+    "pending_discard": 34,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 854,
+    "search_time": 1.3738609289757733,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "0": {
+     "decisions": 151,
+     "trivial": 53,
+     "searched": 72,
+     "pending_robber": 9,
+     "pending_discard": 17,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 431,
+     "search_time": 1.0285536619849154,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 125,
+     "trivial": 54,
+     "searched": 51,
+     "pending_robber": 3,
+     "pending_discard": 17,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 423,
+     "search_time": 0.3453072669908579,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 276,
+     "mean_ms": 5.937234525397113,
+     "p50_ms": 1.9809149998764042,
+     "p95_ms": 23.190406001958763,
+     "max_ms": 94.01440899819136,
+     "total_s": 1.6386767290096032
+    },
+    "ours_choice": {
+     "n": 174,
+     "mean_ms": 8.510045724203033,
+     "p50_ms": 3.203086002031341,
+     "p95_ms": 41.78343999956269,
+     "max_ms": 94.01440899819136,
+     "total_s": 1.480747956011328
+    },
+    "opp": {
+     "n": 241,
+     "mean_ms": 29.54336760978768,
+     "p50_ms": 1.0217169983661734,
+     "p95_ms": 39.91383199900156,
+     "max_ms": 1774.1818920003425,
+     "total_s": 7.119951593958831
+    },
+    "opp_choice": {
+     "n": 139,
+     "mean_ms": 51.221814985235646,
+     "p50_ms": 5.517742996744346,
+     "p95_ms": 86.55537199956598,
+     "max_ms": 1774.1818920003425,
+     "total_s": 7.119832282947755
+    },
+    "our_search_s": 1.3738609289757733,
+    "opp_seat_s": [
+     6.915063462965918,
+     0.20488813099291292
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 123,
+      "mean_ms": 56.22002815419445,
+      "p50_ms": 4.847708998568123,
+      "p95_ms": 86.55537199956598,
+      "max_ms": 1774.1818920003425,
+      "total_s": 6.915063462965918
+     },
+     "value": {
+      "n": 118,
+      "mean_ms": 1.736340093160279,
+      "p50_ms": 0.5458460000227205,
+      "p95_ms": 9.220060997904511,
+      "max_ms": 13.827228001900949,
+      "total_s": 0.20488813099291292
+     }
+    }
+   },
+   "our_seats": [
+    0,
+    3
+   ],
+   "lineup": [
+    "catanbot",
+    "alphabeta",
+    "value",
+    "catanbot"
+   ],
+   "winner_name": "alphabeta",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832821,
+   "winner": "BLUE",
+   "winner_seat": 1,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    8,
+    10,
+    6,
+    5
+   ],
+   "turns": 75,
+   "actions": 277,
+   "duration": 5.214972298999783,
+   "game": 117,
+   "seat": null,
+   "arrangement": 9,
+   "pattern": "oCCo",
+   "our_vps": [
+    10,
+    6
+   ],
+   "our_vp": 8.0,
+   "opp_vps": [
+    8,
+    5
+   ],
+   "won": true,
+   "stats": {
+    "decisions": 136,
+    "trivial": 53,
+    "searched": 66,
+    "pending_robber": 1,
+    "pending_discard": 16,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 476,
+    "search_time": 0.9766346819887985,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 64,
+     "trivial": 23,
+     "searched": 34,
+     "pending_robber": 0,
+     "pending_discard": 7,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 243,
+     "search_time": 0.4562593139926321,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "2": {
+     "decisions": 72,
+     "trivial": 30,
+     "searched": 32,
+     "pending_robber": 1,
+     "pending_discard": 9,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 233,
+     "search_time": 0.5203753679961665,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 136,
+     "mean_ms": 8.309675514738046,
+     "p50_ms": 3.418788000999484,
+     "p95_ms": 31.2982909999846,
+     "max_ms": 69.15402999948128,
+     "total_s": 1.1301158700043743
+    },
+    "ours_choice": {
+     "n": 84,
+     "mean_ms": 12.163073119154433,
+     "p50_ms": 9.482001001742901,
+     "p95_ms": 36.819348999415524,
+     "max_ms": 69.15402999948128,
+     "total_s": 1.0216981420089724
+    },
+    "opp": {
+     "n": 141,
+     "mean_ms": 28.842367836782387,
+     "p50_ms": 2.17832499765791,
+     "p95_ms": 56.54072700053803,
+     "max_ms": 1111.352182997507,
+     "total_s": 4.066773864986317
+    },
+    "opp_choice": {
+     "n": 91,
+     "mean_ms": 44.68911192296738,
+     "p50_ms": 5.716098999982933,
+     "p95_ms": 95.03632600171841,
+     "max_ms": 1111.352182997507,
+     "total_s": 4.066709184990032
+    },
+    "our_search_s": 0.9766346819887985,
+    "opp_seat_s": [
+     3.898150220989919,
+     0.16862364399639773
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 77,
+      "mean_ms": 50.62532754532362,
+      "p50_ms": 4.492695999942953,
+      "p95_ms": 143.00502499827417,
+      "max_ms": 1111.352182997507,
+      "total_s": 3.898150220989919
+     },
+     "value": {
+      "n": 64,
+      "mean_ms": 2.6347444374437146,
+      "p50_ms": 1.4782950020162389,
+      "p95_ms": 9.077036000235239,
+      "max_ms": 14.076168998144567,
+      "total_s": 0.16862364399639773
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    2
+   ],
+   "lineup": [
+    "alphabeta",
+    "catanbot",
+    "catanbot",
+    "value"
+   ],
+   "winner_name": "catanbot",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832822,
+   "winner": "RED",
+   "winner_seat": 0,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    10,
+    4,
+    8,
+    7
+   ],
+   "turns": 86,
+   "actions": 309,
+   "duration": 12.773299142001633,
+   "game": 118,
+   "seat": null,
+   "arrangement": 10,
+   "pattern": "oCoC",
+   "our_vps": [
+    4,
+    7
+   ],
+   "our_vp": 5.5,
+   "opp_vps": [
+    10,
+    8
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 146,
+    "trivial": 72,
+    "searched": 59,
+    "pending_robber": 5,
+    "pending_discard": 10,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 534,
+    "search_time": 0.5024492549855495,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "1": {
+     "decisions": 69,
+     "trivial": 37,
+     "searched": 23,
+     "pending_robber": 2,
+     "pending_discard": 7,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 266,
+     "search_time": 0.2634752109988767,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 77,
+     "trivial": 35,
+     "searched": 36,
+     "pending_robber": 3,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 268,
+     "search_time": 0.23897404398667277,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 146,
+     "mean_ms": 4.627248684861514,
+     "p50_ms": 2.107287000399083,
+     "p95_ms": 17.218549000972416,
+     "max_ms": 84.71076699788682,
+     "total_s": 0.675578307989781
+    },
+    "ours_choice": {
+     "n": 76,
+     "mean_ms": 7.32914214466674,
+     "p50_ms": 3.2203579976339824,
+     "p95_ms": 21.935966000455664,
+     "max_ms": 84.71076699788682,
+     "total_s": 0.5570148029946722
+    },
+    "opp": {
+     "n": 163,
+     "mean_ms": 74.10139347234829,
+     "p50_ms": 1.6203410013986286,
+     "p95_ms": 265.7928849985183,
+     "max_ms": 2075.898988001427,
+     "total_s": 12.078527135992772
+    },
+    "opp_choice": {
+     "n": 92,
+     "mean_ms": 131.28736281522953,
+     "p50_ms": 7.187040002463618,
+     "p95_ms": 1161.3434220016643,
+     "max_ms": 2075.898988001427,
+     "total_s": 12.078437379001116
+    },
+    "our_search_s": 0.5024492549855495,
+    "opp_seat_s": [
+     11.89635800299584,
+     0.1821691329969326
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 91,
+      "mean_ms": 130.7292088241301,
+      "p50_ms": 4.284409998945193,
+      "p95_ms": 1161.3434220016643,
+      "max_ms": 2075.898988001427,
+      "total_s": 11.89635800299584
+     },
+     "value": {
+      "n": 72,
+      "mean_ms": 2.5301268471796194,
+      "p50_ms": 0.616896002611611,
+      "p95_ms": 11.269457001617411,
+      "max_ms": 13.066174000414321,
+      "total_s": 0.1821691329969326
+     }
+    }
+   },
+   "our_seats": [
+    1,
+    3
+   ],
+   "lineup": [
+    "alphabeta",
+    "catanbot",
+    "value",
+    "catanbot"
+   ],
+   "winner_name": "alphabeta",
+   "format": "2v2-mixed",
+   "crashes": 0
+  },
+  {
+   "seed": 91092832823,
+   "winner": "RED",
+   "winner_seat": 0,
+   "colors": [
+    "RED",
+    "BLUE",
+    "ORANGE",
+    "WHITE"
+   ],
+   "vps": [
+    10,
+    3,
+    7,
+    4
+   ],
+   "turns": 90,
+   "actions": 297,
+   "duration": 6.81420856099794,
+   "game": 119,
+   "seat": null,
+   "arrangement": 11,
+   "pattern": "ooCC",
+   "our_vps": [
+    7,
+    4
+   ],
+   "our_vp": 5.5,
+   "opp_vps": [
+    10,
+    3
+   ],
+   "won": false,
+   "stats": {
+    "decisions": 148,
+    "trivial": 79,
+    "searched": 62,
+    "pending_robber": 4,
+    "pending_discard": 3,
+    "trade_prompts": 0,
+    "unmapped_top": 0,
+    "fallback": 0,
+    "errors": 0,
+    "observe_errors": 0,
+    "observed": 539,
+    "search_time": 0.72388638000848,
+    "offers": 0,
+    "offers_accepted": 0,
+    "trades_confirmed": 0,
+    "trades_cancelled": 0,
+    "offers_received": 0,
+    "offers_accepted_by_us": 0,
+    "self_offer_prompts": 0
+   },
+   "stats_by_seat": {
+    "2": {
+     "decisions": 76,
+     "trivial": 38,
+     "searched": 35,
+     "pending_robber": 3,
+     "pending_discard": 0,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 269,
+     "search_time": 0.35795497499930207,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    },
+    "3": {
+     "decisions": 72,
+     "trivial": 41,
+     "searched": 27,
+     "pending_robber": 1,
+     "pending_discard": 3,
+     "trade_prompts": 0,
+     "unmapped_top": 0,
+     "fallback": 0,
+     "errors": 0,
+     "observe_errors": 0,
+     "observed": 270,
+     "search_time": 0.365931405009178,
+     "offers": 0,
+     "offers_accepted": 0,
+     "trades_confirmed": 0,
+     "trades_cancelled": 0,
+     "offers_received": 0,
+     "offers_accepted_by_us": 0,
+     "self_offer_prompts": 0
+    }
+   },
+   "unmapped_kinds": {},
+   "trades": {
+    "offers": 0,
+    "offers_accepted": 0,
+    "confirmed": 0,
+    "cancelled": 0,
+    "offers_received": 0,
+    "accepted_by_us": 0,
+    "opp_asked": 0,
+    "opp_accepted": 0,
+    "opp_rejected": 0,
+    "opp_cannot_pay": 0,
+    "opp_errors": 0
+   },
+   "timing": {
+    "ours": {
+     "n": 148,
+     "mean_ms": 6.355160682466482,
+     "p50_ms": 2.861414999642875,
+     "p95_ms": 18.582036002044333,
+     "max_ms": 113.97312199915177,
+     "total_s": 0.9405637810050393
+    },
+    "ours_choice": {
+     "n": 69,
+     "mean_ms": 11.681648116000757,
+     "p50_ms": 7.370153001829749,
+     "p95_ms": 26.990729998942697,
+     "max_ms": 113.97312199915177,
+     "total_s": 0.8060337200040522
+    },
+    "opp": {
+     "n": 149,
+     "mean_ms": 39.2903907181515,
+     "p50_ms": 0.8141589969454799,
+     "p95_ms": 90.31275099914637,
+     "max_ms": 1343.9420830000017,
+     "total_s": 5.854268217004574
+    },
+    "opp_choice": {
+     "n": 83,
+     "mean_ms": 70.53229121710643,
+     "p50_ms": 5.219200000283308,
+     "p95_ms": 202.48073499897146,
+     "max_ms": 1343.9420830000017,
+     "total_s": 5.854180171019834
+    },
+    "our_search_s": 0.72388638000848,
+    "opp_seat_s": [
+     5.720016132010642,
+     0.13425208499393193
+    ],
+    "opp_by_name": {
+     "alphabeta": {
+      "n": 78,
+      "mean_ms": 73.33354015398258,
+      "p50_ms": 0.003760000254260376,
+      "p95_ms": 883.9671130008355,
+      "max_ms": 1343.9420830000017,
+      "total_s": 5.720016132010642
+     },
+     "value": {
+      "n": 71,
+      "mean_ms": 1.8908744365342525,
+      "p50_ms": 0.8141589969454799,
+      "p95_ms": 7.308492000447586,
+      "max_ms": 14.85741800206597,
+      "total_s": 0.13425208499393193
+     }
+    }
+   },
+   "our_seats": [
+    2,
+    3
+   ],
+   "lineup": [
+    "alphabeta",
+    "value",
+    "catanbot",
+    "catanbot"
+   ],
+   "winner_name": "alphabeta",
+   "format": "2v2-mixed",
+   "crashes": 0
+  }
+ ],
+ "vps_to_win": 10,
+ "discard_limit": 7,
+ "wall_time": 311.1852198339984,
+ "action_log": {
+  "path": "/tmp/claude-0/-home-user-ClaudeTesting2/e59cf40d-e496-56e7-a6ac-661eab3c04d1/scratchpad/benchmulti/run/logs/M3/.partial-g00080-00120/value_alphabeta_2v2-mixed_seed910901_g00080-00120.jsonl.gz",
+  "format": "catanbot-actionlog/1",
+  "games": 40,
+  "bytes": 115122
+ }
+}

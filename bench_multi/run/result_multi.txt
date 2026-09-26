@@ -1,0 +1,26 @@
+Multi-seat benchmark (docs/BENCH_MULTI_PROTOCOL.md): catanbot [search:depth=1,beam=4,expand=8,evaluator=heuristic] vs catanatron 3.3.0
+M1 (3v1) vs 1 x AlphaBetaPlayer: games not won by our seats 39/400 = 9.8% (opponent wins 39, no winner 0)  95% CI 7.0-13.1%  one-sided p vs 25% (lower tail) = 8.37e-15
+    our three seats won 361/400 = 90.2% (95% CI 86.9-93.0%; null 75%); avg VP per catanbot seat 7.33, opponent 6.06
+    opponent by seat: seat 0 9/100, seat 1 4/100, seat 2 12/100, seat 3 14/100
+    catanbot by seat: seat 0 97/300, seat 1 95/300, seat 2 90/300, seat 3 79/300
+    turns/game 89.2; turn-cap games 0, crashed games 0 (0 crashed attempts); adapter errors 0, fallbacks 0, unmapped top 0
+    registered data: yes
+M2 (3v1) vs 1 x ValueFunctionPlayer: games not won by our seats 21/400 = 5.2% (opponent wins 21, no winner 0)  95% CI 3.3-7.9%  one-sided p vs 25% (lower tail) = 6.11e-26
+    our three seats won 379/400 = 94.8% (95% CI 92.1-96.7%; null 75%); avg VP per catanbot seat 7.35, opponent 5.83
+    opponent by seat: seat 0 7/100, seat 1 4/100, seat 2 3/100, seat 3 7/100
+    catanbot by seat: seat 0 114/300, seat 1 105/300, seat 2 76/300, seat 3 84/300
+    turns/game 90.3; turn-cap games 0, crashed games 0 (0 crashed attempts); adapter errors 0, fallbacks 0, unmapped top 0
+    registered data: yes
+M3 (2v2-mixed) vs value + alphabeta: our two seats won 314/400 = 78.5%  95% CI 74.1-82.4%  one-sided p vs 50% (upper tail) = 6.80e-32
+    wins: catanbot 314/400 (78.5%, avg VP 7.71) | value 30/400 (7.5%, avg VP 5.86) | alphabeta 56/400 (14.0%, avg VP 6.22) | no winner 0
+    by pattern: CCoo 50/67, CoCo 48/67, CooC 55/67, oCCo 56/67, oCoC 47/66, ooCC 58/66
+    catanbot by seat: seat 0 78/201, seat 1 74/200, seat 2 77/200, seat 3 85/199
+    value by seat: seat 0 4/100, seat 1 7/101, seat 2 11/100, seat 3 8/99
+    alphabeta by seat: seat 0 11/99, seat 1 12/99, seat 2 15/100, seat 3 18/102
+    turns/game 86.5; turn-cap games 0, crashed games 0 (0 crashed attempts); adapter errors 0, fallbacks 0, unmapped top 0
+    registered data: yes
+M1: H0 (AlphaBetaPlayer wins >= 25% of the 3v1 games) REJECTED (Holm over M1-M3, alpha 0.05): p = 8.37e-15, Holm threshold 0.0500, Holm-adjusted p = 8.37e-15
+M2: H0 (ValueFunctionPlayer wins >= 25% of the 3v1 games) REJECTED (Holm over M1-M3, alpha 0.05): p = 6.11e-26, Holm threshold 0.0250, Holm-adjusted p = 1.22e-25
+M3: H0 (our two seats together win <= 50% of the 2v2-mixed games) REJECTED (Holm over M1-M3, alpha 0.05): p = 6.80e-32, Holm threshold 0.0167, Holm-adjusted p = 2.04e-31
+FAMILY (Holm over M1-M3, alpha 0.05): complete: M1-M3 are all the registered data
+NOTE: Three copies of our bot share one strategy and never cooperate or trade (trades off): M1 / M2 measure the lone opponent against a table of copies, not teamwork.

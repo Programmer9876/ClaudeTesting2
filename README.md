@@ -69,6 +69,8 @@ Pre-registered results, with every game archived and replayable:
   against AlphaBeta, where chance is 25 %; 58.5 % against AlphaBeta when our bot sees only what a Colonist
   player sees.
 - 1v1 against AlphaBeta: 75.5 % (docs/BENCH_1V1.md).
+- Three of ours against one Catanatron bot: the lone AlphaBeta won 9.8 % and the lone ValueFunction 5.2 %
+  (fair share 25 %); two of ours against one of each won 78.5 % (docs/BENCH_MULTI.md).
 
 **Read this first.**  Catanatron is the standard open-source benchmark, but its bots are far from complete
 players:
@@ -98,4 +100,4 @@ version of our bot, a newer Catanatron), add a row; never overwrite an old one.
 | 2026-09-26 | 1v1 benchmark: 75.5 % vs AlphaBeta, 73.2 % vs ValueFunction | `35ef224` | Catanatron 3.3.0 (`ecf9311`) | docs/BENCH_1V1.md, bench_1v1/ |
 | 2026-09-26 | Catanatron's gaps documented (development cards, hidden VP, one enemy, depth 2, no trading, no politics) | - | checked against Catanatron `ecf9311` | docs/BENCHMARKS.md |
 | 2026-09-26 | Test queue started; first verdicts (player trading worth about 24 points against value-rule responders; wider offers shelved; acceptance calibration failed its behaviour check) | epochs A `3c7089c`, B1 `aefdd4a` | Catanatron 3.3.0 (`ecf9311`), self-play | docs/ABLATIONS.md, docs/queue/ |
-
+| 2026-09-26 | Multi-seat benchmark: a lone AlphaBeta won 9.8 % and a lone ValueFunction 5.2 % against 3 of ours (fair 25 %); 2 of ours vs ValueFunction + AlphaBeta won 78.5 % | `332775b` | Catanatron 3.3.0 (`ecf9311`) | docs/BENCH_MULTI.md, bench_multi/ |
