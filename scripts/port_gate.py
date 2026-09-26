@@ -14,8 +14,8 @@ flow cell).  Per cell, over the seeds whose candidate and default games both fin
 * ``settlements_built`` (post-setup settlements),
 * ``won`` (a sanity readout only; the gate is not a win-rate test).
 
-**PASS (pre-registered):** cards saved up by at least 1.1 a game AND settlements a game not lower by 0.15 or more
-(diff >= -0.15), with at least 90 % of the cell's seeds paired.  ``best`` = the passing cell with the largest gain
+**PASS (pre-registered):** cards saved up by at least 1.1 a game (diff >= 1.1) AND settlements a game not lower by
+0.15 or more (diff > -0.15: a drop of exactly 0.15 fails), with at least 90 % of the cell's seeds paired.  ``best`` = the passing cell with the largest gain
 in cards saved (only it gets the 2,000-seed row).  ``f1_overshoot`` (the trigger of the milder F1 mode 3 cell): the
 F1 cell raised cards saved by more than 2 paired se but failed the settlement guard.
 
@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CARDS_MIN = 1.1          # cards saved a game, candidate - default (about 3 se at 300 seeds; our whole T1 gap)
-SETTLE_MIN = -0.15       # settlements a game, candidate - default
+SETTLE_MIN = -0.15       # settlements a game, candidate - default: PASS needs diff > SETTLE_MIN (strictly)
 MIN_SHARE = 0.9          # share of the cell's seeds that must be paired
 CELLS = {"f1": "ports_gate_f1@vf", "f2": "ports_gate_f2@vf", "flow": "ports_gate_flow@vf",
          "f1m3": "ports_gate_f1_mode3@vf"}
@@ -102,12 +102,12 @@ def cell_stats(pairs: Sequence[Tuple[Dict[str, Any], Dict[str, Any]]], count: in
     sm, sse = _mean_se(ds)
     wm, wse = _mean_se(dw)
     complete = len(dc) >= MIN_SHARE * count and len(ds) >= MIN_SHARE * count
-    ok = bool(complete and cm is not None and sm is not None and cm >= CARDS_MIN and sm >= SETTLE_MIN)
+    ok = bool(complete and cm is not None and sm is not None and cm >= CARDS_MIN and sm > SETTLE_MIN)
     raised = bool(complete and cm is not None and cse is not None and cse > 0 and cm > 2.0 * cse)
     return {"pairs": len(pairs), "count": count, "complete": complete,
             "cards_saved": cm, "cards_saved_se": cse, "settlements": sm, "settlements_se": sse,
             "win": wm, "win_se": wse, "pass": ok, "raised_cards": raised,
-            "settle_guard_failed": bool(complete and sm is not None and sm < SETTLE_MIN)}
+            "settle_guard_failed": bool(complete and sm is not None and sm <= SETTLE_MIN)}
 
 
 def evaluate(directory: str, cells: Optional[Dict[str, str]] = None, base: int = 0, count: int = 300

@@ -21,12 +21,14 @@ worth a weaker land spot, the roads and the blocking race to reach them, and the
     ``acquisition.port_flow_value`` (tested); a second 3:1 adds nothing (the ratio vector is joint).  Main phase only
     (the hub passes setup states through): the setup spot score keeps static's constants.
 
-    **One owner for our seat's port value.**  ``conv=1`` (catanbot/conversion.py) already credits ports for our seat
-    through the conversion saving and cancels static's port credit (``conversion.PORT_LEDGER``).  With both on, the
-    conversion term owns it and the flow provider stands down (it is not built: :meth:`CorrectionHub.for_search`
-    records ``port_owner = "conv"``); otherwise static's credit would be cancelled twice and the port value counted
-    twice.  The flow provider is never stacked with ``placement.PORT_MODEL`` 1 / 2 in a screened arm either (the
-    plan's rule); if it were, it would cancel the calibrated static term like any other static port credit.
+    **One owner for our seat's port value.**  ``conv=1`` (catanbot/conversion.py) alone credits ports for our
+    seat through its conversion saving and cancels static's port credit (``conversion.PORT_LEDGER``).  With the
+    flow switch on as well, this provider owns our port value (:meth:`CorrectionHub.for_search` records
+    ``port_owner = "flow"``): the conversion term is built with ``ports=False`` - conversions priced at 4:1, no
+    ledger - so it keeps only the diversification part, static's credit is cancelled once (here) and the port
+    value counted once (``F``; tested).  The flow provider is never stacked with ``placement.PORT_MODEL`` 1 / 2 in
+    a screened arm (the plan's rule); if it were, it would cancel the calibrated static term like any other static
+    port credit.
 
 ``ports.advice`` (``portvalue.ADVICE`` / the CLI's ``--port-advice``; display only)
     :func:`advice_lines`: for the port spots in play, "is this port worth it" - the cards the port saves over the
@@ -219,9 +221,10 @@ def will_block(state: GameState, me: int, j: int, want: float, mode: int = 2,
 # ---------------------------------------------------------------------------
 # F3: "is this port worth it" advice (CLI advisor path only)
 # ---------------------------------------------------------------------------
-def road_cards() -> float:
-    """Demand-weighted cards of one road (a wood and a brick)."""
-    return P.RESOURCE_DEMAND[B.WOOD] + P.RESOURCE_DEMAND[B.BRICK]
+def road_cards(scarcity: Sequence[float]) -> float:
+    """One road (a wood and a brick) in the units of :func:`pe_pips` / 36 and of ``G w``: each card weighted by
+    ``RESOURCE_DEMAND[r] sqrt(scarcity[r])``."""
+    return sum(P.RESOURCE_DEMAND[r] * (scarcity[r] ** 0.5) for r in (B.WOOD, B.BRICK))
 
 
 def pe_pips(state: GameState, v: int, scarcity: Sequence[float]) -> float:
@@ -256,7 +259,7 @@ def port_advice(state: GameState, me: int, v: int, spots: Optional[Dict[int, int
     * the land alternative ``u`` = the best non-port spot among ``spots`` (every free vertex in the setup, else our
       spots within two roads) by demand-weighted pips net of its roads;
     * ``extra = n H (PEpips(u) - PEpips(v)) / 36`` cards the land spot would produce instead, ``roads`` =
-      ``road_cards() x (d_v - d_u)`` the extra road cards the port costs;
+      ``road_cards(scarcity) x (d_v - d_u)`` the extra road cards the port costs;
     * verdict: the port is worth it when ``saved > extra + roads``."""
     from .winpaths import horizon
     port = state.ports[v]
@@ -273,7 +276,7 @@ def port_advice(state: GameState, me: int, v: int, spots: Optional[Dict[int, int
     n = state.num_players
     rolls = n * H
     saved = rolls * G * w
-    rc = road_cards()
+    rc = road_cards(sc)
     d_v = spots.get(v, 0)
     best = None
     for u, d in spots.items():
@@ -444,11 +447,12 @@ def register_tunables(registry: Dict[str, object]) -> None:
             ("PORT_STATIC_W", [0.4, 1.2], "static points per pips-equivalent of the calibrated port term")):
         add(f"placement.{attr}", pl, attr, cands, tuning._parse_float, f"F1 {meaning}; {_ONLY_F1}; {_PYEVAL}")
     # ports.flow_provider (a hub provider on the C++ evaluator) and ports.advice (display only)
-    add("ports.FLOW_KAPPA", __name__, "FLOW_KAPPA", [0.18, 0.12, 0.36], tuning._parse_float,
+    add("ports.FLOW_KAPPA", __name__, "FLOW_KAPPA", [0.25, 0.12, 0.5], tuning._parse_float,
         "ports.flow_provider (catanbot/portvalue.py): static points per card our ports save over the rest of the "
         "game (acquisition.port_flow_value's fitted table); replaces static's port credit for our seat through the "
-        "correction hub; stands down when search.conv=1 owns our port value; 0 = off (the default bot); budgeted at "
-        "depth 1", pyeval=False, search=True)
+        "correction hub; next to search.conv=1 it stays the one owner (conv then prices at 4:1 without its port "
+        "ledger); 0.25 makes a 3:1 port worth ~0.72 points at our main-phase settlement decisions (2.89 cards "
+        "there in the step-4 screen; the design calibrated 0.76-0.79); 0 = off (the default bot); budgeted at depth 1", pyeval=False, search=True)
     add("portvalue.ADVICE", __name__, "ADVICE", [1], tuning._parse_int,
         "ports.advice: 1 = the CLI advisor prints 'is this port worth it' lines (cards saved vs the land spot, roads, "
         "the race, who wants it, the leader); display only, bots never read it", pyeval=False)

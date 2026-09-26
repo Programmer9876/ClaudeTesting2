@@ -4,6 +4,29 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 13:30 UTC - ports step 4 finished and reviewed (off by default)
+
+- **One real bug fixed** in the earlier agent's code: with conversion (conv=1) on, the flow provider stood down
+  instead of owning our port value.  Any arm with conv=1 plus FLOW_KAPPA was silently an A/A for the flow
+  piece.  Flow now owns the port value, and conv prices every conversion at 4:1 in that arm.  A test shows
+  the port value is counted exactly once.
+- **Checks rerun by the coordinator:** default play is unchanged (24/24 games identical to epoch B2); 153 ports,
+  conversion, corrections, queue and robber tests pass on both catanatron versions.
+- **Zero-game screen** (24 self-play games, 315 settlement decisions; A/A 0 changes):
+
+  | arm | decisions changed |
+  |---|---|
+  | F1 | 3.8 % |
+  | F2 | 4.4 % |
+  | F1 mode 3 | 2.5 % |
+  | flow (kappa 0.25) | 3.5 %, all in the main phase |
+
+  No arm is expected to show up in win rate: the pre-registered gate (cards saved vs 4:1 up by at least 1.1 a
+  game, settlements not lower by 0.15 or more) decides.
+- **Deviations from the design** (in docs/STRATEGY.md "Port access"):
+  - the port advice counts road costs (the user's point that a port costs roads);
+  - `PORT_GENERIC_ONCE` zeroes a 3:1 bonus only when we already own a 3:1 port.
+
 ## 2026-09-26 12:20 UTC - check-in: trade premium floor shelved; the rejection-streak fallback also keeps offering
 
 - **Player-trade premium floor** (`acq_floor_selfplay`): -1.2 +- 1.6 points at 960 self-play pairs.  SHELVE;

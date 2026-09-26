@@ -242,7 +242,7 @@ The enabled rows are the existing campaign rows, re-expressed:
   started before step 3 ignores that list and SHELVEs them at intake: restart it after the bump.  acq.progress is disabled (it failed its Stage 0 audit) and the (A)-only breadth fallback is not
   triggered (injected offers were accepted).  `acq_flow_fit` is a zero-game command row run from the working tree.
 - **diversification:** openings (pips_diversity, standin_book and the setup_pick control) vs value and vf, and flat resource demand, with the milder registry vector as its fallback. The port gap is an expansion / diversity gap. Disabled until built: `expansion_reach_credit`, `ports_conversion_cost` (conv=1) and the `div_lr_bundle`.
-- **ports (port access only; step 4, epoch B2 after `--bump-code --areas ports`):** the mechanism gate (next section)
+- **ports (port access only; step 4, its own epoch after `--bump-code --areas ports` - B2 went to the robber step; until then the gate cells wait as BLOCKED):** the mechanism gate (next section)
   and one best-cell screen per cell behind it; `ports_spot_want@value` stays disabled (step 7, after winpaths Stage 5)
   and SPOT_LEADER is deferred to human testing.
 - **robber:** a 40-game zero-game shadow that gates the prior-only rows, plus the knockouts and new-direction rows.
@@ -259,7 +259,7 @@ The design's one cheap mechanism gate (docs/PRIORITY_PLAN.md "Ports"), all in ar
 |---|---|
 | `ports_gate_f1@vf` | F1 `placement.PORT_MODEL=1`, 300 seeds vs 3.2.1 vf, Python evaluator (`estimate`, tier `smoke`) |
 | `ports_gate_f2@vf` | F2 P3' (`heuristic.PORT_STATIC_GENERIC=0.8` + `placement.PORT_GENERIC_ONCE=1`), same default arm |
-| `ports_gate_flow@vf` | the flow provider (`ports.FLOW_KAPPA`), C++ evaluator, its own default arm |
+| `ports_gate_flow@vf` | the flow provider (`ports.FLOW_KAPPA=0.25`), C++ evaluator, its own default arm |
 | `ports_gate_mode3_trigger` | command: PASS when F1 raised cards saved (> 2 se) but failed the settlement guard |
 | `ports_gate_f1_mode3@vf` | the milder F1 mode 3 (`PORT_MODEL=3`), only after the trigger PASSes |
 | `ports_gate` | command (`scripts/port_gate.py`): PASS when a cell passes the pre-registered rule |
@@ -267,7 +267,7 @@ The design's one cheap mechanism gate (docs/PRIORITY_PLAN.md "Ports"), all in ar
 | `ports_best_<cell>@vf` | the one 2,000-seed screen (fresh seeds 300..), only after its pick PASSes (in `screen_once`) |
 
 Pre-registered PASS: cards saved vs 4:1 (`cards_saved` = 4 x cards received - cards given; a `mech` metric) up by at
-least 1.1 a game and settlements a game not lower by 0.15 or more, with at least 90 % of the 300 seeds paired.  The
+least 1.1 a game and settlements a game not lower by 0.15 or more, with at least 90 % of the 300 seeds paired (a drop of exactly 0.15 fails).  The
 milder fallback and the best-cell choice are command rows because the built-in `milder` rule needs a REJECT / SHELVE
 verdict, which an estimate row never gives, and `after` conditions read only a verdict's top-level numbers.  A gate
 FAIL (the expected result) leaves every downstream row NOT TRIGGERED: the port valuation line is shelved with its

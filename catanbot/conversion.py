@@ -32,7 +32,9 @@ temporary block, static already charges it):
   of static's own port credit (+0.2 per building on a 3:1 port, 0.15 + 4 x production of ``t`` on a 2:1 ``t``
   port): the conversion saving *replaces* that crude credit, so a port settlement gains exactly its trade
   savings and port access is not counted twice (docs/PRIORITY_PLAN.md: a port-value provider on the hub never
-  stacks with static's port credit).  Anchoring at the root changes no ranking (a constant shift of our own
+  stacks with static's port credit).  With the ports flow provider also on (``ports.FLOW_KAPPA != 0``,
+  catanbot/portvalue.py) that provider is the one owner of our port value: this term then prices every conversion
+  at 4:1 and keeps no ledger (``ConversionContext(ports=False)``), so it values only the diversification.  Anchoring at the root changes no ranking (a constant shift of our own
   static value never reorders softmax leaves) but keeps the correction exactly 0 on every leaf where we built
   nothing, so the hub's fast path returns the C++ values there.
 
@@ -151,8 +153,10 @@ def extra_cards(short: Sequence[float], surplus: Sequence[float], ratios: Sequen
     return cost + need * (g - 1)
 
 
-def economy(state: GameState, settlements: Sequence[int], cities: Sequence[int]) -> Tuple[List[float], List[int]]:
-    """Robber-free production per roll and bank ratios (per resource given) of a set of buildings."""
+def economy(state: GameState, settlements: Sequence[int], cities: Sequence[int],
+            ports: bool = True) -> Tuple[List[float], List[int]]:
+    """Robber-free production per roll and bank ratios (per resource given) of a set of buildings (``ports=False``:
+    4:1 everywhere, the ports ignored)."""
     prod = [0.0] * 5
     ratios = [4] * 5
     generic = False
@@ -161,7 +165,7 @@ def economy(state: GameState, settlements: Sequence[int], cities: Sequence[int])
             pr = placement.vertex_production(state, v, ignore_robber=True)
             for r in range(5):
                 prod[r] += mult * pr[r]
-            t = state.ports.get(v)
+            t = state.ports.get(v) if ports else None
             if t is None:
                 continue
             if t == B.PORT_GENERIC:
@@ -174,9 +178,9 @@ def economy(state: GameState, settlements: Sequence[int], cities: Sequence[int])
 
 
 def cost_per_roll(state: GameState, settlements: Sequence[int], cities: Sequence[int],
-                  shares: Sequence[float]) -> float:
-    """``c``: extra cards per roll the buildings' economy pays in conversions."""
-    prod, ratios = economy(state, settlements, cities)
+                  shares: Sequence[float], ports: bool = True) -> float:
+    """``c``: extra cards per roll the buildings' economy pays in conversions (``ports=False``: at 4:1)."""
+    prod, ratios = economy(state, settlements, cities, ports)
     short, surplus = shortfall_surplus(prod, shares)
     return extra_cards(short, surplus, ratios)
 
@@ -227,14 +231,19 @@ class ConversionContext:
 
     priors = False     # no move-ordering hook
 
-    def __init__(self, root: GameState, me: int, params: Optional[Dict[str, Any]] = None):
+    def __init__(self, root: GameState, me: int, params: Optional[Dict[str, Any]] = None, ports: bool = True):
+        """``ports=False``: the ports flow provider (catanbot/portvalue.py) owns our seat's port value
+        (:meth:`corrections.CorrectionHub.for_search`), so this term prices conversions at 4:1 (no port routing,
+        also in the reach saving) and leaves static's port credit to that provider (no ledger): only the
+        diversification part stays here."""
         P = dict(params) if params is not None else current_params()
         self.params = P
         self.me = int(me)
         self.n = root.num_players
         self.kappa = float(P["KAPPA_CONV"])
         self.reach_w = float(P["REACH_W"])
-        self.ledger = bool(P["PORT_LEDGER"])
+        self.ports = bool(ports)
+        self.ledger = bool(P["PORT_LEDGER"]) and self.ports
         self.shares = need_shares(P["NEED"])
         self._cap = int(P["CACHE_CAP"])
         self.R = rolls_left(root)
@@ -257,7 +266,7 @@ class ConversionContext:
         if hit is not None:
             return hit
         self.stats["cost_misses"] += 1
-        return self._put(self._cost, key, cost_per_roll(state, settlements, cities, self.shares))
+        return self._put(self._cost, key, cost_per_roll(state, settlements, cities, self.shares, self.ports))
 
     def cost(self, state: GameState) -> float:
         """``c`` of our seat in ``state`` (memo: our buildings; production is robber-free)."""

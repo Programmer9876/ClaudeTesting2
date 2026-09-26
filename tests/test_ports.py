@@ -411,7 +411,7 @@ def test_flow_context_replaces_the_static_credit_with_the_flow_value(port):
         assert za - zb == pytest.approx(0.18 * f1, abs=1e-6)              # no port spot left free: reach is equal
 
 
-def test_hub_owner_conv_stands_the_flow_provider_down_and_flow_alone_owns_it():
+def test_hub_owner_the_flow_provider_owns_our_port_value_also_next_to_conv():
     from catanbot.conversion import ConversionContext
     s, me = positions(k=1)[0]
     with tuning.overridden({"ports.FLOW_KAPPA": 0.18}):
@@ -420,23 +420,61 @@ def test_hub_owner_conv_stands_the_flow_provider_down_and_flow_alone_owns_it():
         assert [type(p) for p in sr._corr.providers] == [PV.PortFlowContext] and sr._corr.port_owner == "flow"
         sr = Searcher(HeuristicEvaluator(), SearchConfig(depth=1, beam=4, expand=8, conv=1))
         sr.search(s, me, random.Random(1))
-        assert [type(p) for p in sr._corr.providers] == [ConversionContext] and sr._corr.port_owner == "conv"
+        assert [type(p) for p in sr._corr.providers] == [ConversionContext, PV.PortFlowContext]
+        cv = sr._corr.providers[0]
+        assert sr._corr.port_owner == "flow" and cv.ports is False and cv.ledger is False
         sr = Searcher(HeuristicEvaluator(), SearchConfig(depth=1, beam=4, expand=8, paths=1))
         sr.search(s, me, random.Random(1))
         assert [type(p) for p in sr._corr.providers] == [W.PathsContext, PV.PortFlowContext]
     sr = Searcher(HeuristicEvaluator(), SearchConfig(depth=1, beam=4, expand=8, conv=1))
     sr.search(s, me, random.Random(1))
-    assert sr._corr.port_owner == "conv"
+    cv = sr._corr.providers[0]
+    assert sr._corr.port_owner == "conv" and cv.ports is True and cv.ledger is True     # conv alone: unchanged
     sr = Searcher(HeuristicEvaluator(), SearchConfig(depth=1, beam=4, expand=8))
     sr.search(s, me, random.Random(1))
     assert sr._corr is None                                             # FLOW_KAPPA = 0: no hub
 
 
-def test_conv_plus_flow_searches_exactly_like_conv_alone():
+@pytest.mark.parametrize("port", [B.PORT_GENERIC, WH])
+@pytest.mark.parametrize("reach_w", [0.0, 0.5])
+def test_conv_plus_flow_counts_our_port_value_once(port, reach_w):
+    """conv=1 and the flow provider together: the port changes our leaf correction by exactly the flow value minus
+    static's port credit (so static + C holds the port once, as kappa x F), static's credit is cancelled once, and
+    the conversion term is the port-free one (its value on the same board without the port)."""
+    from catanbot.conversion import ConversionContext
+    kappa = 0.25
+    cfg = SearchConfig(depth=1, beam=4, expand=8, conv=1)
+    s = port_board(port, at=3)
+    noport = port_board(None)
+    leaf, leaf0 = with_building(s, "settlement", V[3]), with_building(noport, "settlement", V[3])
+    with tuning.overridden({"ports.FLOW_KAPPA": kappa, "conversion.REACH_W": reach_w}):
+        hub = H.CorrectionHub.for_search(HeuristicEvaluator(), s, 0, cfg)
+        hub0 = H.CorrectionHub.for_search(HeuristicEvaluator(), noport, 0, cfg)
+        conv_alone = ConversionContext(s, 0)                            # conv's own port-aware term (the ledger)
+    assert hub.port_owner == "flow" and [type(p) for p in hub.providers] == [ConversionContext, PV.PortFlowContext]
+    c, c0 = hub.corrections(leaf)[0], hub0.corrections(leaf0)[0]
+    cv, fl = hub.providers
+    assert cv.corrections(leaf)[0] == pytest.approx(hub0.providers[0].corrections(leaf0)[0], abs=1e-12)
+    f1 = PV.owned_flow_cards(leaf, 0, fl.t)
+    credit = heuristic.static_port_term(leaf, leaf.players[0].settlements, P.player_production(leaf, 0, True))
+    assert f1 > 0.0 and credit > 0.0
+    assert c - c0 == pytest.approx(kappa * f1 - credit, abs=1e-12)     # the port: flow value in, static credit out
+    assert c == pytest.approx(cv.corrections(leaf)[0] + fl.corrections(leaf)[0], abs=1e-12)
+    # conv alone would also move with the port (its routing and ledger): with flow on, that part is gone
+    assert conv_alone.corrections(leaf)[0] != pytest.approx(cv.corrections(leaf)[0], abs=1e-6)
+    if accel.AVAILABLE:                                                  # static + C: the port counted once
+        za, zb = H.static_values(leaf)[0] + c, H.static_values(leaf0)[0] + c0
+        assert za - zb == pytest.approx(kappa * f1, abs=1e-6)
+
+
+def test_conv_alone_keeps_its_pre_ports_search_digest():
+    """conv=1 without the flow switch (also spelled out at 0) searches exactly as before the ports step: the digests
+    were computed on the epoch-B2 snapshot's conversion.py (before ``ConversionContext(ports=...)``)."""
     pos = positions(k=8)
-    conv = search_hash(SearchConfig(depth=1, beam=4, expand=8, conv=1), pos)
-    with tuning.overridden({"ports.FLOW_KAPPA": 0.36}):
-        assert search_hash(SearchConfig(depth=1, beam=4, expand=8, conv=1), pos) == conv
+    cfg = SearchConfig(depth=1, beam=4, expand=8, conv=1)
+    assert search_hash(cfg, pos) == "32280282458ad41b"
+    with tuning.overridden({"ports.FLOW_KAPPA": 0.0, "conversion.REACH_W": 0.5}):
+        assert search_hash(cfg, pos) == "182308e77800c55c"
 
 
 def test_flow_candidate_is_built_only_for_the_candidate_seats(monkeypatch):
@@ -516,7 +554,8 @@ def test_port_advice_numbers_and_the_verdict_flip():
     assert PV.port_advice(strong, 0, V[3], spots)["worth"] is False
     # roads: the port two roads further costs two roads of cards
     far = PV.port_advice(s, 0, V[3], {V[3]: 2, V[2]: 0})
-    assert far["road_cost"] == pytest.approx(2 * PV.road_cards())
+    assert far["road_cost"] == pytest.approx(2 * PV.road_cards(sc))
+    assert PV.road_cards(sc) == pytest.approx(sum(P.RESOURCE_DEMAND[r] * sc[r] ** 0.5 for r in (W_, BR)))
 
 
 def _contested_port_position():
@@ -622,3 +661,10 @@ def test_port_gate_pass_rule_best_cell_and_mode3_trigger(tmp_path):
     # an incomplete cell never passes
     _gate_jsonl(tmp_path / "ports_gate_f2@vf.jsonl", "ports_gate_f2@vf", lambda s: (3, 0), n=200)
     assert not G.evaluate(str(tmp_path))["cells"]["f2"]["pass"]
+    # the boundaries: cards +1.1 exactly passes; settlements -0.15 exactly ("lower by 0.15 or more") fails
+    _gate_jsonl(tmp_path / "ports_gate_f2@vf.jsonl", "ports_gate_f2@vf", lambda s: (1.1, 0))
+    _gate_jsonl(tmp_path / "ports_gate_flow@vf.jsonl", "ports_gate_flow@vf",
+                lambda s: (2, -1 if s % 20 < 3 else 0))
+    res = G.evaluate(str(tmp_path))
+    assert res["cells"]["f2"]["pass"] and res["cells"]["flow"]["settlements"] == -0.15
+    assert not res["cells"]["flow"]["pass"] and res["cells"]["flow"]["settle_guard_failed"]

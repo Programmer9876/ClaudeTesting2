@@ -5,8 +5,8 @@ points ``C_i`` added to ``heuristic.static_value`` before the evaluator's softma
 the C++ static values, so that neither ``static_value`` nor ``cpp/*`` changes and no ``needs_python_evaluator``
 re-exec is needed.  Win-path races (``winpaths.PathsContext``) were the first; the conversion cost
 (``conversion.ConversionContext``), acq.progress (``acquisition.AcqContext``, the trades area) and the ports flow
-provider (``portvalue.PortFlowContext``, switched by the module weight ``ports.FLOW_KAPPA``; it stands down when
-``conv`` owns our seat's port value) followed; the robber terms of docs/PRIORITY_PLAN.md (step 5) are the next.  Instead of each wrapping the evaluator on its own
+provider (``portvalue.PortFlowContext``, switched by the module weight ``ports.FLOW_KAPPA``; the one owner of our
+seat's port value, also next to ``conv``) followed; the robber terms of docs/PRIORITY_PLAN.md (step 5) are the next.  Instead of each wrapping the evaluator on its own
 (and wrapping each other, three softmaxes per leaf), they are *providers* of one :class:`CorrectionHub`:
 
 * a provider has ``corrections(state) -> per-seat points`` (``None`` or all zeros = nothing to add), and
@@ -108,23 +108,26 @@ class CorrectionHub:
         acquisition (``acq``, catanbot/acquisition.py acq.progress), ports flow (``ports.FLOW_KAPPA != 0``, a module
         weight of catanbot/portvalue.py: :func:`ports_flow_on`).
 
-        One owner for our seat's port value (``port_owner``): ``conv`` credits our ports through its conversion
-        saving and cancels static's port credit, so with ``conv`` on the ports flow provider is not built
-        (``port_owner = "conv"``); with only the flow switch on it owns it (``"flow"``); else None (static's
-        constants)."""
+        One owner for our seat's port value (``port_owner``).  With the flow switch on, the ports flow provider
+        owns it (``"flow"``): it cancels static's port credit and adds the trade-flow value of our ports, and a
+        ``conv`` provider built next to it prices conversions at 4:1 without its port ledger
+        (``ConversionContext(ports=False)``: only the diversification part), so the port value is counted once and
+        static's credit cancelled once.  With ``conv`` alone, ``conv`` owns it (its conversion saving replaces
+        static's credit: ``"conv"``); else None (static's constants)."""
         providers: List[Any] = []
         owner: Optional[str] = None
+        flow = ports_flow_on()
         if getattr(cfg, "paths", 0):
             from . import winpaths   # the same constructor as paths = 1 alone
             providers.append(winpaths.PathsEvaluator.for_search(base, root, me, cfg).ctx)
         if getattr(cfg, "conv", 0):
             from .conversion import ConversionContext
-            providers.append(ConversionContext(root, me))
+            providers.append(ConversionContext(root, me, ports=False) if flow else ConversionContext(root, me))
             owner = "conv"
         if getattr(cfg, "acq", 0):
             from .acquisition import AcqContext
             providers.append(AcqContext.for_search(root, me, cfg))
-        if ports_flow_on() and owner is None:
+        if flow:
             from .portvalue import PortFlowContext
             providers.append(PortFlowContext(root, me))
             owner = "flow"

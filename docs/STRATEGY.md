@@ -526,6 +526,58 @@ switch below is off by default and needs neither the Python evaluator nor a C++ 
   answer, before the profile learns from it) halves the Brier score in self-play (0.153 vs 0.310).  The streak rule
   gives a seat P(accept) = 0 after 3 rejections in a row until it accepts.
 
+## Port access: when a port spot is worth it (`placement.py`, `heuristic.py`, `portvalue.py`; off by default)
+
+Area: ports (docs/PRIORITY_PLAN.md step 4).  Which port spots are worth a weaker land spot, the roads and the
+blocking race to reach them, and what the ports we own are worth.  Diversification (what a missing resource costs
+at the bank or a port) is `conversion.py` above.  Every switch is a registered tunable whose default is today's
+behaviour (tests/test_ports.py: pinned game digests, C++ parity, an A/A against the queue snapshot).
+
+* **`ports.constants` (F2):** today's six literals as tunables - `placement.PORT_SPOT_GENERIC` 1.0,
+  `PORT_SPOT_2TO1_BASE` 0.5, `PORT_SPOT_2TO1_SLOPE` 6.0 (spot score), `heuristic.PORT_STATIC_GENERIC` 0.2,
+  `PORT_STATIC_2TO1_BASE` 0.15, `PORT_STATIC_2TO1_SLOPE` 4.0 (static_value) - plus `placement.PORT_GENERIC_ONCE`
+  (1 = a 3:1 port counts once in static, and a 3:1 spot is worth 0 when we already own a 3:1; owning a 2:1 does
+  not zero it).  Candidate P3' = static 3:1 0.8, counted once.
+* **`ports.surplus_value` (F1, `placement.PORT_MODEL` 1 / 2 / 3 = spot and static / static only / 3:1 only):** the
+  calibrated conversion model `conv_r = A0 prod_r / I + B s_r`, `G = sum_r conv_r (1/rho'_r - 1/rho_r) (1 + ELAST
+  (4/rho'_r - 1))`, pips-equivalent `36 G w`; the spot bonus multiplies it by land's complement factor, static by
+  `PORT_STATIC_W` 0.8.  Ports are valued jointly through the ratio vector, so a second 3:1 adds nothing.  F1 and
+  F2 are C++-mirrored: `needs_python_evaluator`, a constexpr only on ADOPT.
+* **`ports.flow_provider` (`ports.FLOW_KAPPA`, 0 = off; C++ evaluator):** a correction-hub provider for our seat
+  that replaces static's port credit by the trade-flow value of the ports we own, `FLOW_KAPPA x sum_r R(t) w_r (4 -
+  rho_r)` (acquisition.py's fitted `acq.flow`, `R` frozen at the root, main phase only).  0.25 makes a 3:1 port
+  worth ~0.72 points at our main-phase settlement decisions (2.89 cards on average there, the design's calibrated
+  0.76-0.79).  **One owner:** next to `conv=1` the flow provider owns our port value and the conversion term is
+  built with `ports=False` (priced at 4:1, no port ledger), so the port is counted once and static's credit
+  cancelled once (tested); `conv=1` alone keeps its own port ledger.  Never stacked with `PORT_MODEL` 1 / 2.
+* **`ports.advice` (`portvalue.ADVICE` / `catanbot recommend --port-advice`; display only):** per port spot in play,
+  the cards its better rates buy over the rest of the game (`n H G w`, `H = winpaths.horizon`) against the extra
+  cards the best land spot within the same reach produces, net of the extra roads (a wood and a brick each); a
+  verdict; and in the main phase the race: our chance to get there first (winpaths' conversion-aware clocks),
+  which rivals reach it in how many roads and rounds, how much they want it (`rival_want`: their discounted spot
+  score relative to their best, floor 0.3) and the leader check (a seat at least 1 estimated VP ahead of all
+  others: rivals block a leading us at least 0.6 willingly, a leading rival races for anything).  Computed on the
+  advisor path only, never in the search's per-action explanations.  `rival_want` / `will_block` are the helper
+  for `winpaths.SPOT_WANT` (step 7, after winpaths Stage 5).
+
+**Zero-game screen** (2026-09-26; scripts/decision_shadow.py on 24 self-play games of the shipped bot, seed 7400,
+settle class: 192 setup settlements and 123 main-phase decisions with a legal settlement; shadow searches on the
+Python evaluator; 428 CPU-s):
+
+| arm | decisions changed | setup | main | port picks setup / main (3:1) | ms ratio |
+|---|---|---|---|---|---|
+| A/A | 0 / 315 | 0 | 0 | 10 / 57 (4 / 27) | 1.00 |
+| F1 `PORT_MODEL=1` | 3.8 % | 7 | 5 | 16 / 57 (8 / 30) | 1.12 |
+| F1 mode 2 (static only) | 4.1 % | 6 | 7 | 16 / 55 (8 / 30) | 1.02 |
+| F1 mode 3 (3:1 only) | 2.5 % | 4 | 4 | 14 / 58 (8 / 30) | 1.05 |
+| F2 P3' | 4.4 % | 10 | 4 | 20 / 60 (14 / 31) | 1.01 |
+| flow `FLOW_KAPPA=0.25` | 3.5 % | 0 | 11 | 10 / 53 (4 / 32) | 0.99 |
+
+All arms move a few percent of settlement decisions, mostly toward 3:1 ports; none is detectable in win rate
+within budget (the whole port-efficiency gap is worth at most ~1.6 pp).  The mechanism gate (docs/QUEUE.md "Ports
+gate": cards saved vs 4:1 up by at least 1.1 a game, settlements not lower by 0.15 or more) decides; the expected
+result is SHELVE with the knobs left registered.
+
 ## Counter-offers and out-of-turn trade analysis (`counteroffers.py`; off by default)
 
 **Rules (Colonist.io).**  A rules variant, `GameState.allow_counters` (off: the base game is unchanged).

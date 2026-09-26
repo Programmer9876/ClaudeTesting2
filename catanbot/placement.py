@@ -233,7 +233,7 @@ nobody is a robber magnet yet, only concentration is charged."""
 
 
 # ---------------------------------------------------------------------------
-# Ports (docs/PRIORITY_PLAN.md step 4, area "ports"; docs/STRATEGY.md "Ports")
+# Ports (docs/PRIORITY_PLAN.md step 4, area "ports"; docs/STRATEGY.md "Port access")
 # ---------------------------------------------------------------------------
 # The spot score's port bonus.  Tunables (catanbot/portvalue.py registers them), all needs_python_evaluator:
 # cpp/heuristic.cpp (score_spot) keeps constexpr copies of these defaults, so an override reaches the C++ static

@@ -760,7 +760,9 @@ no `needs_python_evaluator`).  They share one wrapper instead of wrapping each o
   (`search.conv`, docs/STRATEGY.md "Conversion cost") and `acquisition.AcqContext` (`search.acq`, section 17).
   Steps 4-5 of the plan add the ports flow provider and robber_eval here.  `CorrectionHub.for_search(base, root,
   me, cfg)` builds them in a fixed order: winpaths (through `PathsEvaluator.for_search`, the same constructor as
-  before) first, then conversion, then acquisition.
+  before) first, then conversion, then acquisition, then the ports flow provider (`ports.FLOW_KAPPA != 0`).
+  One owner of our seat's port value (`hub.port_owner`): the flow provider when it is on, also next to `conv`
+  (conversion is then built with `ports=False`: priced at 4:1, no port ledger); `conv` when it is on alone.
 * **Values.**  `CorrectionHub.evaluate(states, players)` has the evaluator interface.  Per distinct state the
   providers' corrections are summed in list order.  A `HeuristicEvaluator` base returns
   `softmax((static_values(s) + sum C) / T)[player]` for corrected leaves; blended and other bases get

@@ -1359,7 +1359,7 @@ def _add_recommend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--port-advice", action="store_true",
                    help="also print 'is this port worth it' lines: cards a port spot saves vs the best land spot, the "
                         "roads each needs, the race for it and who wants it (off by default; see docs/STRATEGY.md "
-                        "'Ports')")
+                        "'Port access')")
     p.add_argument("--trade-floor", type=float, default=None, metavar="W",
                    help="never recommend proposing or accepting a player trade that does not beat your own bank / port "
                         "rate for the same cards by W x the partner's gain x their danger (0 = ties go to the bank); "
