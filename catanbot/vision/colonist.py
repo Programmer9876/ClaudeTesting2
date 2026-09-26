@@ -30,12 +30,21 @@ Pipeline (see docs/DESIGN.md section 7):
 8. UI chrome (best effort): player panel rows (colour, VP, cards, dev,
    knights, badges, current-player border), hand bar (my cards), dice
    pips, bank panel.  Everything that cannot be read becomes a warning.
+   Each reader searches a default area of the screen (:func:`default_ui_regions`,
+   the synthetic layout) or a pixel box given by a *layout* (a
+   :class:`~catanbot.vision.profile.UiProfile` measured on the user's screen,
+   or a dict of boxes, see :func:`layout_boxes`).  A layout's ``log`` box
+   (the game-log panel) is painted with the measured sea colour before the
+   board analysis, so its text and icons cannot become land, number tokens,
+   ports or pieces; hexes / port slots of the fitted board under it are
+   named in a warning, and a log box covering most of the screen is ignored.
 
 The parser never uses ``synth.board_geometry``; it finds the board itself.
 """
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -45,6 +54,7 @@ from PIL import Image, ImageDraw, ImageFont
 from .. import board as B
 from ..state import PLAYER_COLORS
 from . import schema as S
+from .profile import REGION_NAMES, UiProfile
 from .result import ParseResult
 
 try:  # optional, used for connected components / morphology / resize
@@ -53,6 +63,7 @@ except Exception:  # pragma: no cover
     cv2 = None
 
 RGB = Tuple[int, int, int]
+PixelBox = Tuple[int, int, int, int]      # x0, y0, x1, y1 in pixels, end exclusive
 SQRT3 = math.sqrt(3.0)
 DEFAULT_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
@@ -402,12 +413,19 @@ def _fit_geometry_from_tiles(cents: np.ndarray, hs0: float, cx0: float, cy0: flo
     return geom, resid, matched
 
 
-def _land_iou(land: np.ndarray, geom: Dict[str, float], scale: int = 4, shrink: float = 0.96) -> float:
-    """IoU between the (slightly shrunk) 19-hex lattice under ``geom`` and the land mask."""
+def _land_iou(land: np.ndarray, geom: Dict[str, float], scale: int = 4, shrink: float = 0.96,
+              valid: Optional[np.ndarray] = None) -> float:
+    """IoU between the (slightly shrunk) 19-hex lattice under ``geom`` and the land mask.
+
+    ``valid`` (optional boolean mask) limits the comparison to the known part of the screen: a
+    painted-over log panel is unknown, not sea, and must not favour a lattice that avoids it."""
     small = land[::scale, ::scale]
     m = _hex_inside_mask(land.shape, geom, scale=scale, shrink=shrink)
     m = m[:small.shape[0], :small.shape[1]]
     s = small[:m.shape[0], :m.shape[1]]
+    if valid is not None:
+        vs = valid[::scale, ::scale][:m.shape[0], :m.shape[1]]
+        m, s = m & vs, s & vs
     inter = np.logical_and(m, s).sum()
     union = np.logical_or(m, s).sum()
     return float(inter / max(1, union))
@@ -496,19 +514,23 @@ def _fit_from_points(pts: np.ndarray, min_matched: int) -> Optional[Tuple[Dict[s
     return g, resid, matched
 
 
-def _pick_registration(cands: Sequence[Tuple[Dict[str, float], float, int]], land: np.ndarray
+def _pick_registration(cands: Sequence[Tuple[Dict[str, float], float, int]], land: np.ndarray,
+                       valid: Optional[np.ndarray] = None
                        ) -> Tuple[Dict[str, float], float, int, float, List[Tuple[float, int]]]:
     """Choose among lattice candidates by land-mask overlap.
 
     Candidates within 3 matches of the best are ranked by the IoU between
     their lattice and the land mask (ties by matches, then residual); the
     translated registrations that match a subset of the visible tokens
-    overlap the sea and lose.  Returns ``(geometry, residual, matched, iou,
-    ranking)`` with ``ranking = [(iou, matched), ...]`` for debugging.
+    overlap the sea and lose.  ``valid`` restricts the IoU to the known part
+    of the screen (see :func:`_land_iou`).  Returns ``(geometry, residual,
+    matched, iou, ranking)`` with ``ranking = [(iou, matched), ...]`` for
+    debugging.
     """
     best_m = max(m for _, _, m in cands)
     pool = [(g, r, m) for g, r, m in cands if m >= best_m - 3]
-    scored = sorted(((_land_iou(land, g), m, -r, g) for g, r, m in pool), key=lambda t: (t[0], t[1], t[2]), reverse=True)
+    scored = sorted(((_land_iou(land, g, valid=valid), m, -r, g) for g, r, m in pool),
+                    key=lambda t: (t[0], t[1], t[2]), reverse=True)
     iou, m, neg_r, g = scored[0]
     return g, -neg_r, m, iou, [(round(float(s), 3), int(mm)) for s, mm, _, _ in scored[:5]]
 
@@ -539,13 +561,16 @@ def _token_points(arr: np.ndarray, cal: Calibration) -> np.ndarray:
     return np.array(pts, dtype=np.float64).reshape(-1, 2)
 
 
-def find_board(arr: np.ndarray, cal: Calibration, sea: Optional[np.ndarray] = None
-               ) -> Tuple[Dict[str, float], Dict[str, Any], List[str]]:
+def find_board(arr: np.ndarray, cal: Calibration, sea: Optional[np.ndarray] = None,
+               valid: Optional[np.ndarray] = None) -> Tuple[Dict[str, float], Dict[str, Any], List[str]]:
     """Locate the board: returns (geometry, debug, warnings).
 
-    ``sea`` may be a precomputed :func:`sea_mask`.  ``debug`` carries the
-    method (``tokens`` / ``tiles`` / ``blob``), the number of matched points,
-    the land IoU of the chosen registration and ``confidence`` (0..1).
+    ``sea`` may be a precomputed :func:`sea_mask`; ``valid`` (optional
+    boolean mask) marks the known part of the screen for the land-overlap
+    ranking of lattice registrations (a painted-over log panel is unknown).
+    ``debug`` carries the method (``tokens`` / ``tiles`` / ``blob``), the
+    number of matched points, the land IoU of the chosen registration and
+    ``confidence`` (0..1).
     """
     h, w = arr.shape[:2]
     warnings: List[str] = []
@@ -558,7 +583,7 @@ def find_board(arr: np.ndarray, cal: Calibration, sea: Optional[np.ndarray] = No
     pts = _token_points(arr, cal)
     cands = _fit_candidates(pts, min_matched=8)
     if cands:
-        geom, resid, matched, iou, ranking = _pick_registration(cands, land)
+        geom, resid, matched, iou, ranking = _pick_registration(cands, land, valid)
         debug.update({"method": "tokens", "points": int(len(pts)), "matched": matched, "residual": resid,
                       "land_iou": iou, "candidates": ranking, "confidence": float(min(1.0, matched / 14.0))})
         if matched < 12:
@@ -590,7 +615,7 @@ def find_board(arr: np.ndarray, cal: Calibration, sea: Optional[np.ndarray] = No
             cc = np.array([cents[c[0]] for c in good], dtype=np.float64)
             cands = _fit_candidates(cc, min_matched=8)
             if cands:
-                geom, resid, matched, iou, ranking = _pick_registration(cands, land)
+                geom, resid, matched, iou, ranking = _pick_registration(cands, land, valid)
                 debug.update({"method": "tiles", "erode": k, "points": int(len(cc)), "matched": matched,
                               "residual": resid, "land_iou": iou, "candidates": ranking,
                               "confidence": float(min(1.0, matched / 14.0))})
@@ -1065,6 +1090,22 @@ def detect_pieces(arr: np.ndarray, geom: Dict[str, float], cal: Calibration,
 # ---------------------------------------------------------------------------
 # Ports
 # ---------------------------------------------------------------------------
+def _port_slot_points(geom: Dict[str, float]) -> List[Tuple[int, float, float]]:
+    """``(edge, x, y)`` for every coastal edge: where its port icon sits (0.62 hex sizes out from the
+    edge midpoint, away from the land hex).  :func:`detect_ports` looks for an icon at each point."""
+    hs = geom["hex_size"]
+    out: List[Tuple[int, float, float]] = []
+    for e in B.COASTAL_EDGES:
+        hx, hy = B.HEX_CENTERS[B.EDGE_HEXES[e][0]]
+        ex, ey = B.EDGE_POS[e]
+        dx, dy = ex - hx, ey - hy
+        n = math.hypot(dx, dy) or 1.0
+        dx, dy = dx / n, dy / n
+        mx, my = geom["cx"] + ex * hs, geom["cy"] + ey * hs
+        out.append((e, mx + dx * 0.62 * hs, my + dy * 0.62 * hs))
+    return out
+
+
 def detect_ports(arr: np.ndarray, geom: Dict[str, float], cal: Calibration) -> Tuple[List[Dict[str, Any]], float, List[str]]:
     hs = geom["hex_size"]
     h, w = arr.shape[:2]
@@ -1073,14 +1114,7 @@ def detect_ports(arr: np.ndarray, geom: Dict[str, float], cal: Calibration) -> T
     ref = np.array(cal.port, dtype=np.int16)
     tile_refs = np.array([cal.tile[r] for r in range(5)], dtype=np.float32)
     scores = []
-    for e in B.COASTAL_EDGES:
-        hx, hy = B.HEX_CENTERS[B.EDGE_HEXES[e][0]]
-        ex, ey = B.EDGE_POS[e]
-        dx, dy = ex - hx, ey - hy
-        n = math.hypot(dx, dy) or 1.0
-        dx, dy = dx / n, dy / n
-        mx, my = geom["cx"] + ex * hs, geom["cy"] + ey * hs
-        cx, cy = mx + dx * 0.62 * hs, my + dy * 0.62 * hs
+    for e, cx, cy in _port_slot_points(geom):
         if not (0 <= cx < w and 0 <= cy < h):
             continue
         samples = []
@@ -1290,8 +1324,193 @@ def read_number_in_region(arr: np.ndarray, x0: int, y0: int, x1: int, y1: int, l
 # ---------------------------------------------------------------------------
 # UI chrome
 # ---------------------------------------------------------------------------
+# Not-found warnings: every reader words its own "not found" warning, saying where it looked
+# (its default area, "in region (x0, y0, x1, y1)" or "region ... lies outside the WxH image").
+# read_player_panel returns its warnings (third item of its result); read_hand_bar, read_dice and
+# read_bank_panel keep their return values and append to an optional ``warnings`` list instead.
+# The player panel and the hand bar are always reported (the parse depends on them).  The dice and
+# the bank are optional panels, so a miss in their default area stays silent; a miss inside a
+# given region is reported (a region says the panel is there).  parse_image forwards all of them.
+def default_ui_regions(size: Tuple[int, int]) -> Dict[str, PixelBox]:
+    """Where the UI readers search when no region is given: pixel boxes ``(x0, y0, x1, y1)``.
+
+    They follow the synthetic layout (:mod:`catanbot.vision.synth`): player
+    panel in the left 34 % of the screen, hand bar in the bottom 20 %, dice
+    in the bottom-right corner, bank panel in the top-right corner.  A real
+    Colonist.io window needs its own boxes (a :class:`~catanbot.vision.profile.UiProfile`).
+    """
+    w, h = size
+    return {"player_panel": (0, 0, int(0.34 * w), h),
+            "hand_bar": (0, int(0.80 * h), w, h),
+            "dice": (int(0.7 * w), int(0.8 * h), w, h),
+            "bank": (int(0.6 * w), 0, w, int(0.15 * h))}
+
+
+#: A ``log`` box larger than this fraction of the screen is ignored (with a warning): the log panel is a
+#: column beside the board, and painting most of the screen as sea would hide the board itself.
+MAX_LOG_BOX_FRACTION = 0.45
+
+
+def _box_numbers(label: str, box: Any) -> List[float]:
+    """The four numbers of a pixel box ``(x0, y0, x1, y1)``; ``ValueError`` naming ``label`` otherwise."""
+    if isinstance(box, (str, bytes)):
+        raise ValueError(f"{label}: got the text {box!r}; a box typed as text (\"x,y,w,h\" pixels or "
+                         "\"x0,y0,x1,y1\" fractions) goes through profile.parse_box(text, size) and "
+                         "UiProfile.set_region, and the profile is passed as the layout")
+    try:
+        vals = [float(v) for v in box]
+    except (TypeError, ValueError):
+        raise ValueError(f"{label}: expected 4 numbers x0,y0,x1,y1 in pixels, got {box!r}") from None
+    if len(vals) != 4:
+        raise ValueError(f"{label}: expected 4 numbers x0,y0,x1,y1 in pixels, got {box!r}")
+    if not all(math.isfinite(v) for v in vals):
+        raise ValueError(f"{label}: expected 4 finite numbers x0,y0,x1,y1 in pixels, got {box!r}")
+    return vals
+
+
+def _clip_box(box: Sequence[float], w: int, h: int) -> Optional[PixelBox]:
+    """``box`` (finite numbers) rounded to whole pixels and clipped to a ``w x h`` image; ``None`` when
+    nothing is left."""
+    x0, y0, x1, y1 = (int(round(float(v))) for v in box)
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def _reader_box(arr: np.ndarray, name: str, region: Optional[Sequence[float]]) -> Optional[PixelBox]:
+    """The box a UI reader searches: ``region`` clipped to the image (``None`` when it lies outside),
+    or the default area ``name``.  A malformed or non-finite region raises ``ValueError``."""
+    h, w = arr.shape[:2]
+    if region is None:
+        return default_ui_regions((w, h))[name]
+    return _clip_box(_box_numbers(f"{name} region", region), w, h)
+
+
+def _where(arr: np.ndarray, region: Optional[Sequence[float]], box: Optional[PixelBox]) -> str:
+    """Where a UI reader looked, for its not-found warning: ``""`` (its default area),
+    ``" in region (x0, y0, x1, y1)"`` or why the region could not be searched."""
+    if region is None:
+        return ""
+    if box is None:
+        h, w = arr.shape[:2]
+        return f": region ({', '.join(f'{float(v):g}' for v in region)}) lies outside the {w}x{h} image"
+    return f" in region {box}"
+
+
+def layout_boxes(layout: Union[UiProfile, Mapping, None], size: Tuple[int, int]) -> Dict[str, PixelBox]:
+    """Pixel boxes ``{region name: (x0, y0, x1, y1)}`` (end exclusive, clipped to the image) of a layout.
+
+    ``layout`` is one of
+
+    * ``None`` - no regions: every reader uses its default area;
+    * a :class:`~catanbot.vision.profile.UiProfile` - fraction regions,
+      converted with ``pixel_box(name, size)``;
+    * a dict of **pixel** boxes ``(x0, y0, x1, y1)`` - two corners, end
+      exclusive - keyed by region name (``log``, ``player_panel``,
+      ``hand_bar``, ``dice``, ``bank``; ``None`` values are skipped).  This is
+      *not* the ``x,y,w,h`` form :func:`catanbot.vision.profile.parse_box`
+      reads from text: a box typed by the user (e.g. ``--log-region
+      x,y,w,h``) goes ``parse_box(text, size)`` ->
+      ``UiProfile.set_region(name, box)`` and the profile is passed as the
+      layout.  Never put CLI text boxes into the dict (a string is rejected;
+      numbers taken from ``x,y,w,h`` would silently give a wrong box).
+
+    Every box, from a dict or from a profile, is validated the same way and
+    raises ``ValueError`` naming the region: an unknown region name, a
+    malformed box (not four numbers), a non-finite number, a box that is
+    empty or outside the image once clipped, and (dicts only) one that looks
+    like screen fractions (all four numbers within 0..1).  A profile region
+    with invalid fractions raises :class:`~catanbot.vision.profile.ProfileError`
+    (a ``ValueError``) from ``pixel_box``.  :func:`parse_image` additionally
+    ignores a ``log`` box covering more than :data:`MAX_LOG_BOX_FRACTION` of
+    the screen (with a warning).
+    """
+    if layout is None:
+        return {}
+    w, h = int(size[0]), int(size[1])
+    out: Dict[str, PixelBox] = {}
+    if not isinstance(layout, Mapping):
+        if not hasattr(layout, "pixel_box"):
+            raise TypeError(f"layout must be a UiProfile or a dict of pixel boxes, not {type(layout).__name__}")
+        for name in REGION_NAMES:
+            box = layout.pixel_box(name, (w, h))    # UiProfile checks the fractions itself (ProfileError)
+            if box is None:
+                continue
+            vals = _box_numbers(f"layout region '{name}' (from the profile)", box)
+            clipped = _clip_box(vals, w, h)
+            if clipped is None:
+                raise ValueError(f"layout region '{name}' {tuple(vals)} (from the profile) is empty or outside "
+                                 f"the {w}x{h} image")
+            out[name] = clipped
+        return out
+    for name, box in layout.items():
+        if box is None:
+            continue
+        if name not in REGION_NAMES:
+            raise ValueError(f"unknown layout region '{name}' (known: {', '.join(REGION_NAMES)})")
+        vals = _box_numbers(f"layout region '{name}'", box)
+        if all(0.0 <= v <= 1.0 for v in vals):   # a 1-pixel box in the corner is never meant
+            raise ValueError(f"layout region '{name}' {tuple(vals)} looks like screen fractions; a dict layout "
+                             "takes pixel boxes (use a UiProfile for fractions)")
+        clipped = _clip_box(vals, w, h)
+        if clipped is None:
+            raise ValueError(f"layout region '{name}' {tuple(vals)} is empty or outside the {w}x{h} image")
+        out[name] = clipped
+    return out
+
+
+def _blank_box(arr: np.ndarray, sea: np.ndarray, box: PixelBox, cal: Calibration
+               ) -> Tuple[np.ndarray, np.ndarray, RGB]:
+    """Copy of ``arr`` with ``box`` painted in the measured sea colour, and ``sea`` with the box set.
+
+    Used for the game-log panel: its light background, beige / cream / grey
+    text and resource icons must not become land, token candidates, ports or
+    pieces.  The colour is the median of the sea outside the box (``cal.sea``
+    when there is none), so the painted area also looks like sea to every
+    colour test that does not use the mask.
+    """
+    x0, y0, x1, y1 = box
+    sea_out = sea.copy()
+    sea_out[y0:y1, x0:x1] = False
+    n = int(sea_out.sum())
+    fill: RGB = tuple(int(v) for v in cal.sea)  # type: ignore[assignment]
+    if n:
+        step = max(1, int(math.sqrt(n / 100000.0)))   # ~100k samples are plenty for a median
+        px = arr[::step, ::step][sea_out[::step, ::step]]
+        if len(px) == 0:
+            px = arr[sea_out]
+        m = np.median(px, axis=0)
+        fill = (int(m[0]), int(m[1]), int(m[2]))
+    out = arr.copy()
+    out[y0:y1, x0:x1] = fill
+    sea_out[y0:y1, x0:x1] = True
+    return out, sea_out, fill
+
+
+def _board_under_box(geom: Dict[str, float], box: PixelBox) -> Tuple[List[int], List[int]]:
+    """Hexes whose centre and coastal edges whose port-icon slot (:func:`_port_slot_points`) lie inside
+    ``box`` for the fitted board ``geom``: ``(hex ids, edge ids)``, both sorted."""
+    x0, y0, x1, y1 = box
+    hexes = [i for i, (x, y) in enumerate(_lattice_pixels(geom, "hex")) if x0 <= x < x1 and y0 <= y < y1]
+    edges = sorted(e for e, x, y in _port_slot_points(geom) if x0 <= x < x1 and y0 <= y < y1)
+    return hexes, edges
+
+
+def _log_box_warning(box: PixelBox, hexes: Sequence[int], edges: Sequence[int]) -> str:
+    parts = []
+    if hexes:
+        parts.append(f"{len(hexes)} hex{'es' if len(hexes) > 1 else ''} ({', '.join(str(i) for i in hexes)})")
+    if edges:
+        parts.append(f"{len(edges)} port slot{'s' if len(edges) > 1 else ''} "
+                     f"(coastal edge{'s' if len(edges) > 1 else ''} {', '.join(str(e) for e in edges)})")
+    return (f"layout log box {box} covers {' and '.join(parts)} of the board; that area was painted as sea, so "
+            "a hex there is a guess and a port there is missed - shrink the log region to the log panel")
+
+
 def read_player_panel(arr: np.ndarray, cal: Calibration,
-                      palette: Optional[Tuple[List[str], np.ndarray, np.ndarray]] = None
+                      palette: Optional[Tuple[List[str], np.ndarray, np.ndarray]] = None, *,
+                      region: Optional[Tuple[int, int, int, int]] = None
                       ) -> Tuple[List[Dict[str, Any]], float, List[str]]:
     """Rows of the player panel (left side): colour, VP, cards, dev, knights, badges, current.
 
@@ -1299,7 +1518,10 @@ def read_player_panel(arr: np.ndarray, cal: Calibration,
     (they are large solid rectangles; this keeps memory flat at 4K) and the
     numbers are read at full resolution with a text mask relative to the
     measured row colour.  Rows must share the panel's x position and width
-    (a row merged with adjacent pieces on the board is dropped).
+    (a row merged with adjacent pieces on the board is dropped).  ``region``
+    (pixels ``x0, y0, x1, y1``) replaces the left third as the search area;
+    row coordinates are always full-image pixels.  The not-found warning is
+    the third item of the result (see "Not-found warnings" above).
     """
     h, w = arr.shape[:2]
     warnings: List[str] = []
@@ -1308,19 +1530,28 @@ def read_player_panel(arr: np.ndarray, cal: Calibration,
     else:
         names, pal, bg = palette
         names = list(names)
-    region = arr[:, : int(0.34 * w)]
-    f = max(1, int(round(region.shape[1] / 320.0)))
-    small = region[::f, ::f]
+    search = _reader_box(arr, "player_panel", region)
+    if search is None:
+        warnings.append(f"player panel not found{_where(arr, region, search)}; player list inferred from pieces")
+        return [], 0.0, warnings
+    rx0, ry0, rx1, ry1 = search
+    sub = arr[ry0:ry1, rx0:rx1]
+    # the working scale keeps the searched area ~320 px wide (memory stays flat at 4K)
+    f = max(1, int(round(sub.shape[1] / 320.0)))
+    small = sub[::f, ::f]
     cls = _classify_pixels(small.reshape(-1, 3), pal, bg, 40.0).reshape(small.shape[:2])
     rows: List[Dict[str, Any]] = []
     for nme in dict.fromkeys(names):
         idx = [i for i, n in enumerate(names) if n == nme]
         m = np.isin(cls, idx)
+        # Size limits stay relative to the whole screen even inside a region: rows (and the pieces
+        # they must not be confused with) scale with the screen, not with the box drawn around them.
         if m.sum() * f * f < 0.002 * h * w:
             continue
         n, labels, stats, cents = _components(m)
         for i in range(1, n):
             x, y, bw, bh = [int(v) * f for v in stats[i][:4]]
+            x, y = x + rx0, y + ry0
             area = int(stats[i][4]) * f * f
             fill = area / float(bw * bh)
             if area < 0.002 * h * w or bw < 0.08 * w or bh < 0.03 * h or fill < 0.55 or bw < 1.1 * bh:
@@ -1384,26 +1615,42 @@ def read_player_panel(arr: np.ndarray, cal: Calibration,
         r["current"] = bool(ring.mean() > 0.02)
     conf = float(np.mean(confs)) if confs else 0.0
     if not rows:
-        warnings.append("player panel not found; player list inferred from pieces")
+        warnings.append(f"player panel not found{_where(arr, region, search)}; player list inferred from pieces")
     return rows, conf, warnings
 
 
-def read_hand_bar(arr: np.ndarray, cal: Calibration) -> Tuple[Optional[List[int]], Optional[int], float]:
+def read_hand_bar(arr: np.ndarray, cal: Calibration, *, region: Optional[Tuple[int, int, int, int]] = None,
+                  warnings: Optional[List[str]] = None) -> Tuple[Optional[List[int]], Optional[int], float]:
     """My hand from the bottom card bar: 5 resource counts and the dev-card count.
 
     The six cards must form a co-aligned group (same y and height, similar
     width, solid fill) so that board tiles reaching into the bottom of the
     image are never mistaken for cards.  ``(None, None, 0.0)`` when the bar
     or any resource count cannot be read (the hand is then unknown rather
-    than a silent zero).
+    than a silent zero); the not-found warning is then appended to
+    ``warnings`` when a list is given.  ``region`` (pixels ``x0, y0, x1,
+    y1``) replaces the bottom 20 % of the screen as the search area.
     """
+    box = _reader_box(arr, "hand_bar", region)
+    out = (None, None, 0.0) if box is None else _read_hand_cards(arr, cal, box)
+    if out[0] is None and warnings is not None:
+        warnings.append(f"hand bar not found or not fully readable{_where(arr, region, box)}; your resources are "
+                        "unknown (use --fix me.hand=...)")
+    return out
+
+
+def _read_hand_cards(arr: np.ndarray, cal: Calibration, box: PixelBox
+                     ) -> Tuple[Optional[List[int]], Optional[int], float]:
+    """:func:`read_hand_bar` inside the pixel box ``box``."""
     h, w = arr.shape[:2]
-    y0 = int(0.80 * h)
-    region = arr[y0:, :]
+    ox, oy, ex, ey = box
+    sub = arr[oy:ey, ox:ex]
     tile_refs = np.array([cal.tile[r] for r in range(5)] + [cal.dev_card], dtype=np.float32)
     bg = np.array([cal.sea, cal.panel, (255, 255, 255), (35, 35, 35)], dtype=np.float32)
+    # Working scale and the card size limits below follow the whole screen (cards scale with the
+    # screen, not with the box drawn around them).
     f = max(1, int(round(w / 640.0)))
-    small = region[::f, ::f]
+    small = sub[::f, ::f]
     cls = _classify_pixels(small.reshape(-1, 3), tile_refs, bg, 45.0).reshape(small.shape[:2])
     cands: List[Tuple[int, int, int, int, int, int]] = []   # (class, x, y, w, h, area) in full-res pixels
     for c in range(6):
@@ -1444,9 +1691,10 @@ def read_hand_bar(arr: np.ndarray, cal: Calibration) -> Tuple[Optional[List[int]
     confs = []
     dev = None
     for c, (_, x, y, bw, bh, _) in best.items():
-        card = arr[y0 + y:y0 + y + bh, x:x + bw]
+        x, y = ox + x, oy + y          # full-image pixels
+        card = arr[y:y + bh, x:x + bw]
         card_rgb = np.median(card.reshape(-1, 3), axis=0) if card.size else tile_refs[c]
-        v, cf = read_number_in_region(arr, x, y0 + y + int(0.45 * bh), x + bw, y0 + y + bh, light_text=True,
+        v, cf = read_number_in_region(arr, x, y + int(0.45 * bh), x + bw, y + bh, light_text=True,
                                       min_h=max(5, int(0.15 * bh)), bg_rgb=card_rgb, white=cal.white)
         confs.append(cf if v is not None else 0.0)
         if c < 5:
@@ -1467,21 +1715,37 @@ def _count_pips(face: np.ndarray, bw: int, bh: int, dark_level: int = 80) -> int
     return len(pips)
 
 
-def read_dice(arr: np.ndarray, cal: Optional[Calibration] = None) -> Tuple[int, float]:
+def read_dice(arr: np.ndarray, cal: Optional[Calibration] = None, *,
+              region: Optional[Tuple[int, int, int, int]] = None,
+              warnings: Optional[List[str]] = None) -> Tuple[int, float]:
     """Sum of the pips on the two dice in the bottom-right corner (0 if not found).
 
     The dice are two equal white squares next to each other, each showing
     1-6 pips; any other pair of white blobs (a white player's pieces, text)
-    is rejected.  ``cal.white`` sets the white level.
+    is rejected.  ``cal.white`` sets the white level.  ``region`` (pixels
+    ``x0, y0, x1, y1``) replaces the bottom-right corner as the search area;
+    dice not found in a given region add a warning to ``warnings`` (when a
+    list is given; a miss in the default area is silent).
     """
+    box = _reader_box(arr, "dice", region)
+    out = (0, 0.0) if box is None else _read_dice_in(arr, cal, box)
+    if out[0] == 0 and region is not None and warnings is not None:
+        warnings.append(f"dice not found{_where(arr, region, box)}; the roll is unknown (read as 0)")
+    return out
+
+
+def _read_dice_in(arr: np.ndarray, cal: Optional[Calibration], box: PixelBox) -> Tuple[int, float]:
+    """:func:`read_dice` inside the pixel box ``box``."""
     h, w = arr.shape[:2]
     white_level = cal.white if cal is not None else 255
-    region = arr[int(0.8 * h):, int(0.7 * w):].astype(np.int16)
-    white = region.min(axis=2) > int(0.88 * white_level)
+    rx0, ry0, rx1, ry1 = box
+    sub = arr[ry0:ry1, rx0:rx1].astype(np.int16)
+    white = sub.min(axis=2) > int(0.88 * white_level)
     n, labels, stats, cents = _components(white)
     squares = []
     for i in range(1, n):
         x, y, bw, bh, area = stats[i]
+        # minimum die size relative to the screen (dice scale with it, not with the box)
         if area < 0.0005 * h * w or abs(bw - bh) > 0.3 * max(bw, bh):
             continue
         fill = area / float(bw * bh)
@@ -1505,7 +1769,7 @@ def read_dice(arr: np.ndarray, cal: Optional[Calibration] = None) -> Tuple[int, 
     total = 0
     for x, y, bw, bh in (squares[a], squares[b]):
         mx, my = int(0.1 * bw), int(0.1 * bh)
-        face = region[y + my:y + bh - my, x + mx:x + bw - mx]
+        face = sub[y + my:y + bh - my, x + mx:x + bw - mx]
         pips = _count_pips(face, bw, bh, dark_level=max(40, int(0.31 * white_level)))
         if not 1 <= pips <= 6:
             return 0, 0.0
@@ -1515,26 +1779,45 @@ def read_dice(arr: np.ndarray, cal: Optional[Calibration] = None) -> Tuple[int, 
     return 0, 0.0
 
 
-def read_bank_panel(arr: np.ndarray, cal: Calibration) -> Tuple[Optional[Dict[str, int]], Optional[int]]:
-    """Bank stock per resource and the dev-deck size from the panel top-right (best effort)."""
+def read_bank_panel(arr: np.ndarray, cal: Calibration, *, region: Optional[Tuple[int, int, int, int]] = None,
+                    warnings: Optional[List[str]] = None) -> Tuple[Optional[Dict[str, int]], Optional[int]]:
+    """Bank stock per resource and the dev-deck size from the panel top-right (best effort).
+
+    ``region`` (pixels ``x0, y0, x1, y1``) replaces the top-right corner as
+    the search area; a bank not found (or not fully readable) in a given
+    region adds a warning to ``warnings`` (when a list is given; a miss in
+    the default area is silent).
+    """
+    box = _reader_box(arr, "bank", region)
+    out = (None, None) if box is None else _read_bank_in(arr, cal, box)
+    if out[0] is None and region is not None and warnings is not None:
+        warnings.append(f"bank panel not found or not fully readable{_where(arr, region, box)}")
+    return out
+
+
+def _read_bank_in(arr: np.ndarray, cal: Calibration, box: PixelBox
+                  ) -> Tuple[Optional[Dict[str, int]], Optional[int]]:
+    """:func:`read_bank_panel` inside the pixel box ``box``."""
     h, w = arr.shape[:2]
-    region = arr[: int(0.15 * h), int(0.6 * w):].astype(np.int16)
+    ox, oy, ex, ey = box
+    sub = arr[oy:ey, ox:ex].astype(np.int16)
     navy = np.array(cal.panel, dtype=np.int16)
-    m = np.abs(region - navy).sum(axis=2) < 60
+    m = np.abs(sub - navy).sum(axis=2) < 60
     n, labels, stats, cents = _components(m)
     best = None
     for i in range(1, n):
         x, y, bw, bh, area = stats[i]
+        # minimum panel size relative to the screen (the panel scales with it, not with the box)
         if area > 0.003 * h * w and bw > 2 * bh and (best is None or area > best[4]):
             best = (x, y, bw, bh, area)
     if best is None:
         return None, None
     x, y, bw, bh, _ = best
-    ox = int(0.6 * w)
+    x, y = ox + x, oy + y          # full-image pixels
     cell = bw / 6.0
     vals = []
     for k in range(6):
-        v, cf = read_number_in_region(arr, ox + x + int(k * cell), y + int(0.55 * bh), ox + x + int((k + 1) * cell),
+        v, cf = read_number_in_region(arr, x + int(k * cell), y + int(0.55 * bh), x + int((k + 1) * cell),
                                       y + bh, light_text=True, min_h=max(5, int(0.15 * bh)), bg_rgb=cal.panel,
                                       white=cal.white)
         vals.append(v)
@@ -1566,13 +1849,23 @@ def _estimate_token_colour(arr: np.ndarray, geom: Dict[str, float]) -> Optional[
 
 def parse_image(path_or_image: Union[str, Image.Image, np.ndarray], me: Optional[str] = None,
                 assume_standard: bool = True, calibration: Optional[Calibration] = None,
-                read_ui: bool = True) -> ParseResult:
+                read_ui: bool = True,
+                layout: Optional[Union[UiProfile, Dict[str, Tuple[int, int, int, int]]]] = None) -> ParseResult:
     """Parse a Colonist.io screenshot (path, PIL image or RGB array) into a :class:`ParseResult`.
 
     ``me`` is the colour of the screen owner (defaults to the first panel
     row), ``assume_standard`` constrains tiles / numbers to the standard
     multisets, ``calibration`` overrides the reference colours and
     ``read_ui`` enables the panel / hand bar / dice / bank readers.
+    ``layout`` (a :class:`~catanbot.vision.profile.UiProfile` or a dict of
+    pixel boxes, see :func:`layout_boxes`) tells the readers where the UI
+    panels are; a reader without a box searches its default area.  The
+    ``log`` box is excluded from the board analysis (painted with the
+    measured sea colour); a warning names the hexes and port slots of the
+    fitted board it covers (``debug["log_covers"]``), and a ``log`` box
+    larger than :data:`MAX_LOG_BOX_FRACTION` of the screen is ignored with a
+    warning (``debug["layout_ignored"]``).  ``debug["layout"]`` records the
+    pixel boxes used.
     Everything that cannot be read becomes a warning; ``confidence`` holds a
     0..1 value per stage (``geometry``, ``hexes``, ``numbers``,
     ``numbers_min``, ``robber``, ``ports``, ``pieces``, ``panel``, ``hand``,
@@ -1580,18 +1873,47 @@ def parse_image(path_or_image: Union[str, Image.Image, np.ndarray], me: Optional
     """
     cal = calibration or Calibration()
     arr = _to_rgb_array(path_or_image)
+    boxes = layout_boxes(layout, (arr.shape[1], arr.shape[0]))
     warnings: List[str] = []
     confidence: Dict[str, float] = {}
+    ignored: Dict[str, PixelBox] = {}
+    log_box = boxes.get("log")
+    if log_box is not None:
+        share = (log_box[2] - log_box[0]) * (log_box[3] - log_box[1]) / float(arr.shape[0] * arr.shape[1])
+        if share > MAX_LOG_BOX_FRACTION:   # painting it as sea would hide the board: a wrong region
+            ignored["log"] = boxes.pop("log")
+            log_box = None
+            warnings.append(f"layout log box {ignored['log']} covers {100 * share:.0f}% of the "
+                            f"{arr.shape[1]}x{arr.shape[0]} screen; ignored (the log panel is a column beside the "
+                            "board) - fix the log region")
     sea = sea_mask(arr, cal)
+    noise_region = sea
+    if log_box is not None:   # the log panel's text must not count as (or hide) sensor noise
+        noise_region = sea.copy()
+        noise_region[log_box[1]:log_box[3], log_box[0]:log_box[2]] = False
     # A noisy screenshot (photo of a monitor, heavy re-encoding) breaks the colour masks; a
     # light median filter removes the grain without hurting the digits.
-    noise, med = _noise_level(arr, sea)
+    noise, med = _noise_level(arr, noise_region)
     if noise > 2.0:
         arr = med
         sea = sea_mask(arr, cal)
         warnings.append(f"noisy image (noise level {noise:.1f}); a 3x3 median filter was applied")
-    geom, debug, w0 = find_board(arr, cal, sea=sea)
+    # The UI readers given an explicit box read the image as it is (``ui_arr``); the board
+    # analysis and the readers searching their default areas see the log panel painted as sea.
+    ui_arr = arr
+    log_fill: Optional[RGB] = None
+    known: Optional[np.ndarray] = None       # the painted log box is unknown, not sea, to the lattice ranking
+    if log_box is not None:
+        arr, sea, log_fill = _blank_box(arr, sea, log_box, cal)
+        known = np.ones(sea.shape, dtype=bool)
+        known[log_box[1]:log_box[3], log_box[0]:log_box[2]] = False
+    geom, debug, w0 = find_board(arr, cal, sea=sea, valid=known)
     debug["noise_level"] = noise
+    debug["layout"] = dict(boxes)
+    if ignored:
+        debug["layout_ignored"] = ignored
+    if log_fill is not None:
+        debug["log_fill"] = log_fill
     warnings.extend(w0)
     # ---- brightness / palette adaptation ------------------------------------------
     # The number tokens are the one element with a known colour on every board: if they are
@@ -1610,12 +1932,17 @@ def parse_image(path_or_image: Union[str, Image.Image, np.ndarray], me: Optional
             pts = _token_points(arr, cal_img)
             cands = _fit_candidates(pts, min_matched=8)
             if cands:
-                g, resid, matched, iou, ranking = _pick_registration(cands, ~sea)
+                g, resid, matched, iou, ranking = _pick_registration(cands, ~sea, known)
                 geom = dict(g, width=float(arr.shape[1]), height=float(arr.shape[0]))
                 debug.update({"method": "tokens(adapted)", "points": int(len(pts)), "matched": matched,
                               "residual": resid, "land_iou": iou, "candidates": ranking,
                               "confidence": float(min(1.0, matched / 14.0)), "geometry": dict(geom)})
                 warnings = [w for w in warnings if "blob fallback" not in w and "not located reliably" not in w]
+    if log_box is not None:   # the painted log box must not hide part of the (final) board
+        covered_hexes, covered_slots = _board_under_box(geom, log_box)
+        debug["log_covers"] = {"hexes": covered_hexes, "port_slots": covered_slots}
+        if covered_hexes or covered_slots:
+            warnings.append(_log_box_warning(log_box, covered_hexes, covered_slots))
     confidence["geometry"] = float(debug.get("confidence", 0.0))
     cals = [cal] if cal_img is cal else [cal, cal_img]
     # ---- board ----------------------------------------------------------------------
@@ -1671,28 +1998,37 @@ def parse_image(path_or_image: Union[str, Image.Image, np.ndarray], me: Optional
     bank = None
     deck_left = None
     if read_ui:
+        def ui_image(name: str) -> np.ndarray:
+            return ui_arr if name in boxes else arr
+
         try:
-            rows, panel_conf, w3 = read_player_panel(arr, cal_img, palette=palette)
+            rows, panel_conf, w3 = read_player_panel(ui_image("player_panel"), cal_img, palette=palette,
+                                                     region=boxes.get("player_panel"))
             warnings.extend(w3)
             confidence["panel"] = panel_conf
         except Exception as ex:  # pragma: no cover - best effort
             warnings.append(f"player panel unreadable: {ex}")
+        # each reader words its own not-found warning ("Not-found warnings" at the top of the UI chrome section)
         try:
-            hand, dev, hand_conf = read_hand_bar(arr, cal_img)
+            w4: List[str] = []
+            hand, dev, hand_conf = read_hand_bar(ui_image("hand_bar"), cal_img, region=boxes.get("hand_bar"),
+                                                 warnings=w4)
             confidence["hand"] = hand_conf
-            if hand is None:
-                warnings.append("hand bar not found or not fully readable; your resources are unknown "
-                                "(use --fix me.hand=...)")
+            warnings.extend(w4)
         except Exception as ex:  # pragma: no cover
             warnings.append(f"hand bar unreadable: {ex}")
         try:
-            dice, dice_conf = read_dice(arr, cal_img)
+            w5: List[str] = []
+            dice, dice_conf = read_dice(ui_image("dice"), cal_img, region=boxes.get("dice"), warnings=w5)
             confidence["dice"] = float(dice_conf)
+            warnings.extend(w5)
         except Exception:
             dice = 0
         try:
-            bank, deck_left = read_bank_panel(arr, cal_img)
+            w6: List[str] = []
+            bank, deck_left = read_bank_panel(ui_image("bank"), cal_img, region=boxes.get("bank"), warnings=w6)
             confidence["bank"] = 1.0 if bank is not None else 0.0
+            warnings.extend(w6)
         except Exception:
             bank = None
     # ---- pieces ---------------------------------------------------------------------
@@ -1815,6 +2151,9 @@ def parse_image(path_or_image: Union[str, Image.Image, np.ndarray], me: Optional
 def draw_debug(image: Union[str, Image.Image, np.ndarray], result: ParseResult) -> Image.Image:
     img = Image.fromarray(_to_rgb_array(image)).convert("RGB")
     draw = ImageDraw.Draw(img)
+    for name, (x0, y0, x1, y1) in (result.debug.get("layout") or {}).items():   # UI regions given by a layout
+        draw.rectangle([x0, y0, x1 - 1, y1 - 1], outline=(0, 255, 0), width=2)
+        draw.text((x0 + 3, y0 + 2), name, fill=(0, 255, 0))
     geom = result.debug.get("geometry")
     if not geom:
         return img
