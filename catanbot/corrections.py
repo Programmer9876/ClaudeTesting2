@@ -133,6 +133,10 @@ class CorrectionHub:
             from .robber_eval import RobberContext
             providers.append(RobberContext.for_search(root, me, cfg))
         if getattr(cfg, "kick_active", False):      # search.knight_kick: a leaf-chance provider (depth 1 only)
+            if providers and getattr(providers[-1], "persist_w", 0.0) and getattr(cfg, "robber_corr", 0):
+                raise ValueError("search.kick and search.robber_corr (persistence, robber_eval.PERSIST_W != 0) model "
+                                 "the same mechanism (a block on a knight holder is temporary): never stack them "
+                                 "in one arm")
             from .knightkick import KickChance
             chance.append(KickChance.for_search(root, me, cfg))
         hub = cls(base, providers, chance)
