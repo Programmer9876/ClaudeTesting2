@@ -427,6 +427,8 @@ identical to the run's own.
 - **T1-T6 and T10 are full-information games.**  T7-T9 and T11 are the
   Colonist-information results: our bot sees only public information, while
   Catanatron's bots still see everything.
+- **Catanatron's AlphaBeta ignores development cards** (Q22).  Part of our
+  edge is buying them, and humans will not leave that edge alone.
 - **Catanatron's bots are the only outside opponents.**  The stand-ins in
   R1-R2 are our own stronger versions of them, not independent programs.
 - **The screenshot parser** has only been validated on synthetic renders.
@@ -437,3 +439,71 @@ identical to the run's own.
 - **Shared, loaded hardware** (4 cores, about 3 busy with the proof).
   Timing numbers are for this machine.  Q4 shows the opponents were never
   cut short.
+
+---
+
+## F. Questions added after the proof
+
+### Q21. Is the development deck the standard one, is the shuffle fair, and is the bank finite?
+
+Yes.  `scripts/audit_devdeck.py proof bench_1v1` checks all 8,400 logged games (the proof's 7,600 and the
+1v1 benchmark's 800):
+
+- **Deck:** every game's deck is the standard 25 cards: 14 Knight, 5 Victory Point, 2 Road Building,
+  2 Year of Plenty, 2 Monopoly.  Catanatron builds it in `models/decks.py`, `starting_devcard_bank`; our own
+  engine uses the same counts (`catanbot/board.py`, `DEV_DECK_COUNTS`).
+- **Finite bank:** at the end of every game, bank plus all hands is exactly 19 of each resource, and deck plus
+  held plus played cards is exactly 25.  A card cannot be bought from an empty deck.
+- **Shortage rule:** when the bank cannot pay everyone owed a resource, Catanatron pays nobody that resource
+  (`apply_action.py`, `yield_resources`), even if only one player is owed.  The official rule, which our
+  engine follows (`catanbot/engine.py`, the production step), gives a single owed player whatever is left.
+  This is a small engine difference, and it applies to both sides equally.
+- **Shuffle:** where the Victory Point cards sit in the 4,600 distinct decks looks exactly like uniform
+  shuffling: a chi-square of 18.4, larger in 57 % of simulated uniform shuffles.  (Tests reuse seeds, so the
+  8,400 games hold 4,600 distinct decks.)  Draws come off the logged deck in order in every game.
+- **No peeking** (see also Q6): for each purchase, the chance of a Victory Point card is the share of Victory
+  Point cards among the cards not yet drawn.  Our bot drew 12,582 Victory Point cards in 61,095 purchases,
+  where 12,569.6 were expected (z = +0.13).  A bot that saw the order and bought when a Victory Point card was
+  next would be far above that.  Catanatron's bots drew 4,575 where 4,700.3 were expected (z = -2.11, within
+  chance for this number of checks, and if anything against them).
+
+**Why the replay of game 23 shows three Victory Point cards in six purchases.**  That game was picked *because*
+it was won on hidden points.  Three or more Victory Point cards in six draws has a 7 % chance.  Across all of
+our bot's purchases, 55.4 % were Knights and 20.6 % Victory Point cards, as the deck predicts.  Our bot plays
+its Knights, which everyone sees, and keeps its Victory Point cards hidden.  So the hidden points stand out.
+
+### Q22. Why does Catanatron's AlphaBeta almost never buy development cards, and does our edge depend on it?
+
+Its search handles a purchase correctly: it expands it as a chance node over the cards it cannot see
+(`players/tree_search_utils.py`, `execute_spectrum`).  The cause is the hand-set value function it scores
+positions with (`players/value.py`, `base_fn`, `DEFAULT_WEIGHTS`):
+
+| feature | weight |
+|---|---|
+| public victory points | 3e14 |
+| own production / next player's production | 1e8 / -1e8 |
+| hand synergy | 100 |
+| each development card in hand | 10 |
+| each Knight played | 10.1 |
+| each resource card in hand | 1 |
+
+- **Development cards are tie-breakers.**  A card is worth 10, and it costs three resource cards, which also
+  lowers hand synergy.  So buying one usually scores as a loss.  In the proof games each AlphaBeta bought
+  0.15 cards per game; our bot bought 6.2.
+- **Victory Point cards are worth nothing to it.**  The function counts *public* points
+  (`VICTORY_POINTS`).  A Victory Point card raises only `ACTUAL_VICTORY_POINTS` (`state_functions.py`), even
+  for its own cards, which it can see.  A finished game is scored with the same function (`minimax.py`,
+  `alphabeta`), so a card that wins the game on the spot gets no extra credit.
+- **Depth 2 is too short** to see Largest Army or the later payoff of Monopoly and Year of Plenty.
+
+The code comments name other simplifications (Monopoly assumes perfect card counting; the value function
+models one enemy) but say nothing about development cards.  The weights are a design choice, not a bug in the
+search.
+
+**What it means for us.**  Hidden Victory Point cards were part of the winning total in 168 of our 218 wins in
+T2.  AlphaBeta neither competes for development cards nor suspects hidden points, and humans will do both.  So
+this part of the edge is specific to Catanatron.  Two follow-up checks are proposed, to be reported next to
+the registered results without changing them:
+1. our bot with development-card purchases off, against AlphaBeta;
+2. an AlphaBeta patched to count its own hidden points and to score a won game as a win.
+
