@@ -55,12 +55,23 @@ Metrics (overall and per condition value):
   cache; ``scroll_fresh`` - the same with a fresh cache for each frame (the key is a content hash,
   not a cache serial);
 * ``warm_same`` - a re-read of the identical image with the same cache returned identical lines
-  (text, flag, confidence, key) and box; read time per panel cold (fresh cache) and warm.
+  (text, flag, confidence, key) and box; read time per panel cold (fresh cache) and warm;
+* ``after`` - the warm read of the scrolled (new) frame, scored like the cold read (exact and no
+  extra lines): a cache must never return a stale reading for a changed panel;
+* ``key_clash`` - emitted lines that share a key but read differently (keys are content hashes:
+  only identically drawn entries may share one).  Keys are compared across a scroll only on
+  lossless, unzoomed frames (noise, JPEG blocks and resampling legitimately change a scrolled
+  entry's pixels); the text and the partial flag must be stable on every frame.
+
+Exit status: 2 for bad usage, 1 when ``--min-exact`` or ``--max-failed`` is not met, else 0.
 
 A sample fails when an entry is not exact, a line is extra, the cut entry violates, the box or the
-detection misses, an entry is unstable across the scroll pair or the warm re-read differs.
+detection misses (a finder returning ``None`` is a miss), an entry is unstable across the scroll
+pair, the warm re-read differs, the warm read of the new frame is wrong, or keys clash.
 """
 from __future__ import annotations
+
+# JUDGE_READY: benchmark v2 (after-read scoring, None detections, lossless-only key checks, key clashes, exit codes)
 
 import argparse
 import dataclasses
@@ -398,6 +409,9 @@ ORACLE_FAULTS: Dict[str, str] = {
     "cachekey": "keys are serials handed out by the cache, newest first (scroll_fresh)",
     "defaultbox": "returns and finds the default log_panel_box(img.size), ignoring a given box (box / detect)",
     "flaky": "a re-read of the same image with the same cache lowers a confidence (warm_same)",
+    "stale": "a warm cache returns the previous frame's lines for a new image (after)",
+    "nodetect": "find_log_panel finds nothing (detect)",
+    "samekey": "every line gets the same key (key_clash)",
 }
 #: id(image) -> (truth entries, panel box) of the frames being read (the oracle's answer sheet).
 _ORACLE_FRAMES: Dict[int, Tuple[List[Any], Box]] = {}
@@ -422,12 +436,16 @@ def make_oracle(faults: Sequence[str] = ()) -> Reader:
     if bad:
         raise ValueError(f"unknown oracle fault(s) {', '.join(sorted(bad))}; known: {', '.join(ORACLE_FAULTS)}")
 
-    def find(img: Any, profile: Any = None) -> Box:
+    def find(img: Any, profile: Any = None) -> Optional[Box]:
+        if "nodetect" in faults:
+            return None
         if "defaultbox" in faults:
             return synth.log_panel_box(img.size)
         return _ORACLE_FRAMES[id(img)][1]
 
     def read(img: Any, box: Any = None, profile: Any = None, players: Any = None, cache: Any = None) -> Any:
+        if "stale" in faults and cache is not None and "result" in cache:
+            return cache["result"]
         truth, true_box = _ORACLE_FRAMES[id(img)]
         serials = cache.setdefault("serials", {}) if cache is not None else {}
         keys: Dict[int, str] = {}
@@ -438,6 +456,8 @@ def make_oracle(faults: Sequence[str] = ()) -> Reader:
                 key += f"@{int(e.box[1])}"
             if "cachekey" in faults:
                 key = str(serials.setdefault(key, len(serials)))
+            if "samekey" in faults:
+                key = "K"
             keys[pos] = key
         lines = [SimpleNamespace(text=e.canonical, partial=e.partial, confidence=0.3 if e.partial else 1.0,
                                  box=e.box, key=keys[pos], event=L.parse_log_line(e.canonical))
@@ -454,7 +474,10 @@ def make_oracle(faults: Sequence[str] = ()) -> Reader:
             rbox: Any = synth.log_panel_box(img.size)
         else:
             rbox = tuple(box) if box is not None else true_box
-        return SimpleNamespace(lines=lines, box=rbox, warnings=[], confidence=1.0)
+        result = SimpleNamespace(lines=lines, box=rbox, warnings=[], confidence=1.0)
+        if "stale" in faults and cache is not None:
+            cache["result"] = result
+        return result
 
     return Reader(read, OracleCache, find)
 
@@ -645,10 +668,12 @@ def score(sample: Sample, ocr: Sequence[Sequence[Any]], result_box: Any) -> Dict
 
 
 def scroll_check(prev_truth: Sequence[Any], prev_ocr: Sequence[OcrLine], truth: Sequence[Any],
-                 ocr: Sequence[OcrLine], match: Optional[Sequence[Optional[int]]] = None
+                 ocr: Sequence[OcrLine], match: Optional[Sequence[Optional[int]]] = None, check_key: bool = True
                  ) -> Tuple[int, int, List[str]]:
     """``(pairs, stable, problems)``: the entries fully visible in both frames, how many got the same
-    text, partial flag and (non-empty) key in both, and a description of each unstable one."""
+    text, partial flag and - with ``check_key`` - (non-empty) key in both, and a description of each
+    unstable one.  Keys are only compared on lossless, unzoomed frames: noise, JPEG blocks and
+    resampling are fixed to image positions, so a scrolled entry's pixels legitimately change."""
     def aligned(tr: Sequence[Any], oc: Sequence[OcrLine]) -> List[Optional[int]]:
         return align([text_signature(e.canonical) for e in tr], [e.canonical for e in tr],
                      [text_signature(o[0]) for o in oc], [o[0] for o in oc])
@@ -666,7 +691,7 @@ def scroll_check(prev_truth: Sequence[Any], prev_ocr: Sequence[OcrLine], truth: 
         a = prev_ocr[ja] if ja is not None else None
         b = ocr[jb] if jb is not None else None
         if a is not None and b is not None and a[0] == b[0] and a[1] == b[1] and a[3] not in (None, "") \
-                and a[3] == b[3]:
+                and b[3] not in (None, "") and (a[3] == b[3] or not check_key):
             stable += 1
         else:
             problems.append(f"[{e.index}] {e.canonical!r}: before {a[:2] + (a[3],) if a else None} "
@@ -677,7 +702,7 @@ def scroll_check(prev_truth: Sequence[Any], prev_ocr: Sequence[OcrLine], truth: 
 _SUM_KEYS = ("samples", "entries", "exact", "emitted", "lines", "emitted_lines", "tp", "extra", "dup", "false",
              "partial_samples", "part_viol", "hi", "hi_ok", "lo", "lo_ok", "box_checked", "box_ok", "det_checked",
              "det_ok", "det_iou", "scroll_pairs", "scroll_ok", "fresh_pairs", "fresh_ok", "cold_s", "warm_s", "timed",
-             "warm_same")
+             "warm_same", "after_entries", "after_exact", "after_extra", "key_clash")
 
 
 def _add(acc: Dict[str, float], r: Dict[str, Any]) -> None:
@@ -705,6 +730,8 @@ def _rates(acc: Dict[str, float]) -> Dict[str, Any]:
         "scroll_fresh": div(g("fresh_ok"), g("fresh_pairs")),
         "cold_ms": div(1000 * g("cold_s"), g("timed")), "warm_ms": div(1000 * g("warm_s"), g("timed")),
         "warm_same": div(g("warm_same"), g("timed")),
+        "after_exact": div(g("after_exact"), g("after_entries")), "after_extra": int(g("after_extra")),
+        "key_clash": int(g("key_clash")),
     }
 
 
@@ -715,7 +742,7 @@ def _pct(v: Optional[float]) -> str:
 def format_table(summary: Dict[str, Any]) -> str:
     head = (f"{'condition':<28}{'n':>5}{'ent':>6}{'exact%':>8}{'emit%':>7}{'prec%':>7}{'extra':>6}{'false':>6}"
             f"{'partOK%':>8}{'hi-acc%':>8}{'(n)':>6}{'lo-acc%':>8}{'(n)':>5}{'box%':>6}{'det%':>6}{'scrl%':>6}"
-            f"{'fresh%':>7}{'same%':>6}{'cold ms':>9}{'warm ms':>8}")
+            f"{'fresh%':>7}{'same%':>6}{'aftr%':>6}{'clash':>6}{'cold ms':>9}{'warm ms':>8}")
     out = [head, "-" * len(head)]
 
     def row(label: str, m: Dict[str, Any]) -> str:
@@ -724,7 +751,7 @@ def format_table(summary: Dict[str, Any]) -> str:
                 f"{_pct(m['precision']):>7}{m['extra']:>6}{m['false']:>6}{_pct(m['partial_ok']):>8}"
                 f"{_pct(m['hi_acc']):>8}{m['hi_n']:>6}{_pct(m['lo_acc']):>8}{m['lo_n']:>5}{_pct(m['box_ok']):>6}"
                 f"{_pct(m['detect']):>6}{_pct(m['scroll']):>6}{_pct(m['scroll_fresh']):>7}{_pct(m['warm_same']):>6}"
-                f"{ms(m['cold_ms']):>9}{ms(m['warm_ms']):>8}")
+                f"{_pct(m['after_exact']):>6}{m['key_clash']:>6}{ms(m['cold_ms']):>9}{ms(m['warm_ms']):>8}")
     out.append(row("OVERALL", summary["overall"]))
     for cond, vals in summary["by_condition"].items():
         for v, m in sorted(vals.items()):
@@ -776,7 +803,28 @@ def failed(r: Dict[str, Any]) -> bool:
     """Whether a sample's result (:func:`evaluate_sample`) fails any metric."""
     return bool(r["exact"] < r["entries"] or r["extra"] or r["part_viol"] or not r.get("warm_same", 1)
                 or (r["box_checked"] and not r["box_ok"]) or (r.get("det_checked") and not r.get("det_ok"))
-                or r.get("scroll_ok", 0) < r.get("scroll_pairs", 0) or r.get("fresh_ok", 0) < r.get("fresh_pairs", 0))
+                or r.get("scroll_ok", 0) < r.get("scroll_pairs", 0) or r.get("fresh_ok", 0) < r.get("fresh_pairs", 0)
+                or r.get("after_exact", 0) < r.get("after_entries", 0) or r.get("after_extra", 0)
+                or r.get("key_clash", 0))
+
+
+def key_clashes(ocr: Sequence[OcrLine]) -> int:
+    """Pairs of emitted (non-partial) lines that share a key but read differently: a content hash
+    may only collide for entries drawn identically."""
+    seen: Dict[Any, str] = {}
+    clashes = 0
+    for text, partial, _conf, key in ocr:
+        if partial or key in (None, ""):
+            continue
+        if key in seen and seen[key] != text:
+            clashes += 1
+        seen.setdefault(key, text)
+    return clashes
+
+
+def lossless(s: Sample) -> bool:
+    """Frames whose entry pixels move with the entry on a scroll (no noise, JPEG or zoom)."""
+    return s.cond.get("jpeg") == "off" and s.cond.get("noise") == "none" and s.cond.get("scale") == "none"
 
 
 def evaluate_sample(s: Sample, reader: Reader, give_box: bool = False, give_players: bool = False
@@ -805,7 +853,7 @@ def evaluate_sample(s: Sample, reader: Reader, give_box: bool = False, give_play
         warm = time.perf_counter() - t1
         ocr = _lines_of(res)
         r = score(s, ocr, _box_of(res))
-        r.update(samples=1, cold_s=cold, warm_s=warm, timed=1,
+        r.update(samples=1, cold_s=cold, warm_s=warm, timed=1, key_clash=key_clashes(ocr),
                  warm_same=int(_lines_of(res2) == ocr and _box_of(res2) == _box_of(res)))
         # panel detection, with and without --give-box
         if reader.find is not None:
@@ -814,17 +862,19 @@ def evaluate_sample(s: Sample, reader: Reader, give_box: bool = False, give_play
             det = _box_of(res)
         else:
             det = _box_of(reader.read(s.img, box=None, cache=new_cache(), **kw))
-        if det is not None:
-            iou = _iou(tuple(float(v) for v in det), s.box)
+        if det is not None or reader.find is not None or not give_box:
+            iou = _iou(tuple(float(v) for v in det), s.box) if det is not None else 0.0   # None = a miss
             r.update(det_checked=1, det_ok=int(iou >= BOX_IOU), det_iou=iou)
         # the scroll pair
         if s.prev_img is not None and s.prev_truth is not None:
             c2 = new_cache()
             prev = _lines_of(reader.read(s.prev_img, box=box, cache=c2, **kw))     # c2 is fresh here
             after = _lines_of(reader.read(s.img, box=box, cache=c2, **kw))
-            p, ok, probs = scroll_check(s.prev_truth, prev, s.truth, after)
+            ra = score(s, after, None)          # the warm read of the new frame is scored like the cold one
+            r.update(after_entries=ra["entries"], after_exact=ra["exact"], after_extra=ra["extra"])
+            p, ok, probs = scroll_check(s.prev_truth, prev, s.truth, after, check_key=lossless(s))
             r.update(scroll_pairs=p, scroll_ok=ok, scroll_problems=probs)
-            p, ok, probs = scroll_check(s.prev_truth, prev, s.truth, ocr, r["match"])
+            p, ok, probs = scroll_check(s.prev_truth, prev, s.truth, ocr, r["match"], check_key=lossless(s))
             r.update(fresh_pairs=p, fresh_ok=ok, fresh_problems=probs)
     finally:
         _ORACLE_FRAMES.clear()
@@ -907,8 +957,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--json", default="", help="write the JSON summary here")
     ap.add_argument("--save-dir", default="", help="dump failing samples here (panel PNG + truth / OCR text)")
     ap.add_argument("--min-exact", type=float, default=None, help="exit 1 when the overall exact rate is below this")
+    ap.add_argument("--max-failed", type=float, default=None,
+                    help="exit 1 when more than this fraction of the samples fail any metric (0 = every sample "
+                         "must pass)")
     ap.add_argument("-v", "--verbose", action="store_true", help="one line per sample on stderr")
     args = ap.parse_args(argv)
+    if args.n < 0:
+        ap.error("--n must be >= 0")
     try:
         reader = load_reader(args.reader)
     except (ImportError, AttributeError, ValueError) as exc:
@@ -927,6 +982,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         with open(args.json, "w") as f:
             json.dump(summary, f, indent=1, sort_keys=True)
     if args.min_exact is not None and (summary["overall"]["exact"] or 0.0) < args.min_exact:
+        return 1
+    if args.max_failed is not None and summary["failed_samples"] > args.max_failed * summary["samples"]:
         return 1
     return 0
 

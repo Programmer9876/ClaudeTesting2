@@ -33,9 +33,10 @@ class ProfileError(ValueError):
 
 
 def _check_fraction_box(name: str, box: Sequence[float]) -> Box:
-    if len(box) != 4:
-        raise ProfileError(f"region '{name}': expected 4 numbers x0,y0,x1,y1, got {list(box)}")
-    x0, y0, x1, y1 = (float(v) for v in box)
+    try:
+        x0, y0, x1, y1 = (float(v) for v in box)
+    except (TypeError, ValueError):
+        raise ProfileError(f"region '{name}': expected 4 numbers x0,y0,x1,y1, got {box!r}")
     if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
         raise ProfileError(f"region '{name}': fractions must satisfy 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1, "
                            f"got {x0:g},{y0:g},{x1:g},{y1:g}")

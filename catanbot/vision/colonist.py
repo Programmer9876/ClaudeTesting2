@@ -1488,12 +1488,19 @@ def _blank_box(arr: np.ndarray, sea: np.ndarray, box: PixelBox, cal: Calibration
     return out, sea_out, fill
 
 
-def _board_under_box(geom: Dict[str, float], box: PixelBox) -> Tuple[List[int], List[int]]:
+_STANDARD_PORT_EDGE_IDS = frozenset(e for e, _ in B.STANDARD_PORT_EDGES)
+
+
+def _board_under_box(geom: Dict[str, float], box: PixelBox, standard_ports: bool = True
+                     ) -> Tuple[List[int], List[int]]:
     """Hexes whose centre and coastal edges whose port-icon slot (:func:`_port_slot_points`) lie inside
-    ``box`` for the fitted board ``geom``: ``(hex ids, edge ids)``, both sorted."""
+    ``box`` for the fitted board ``geom``: ``(hex ids, edge ids)``, both sorted.  With
+    ``standard_ports`` only the 9 harbour positions of the standard board count (the other coastal
+    edges never carry a port there, so covering them hides nothing)."""
     x0, y0, x1, y1 = box
     hexes = [i for i, (x, y) in enumerate(_lattice_pixels(geom, "hex")) if x0 <= x < x1 and y0 <= y < y1]
-    edges = sorted(e for e, x, y in _port_slot_points(geom) if x0 <= x < x1 and y0 <= y < y1)
+    edges = sorted(e for e, x, y in _port_slot_points(geom) if x0 <= x < x1 and y0 <= y < y1
+                   and (not standard_ports or e in _STANDARD_PORT_EDGE_IDS))
     return hexes, edges
 
 
@@ -1907,7 +1914,13 @@ def parse_image(path_or_image: Union[str, Image.Image, np.ndarray], me: Optional
         arr, sea, log_fill = _blank_box(arr, sea, log_box, cal)
         known = np.ones(sea.shape, dtype=bool)
         known[log_box[1]:log_box[3], log_box[0]:log_box[2]] = False
-    geom, debug, w0 = find_board(arr, cal, sea=sea, valid=known)
+    try:
+        geom, debug, w0 = find_board(arr, cal, sea=sea, valid=known)
+    except ValueError as ex:
+        if log_box is None:
+            raise
+        raise ValueError(f"{ex}; a layout log box {log_box} is set - check that it covers only the log panel, "
+                         "not the board") from ex
     debug["noise_level"] = noise
     debug["layout"] = dict(boxes)
     if ignored:
@@ -1938,8 +1951,16 @@ def parse_image(path_or_image: Union[str, Image.Image, np.ndarray], me: Optional
                               "residual": resid, "land_iou": iou, "candidates": ranking,
                               "confidence": float(min(1.0, matched / 14.0)), "geometry": dict(geom)})
                 warnings = [w for w in warnings if "blob fallback" not in w and "not located reliably" not in w]
+    if log_box is not None and (not str(debug.get("method", "")).startswith("tokens")
+                                or float(debug.get("confidence", 0.0)) < 0.5):
+        # a log box over the board can break the fit itself; the covered-hex check below then sees a
+        # wrong geometry, so say it here too (worded without "blob fallback": a later step replaces
+        # those warnings with its own)
+        warnings.append(f"a layout log box {log_box} is set and the board fit fell back to the "
+                        f"'{debug.get('method')}' method: if the log region overlaps the board, shrink it to the "
+                        "log panel")
     if log_box is not None:   # the painted log box must not hide part of the (final) board
-        covered_hexes, covered_slots = _board_under_box(geom, log_box)
+        covered_hexes, covered_slots = _board_under_box(geom, log_box, standard_ports=assume_standard)
         debug["log_covers"] = {"hexes": covered_hexes, "port_slots": covered_slots}
         if covered_hexes or covered_slots:
             warnings.append(_log_box_warning(log_box, covered_hexes, covered_slots))

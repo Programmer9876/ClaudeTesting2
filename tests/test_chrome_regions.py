@@ -339,10 +339,11 @@ def test_log_region_is_excluded_from_the_board(variant):
     assert good.debug["layout"] == {"log": log_box}
     assert good.debug["buildings"] == base.debug["buildings"] and good.debug["roads"] == base.debug["roads"]
     assert good.debug["points"] == base.debug["points"]          # no token look-alikes in the lattice fit
-    # the box covers the icon slot of the (portless) east edge 38, and says so
-    assert good.debug["log_covers"] == {"hexes": [], "port_slots": [38]}
-    extra = [w for w in good.warnings if w.startswith("layout log box")]
-    assert len(extra) == 1 and f"layout log box {log_box} covers 1 port slot (coastal edge 38)" in extra[0]
+    # the box covers the icon slot of east edge 38, which is not a harbour position on the standard
+    # board: nothing is hidden, so no warning (it would push useful warnings out of the live loop)
+    assert good.debug["log_covers"] == {"hexes": [], "port_slots": []}
+    assert 38 in _board_under_box(good.debug["geometry"], log_box, standard_ports=False)[1]
+    assert not [w for w in good.warnings if w.startswith("layout log box")]
     if variant == "noisy":   # the noise level is measured without the log box: its number may differ
         assert [w.split("(noise level")[0] for w in _no_log_warning(good.warnings)] == \
             [w.split("(noise level")[0] for w in base.warnings]
@@ -424,11 +425,14 @@ def test_log_box_over_the_board_is_reported():
     covers = res.debug["log_covers"]
     assert covers["hexes"] == hexes
     assert (covers["hexes"], covers["port_slots"]) == _board_under_box(res.debug["geometry"], box)
-    assert len(covers["port_slots"]) >= 5
+    all_slots = _board_under_box(res.debug["geometry"], box, standard_ports=False)[1]
+    assert len(all_slots) >= 5 and set(covers["port_slots"]) < set(all_slots)
+    assert covers["port_slots"] and all(e in {e for e, _ in B.STANDARD_PORT_EDGES} for e in covers["port_slots"])
     extra = [w for w in res.warnings if w not in base.warnings]
     warn = [w for w in extra if w.startswith("layout log box")]
     assert len(warn) == 1
-    assert f"covers 6 hexes ({', '.join(map(str, hexes))}) and {len(covers['port_slots'])} port slots" in warn[0]
+    n = len(covers["port_slots"])
+    assert f"covers 6 hexes ({', '.join(map(str, hexes))}) and {n} port slot{'s' if n > 1 else ''}" in warn[0]
     assert "shrink the log region" in warn[0]
     # a log box covering most of the screen (here: all of it, clipped) is ignored, with a warning
     big = parse_image(arr, me="red", read_ui=False, layout={"log": (-50, -50, 5000, 5000)})
@@ -509,3 +513,18 @@ def test_profile_boxes_are_validated_like_dict_boxes():
         layout_boxes(Duck((0, 0, math.nan, 10)), SIZE)
     with pytest.raises(ValueError, match="'log'.*4 numbers"):
         layout_boxes(Duck((0, 0, 10)), SIZE)
+
+
+def test_log_box_that_breaks_the_board_fit_is_named():
+    # a log box over most of the board breaks the lattice fit itself: the covered-hex check then sees
+    # a wrong geometry, so the fallback (or the failure) must name the log box
+    arr = _render(_state())
+    g = _small_board()
+    cx, cy, hs = g["cx"], g["cy"], g["hex_size"]
+    box = (int(cx - 4.4 * hs), int(cy - 4.1 * hs), int(cx + 3.0 * hs), int(cy + 4.1 * hs))
+    try:
+        res = parse_image(arr, me="red", read_ui=False, layout={"log": box})
+    except ValueError as ex:
+        assert f"a layout log box {box} is set" in str(ex)
+    else:
+        assert any(str(box) in w and ("fell back" in w or "covers" in w) for w in res.warnings), res.warnings

@@ -664,7 +664,8 @@ def bench():
     fonts = {k: v for k, v in ev.FONTS.items() if all(os.path.exists(p) for p in v)}
     games = ev.build_games([1, 2], ["counts", "colonist"], 6)
     picks = []
-    for want in ({"box": "jittered"}, {"box": "jittered", "icons": "on"}, {"cut": "0.3", "box": "default"}):
+    for want in ({"box": "jittered"}, {"box": "jittered", "icons": "on"}, {"cut": "0.3", "box": "default"},
+                 {"jpeg": "off", "noise": "none", "scale": "none"}, {"jpeg": "on"}):
         s = next(sm for sm in (ev.make_sample(k, games, 0, fonts, want) for k in range(400)) if sm is not None)
         picks.append(s)
     return ev, games, fonts, picks
@@ -686,10 +687,22 @@ def test_ocr_benchmark_each_oracle_fault_fails_its_metric(bench):
     for r in results(["dup"]):
         assert r["extra"] == r["dup"] == 1 and r["exact"] == r["entries"] and ev.failed(r)
         assert r["scroll_ok"] == r["scroll_pairs"] and r["warm_same"] and r["box_ok"]
-    for r in results(["rekey"]):
-        assert r["scroll_ok"] < r["scroll_pairs"] and r["fresh_ok"] < r["fresh_pairs"] and r["extra"] == 0
-    for r in results(["cachekey"]):          # stable with one cache, not across fresh caches
-        assert r["scroll_ok"] == r["scroll_pairs"] and r["fresh_ok"] < r["fresh_pairs"] and ev.failed(r)
+    # keys are compared across a scroll only on lossless, unzoomed frames
+    for s, r in zip(samples, results(["rekey"])):
+        if ev.lossless(s):
+            assert r["scroll_ok"] < r["scroll_pairs"] and r["fresh_ok"] < r["fresh_pairs"] and r["extra"] == 0
+        else:
+            assert r["scroll_ok"] == r["scroll_pairs"] and r["fresh_ok"] == r["fresh_pairs"]
+    for s, r in zip(samples, results(["cachekey"])):   # stable with one cache, not across fresh caches
+        assert r["scroll_ok"] == r["scroll_pairs"]
+        assert (r["fresh_ok"] < r["fresh_pairs"] and ev.failed(r)) if ev.lossless(s) else not ev.failed(r)
+    assert any(ev.lossless(s) for s in samples) and not all(ev.lossless(s) for s in samples)
+    for r in results(["stale"]):             # a warm cache answering a changed frame with the old reading
+        assert r["after_exact"] < r["after_entries"] and r["exact"] == r["entries"] and ev.failed(r)
+    for r in results(["nodetect"]):          # a finder that returns None is a miss, not "not checked"
+        assert r["det_checked"] and not r["det_ok"] and r["det_iou"] == 0.0 and ev.failed(r)
+    for r in results(["samekey"]):           # different readings sharing one key
+        assert r["key_clash"] > 0 and ev.failed(r)
     for give_box in (False, True):           # a moved panel: box and detection both miss, given the box or not
         for r in results(["defaultbox"], give_box, jittered):
             assert r["box_checked"] and not r["box_ok"] and r["det_checked"] and not r["det_ok"] and ev.failed(r)
