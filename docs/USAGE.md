@@ -337,8 +337,10 @@ What makes it safe to leave running (`vision/live.py`):
   them (a frame that disagrees is reported once).  Pieces never disappear
   because one frame missed them: a road / settlement / city is kept once
   seen in 2 of the last 3 reads, and a settlement only ever becomes a city.
-  A new game (another board, or the pieces gone, for 3 frames) resets the
-  board, the log and the card count, and says so.
+  A new game (another map in 3 frames in a row, every number token read; or
+  the same map with nearly all pieces gone) resets the board, the log and
+  the card count, and says so; a trade window over part of the board never
+  counts as one.
 * **Stable log** - each new log entry is confirmed once it reads the same
   in two frames in a row (or with high confidence), in log order, exactly
   once; an entry already confirmed is never re-read differently (the card
@@ -346,10 +348,11 @@ What makes it safe to leave running (`vision/live.py`):
   scrolling the panel up is recognised; if the log moved on while the
   screen was not watched (another window in front), the jump is reported
   and the card count resynchronises from the hand sizes on screen.
-* **Card count** - with `--session FILE` the counter is fed only the
-  confirmed entries plus the hand sizes / your hand / the bank of the
-  latest frame, once the log has settled, and the session file is saved
-  after every update.
+* **Card count** - the counter is fed only the confirmed entries plus the
+  hand sizes / your hand / the bank of the latest frame, once the log has
+  settled (never while an entry on screen is still unconfirmed).  With
+  `--session FILE` it is saved after every update and continued after a
+  restart; a new game moves the old file to `FILE.previous`.
 * **Offers** - a new offer (or a counter-offer to your offer) from an
   opponent is judged at once: the trade rules give accept / reject (with
   the counted hands when the session runs), the accept / reject / counter
@@ -445,6 +448,9 @@ stopped: 812 frames (640 unchanged, 150 board reads, 95 log reads), 214 log entr
   frame only hides new pieces for that frame.  A board change the thumbnail
   cannot see (a one-digit change smaller than a few pixels) is picked up
   with the next change.
+* Anything that moves outside the log panel (a turn timer, an animation)
+  makes every frame a board change: each is then parsed (about 1 s of CPU),
+  so a longer `--interval` lowers the load.
 
 **Recording a dataset of your own games.**  `--record DIR` writes, next to
 the live output:

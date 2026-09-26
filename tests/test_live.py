@@ -273,6 +273,32 @@ def test_live_session_with_the_real_parser_keeps_the_board_under_a_popup(game, r
     assert tr.counter.weight_of([p.resources for p in s_end.players]) > 0
 
 
+def test_live_session_new_game_starts_over(game, rendered, tmp_path):
+    """A second game on screen: detected once, the log / count / session start over, and the new
+    game's log is read from its first entry (nothing of it lands in the old game's count)."""
+    reader, truth, imgs = rendered
+    other = replay(seed=5, frames=6, every=4)
+    imgs2 = []
+    for s, lines in other:
+        img = render(s, lines, reader)
+        truth.add(img, s)
+        imgs2.append(img)
+    sp = tmp_path / "s.json"
+    sess = LV.LiveSession(me="red", session_path=str(sp), log_reader=reader, parse_fn=truth)
+    ups = [sess.step(im) for im in imgs[:12] + imgs2 + [imgs2[-1]]]
+    assert sum(u.new_game for u in ups) == 1 and ups[12 + 2].new_game
+    old_entries = [e.text for u in ups[:12 + 2] for e in u.new_entries]
+    s1, l1 = game[11]
+    assert old_entries == [synth.canonical_log_text(x, s1.players) for x in l1]    # nothing of game 2 before
+    s2, l2 = other[-1]
+    assert [e.text for e in sess.stream.entries] == [synth.canonical_log_text(x, s2.players) for x in l2]
+    tr = sess.tracker
+    assert tr.origin == "start" and [list(h) for h in tr.counter.most_likely()] == [p.resources for p in s2.players]
+    assert (tmp_path / "s.json.previous").exists() and sp.exists()
+    assert sum("new game" in w for u in ups for w in u.warnings) >= 1
+    assert not any("jumped" in w or "card count:" in w for u in ups for w in u.warnings)
+
+
 def test_live_session_with_the_installed_log_reader(game, rendered):
     """Runs only once catanbot.vision.logocr is installed: the real OCR in the live loop on the
     replay's first frames (board from the truth parser) - entries in order, each at most once, and
@@ -515,11 +541,17 @@ def test_board_memory_detects_a_new_game():
     for q in empty["players"]:
         q["settlements"], q["cities"], q["roads"] = [], [], []
     assert [m2.update(empty, CONF).new_game for _ in range(3)] == [False, False, True]
-    # an unconfident frame never starts a new game
+    # an unconfident frame never starts a new game, nor does a trade window hiding most of the board
     m3 = LV.BoardMemory()
     m3.update(p, CONF)
     m3.update(p, CONF)
     assert not any(m3.update(other, {"hexes": 0.3, "numbers": 0.3}).new_game for _ in range(5))
+    covered = json.loads(json.dumps(p))
+    covered["hexes"][:12] = other["hexes"][:12]
+    assert sum(a != b for a, b in zip(covered["hexes"], p["hexes"])) >= 10
+    assert not any(m3.update(covered, CONF).new_game for _ in range(6))
+    assert not any(m3.update(other, dict(CONF, numbers_min=0.2)).new_game for _ in range(6))   # tokens hidden
+    assert m3.locked and m3.update(p, CONF).parsed["hexes"] == p["hexes"] and not m3.suspect
 
 
 # ---------------------------------------------------------------------------

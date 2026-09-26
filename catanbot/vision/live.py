@@ -25,7 +25,8 @@ another window.  The pipeline of one :meth:`LiveSession.step` is
    is locked once two consecutive confident parses agree and never re-read (a popup over the
    board cannot change it), pieces are monotonic (added once seen in 2 of the last 3 parses,
    settlement -> city upgrades, never removed because a frame missed them) and a new game
-   (the board or the pieces replaced for 3 frames) resets everything.
+   (another map, or the pieces gone, for 3 frames - never a popup) resets everything; while it
+   is only suspected, log gaps and the card count are held.
 4. **offers** - a newly confirmed ``offer`` / ``counter`` entry of an opponent that is still
    open is evaluated at once with :func:`evaluate_offer` (the trade rules, the accept /
    reject / counter search of :mod:`catanbot.counteroffers` and, when the card counter runs,
@@ -33,7 +34,8 @@ another window.  The pipeline of one :meth:`LiveSession.step` is
 5. **card counting** - the :class:`~catanbot.colonist_log.ColonistLogTracker` of the
    ``--session`` file is fed only the stream's confirmed window (stable texts: the tracker
    would double count an entry whose reading changed) plus the latest state and bank, once
-   the log has settled, and the session is saved.
+   the log has settled (never while an entry on screen is unconfirmed: the hand sizes would be
+   ahead of the log), and the session is saved.
 6. **recording** (``record_dir``) - changed frames as ``frames/NNNNN.png`` and JSON lines of
    the confirmed entries (``events.jsonl``), the board parses (``parses.jsonl``), the offer
    verdicts (``offers.jsonl``) and the raw log reads (``ocr.jsonl``): a dataset of the user's
@@ -113,10 +115,6 @@ def _norm_text(text: Any) -> str:
 def _warn_key(msg: str) -> str:
     """Warnings are compared without their numbers (``noise level 2.3`` vs ``2.4`` is one warning)."""
     return re.sub(r"\d+(?:\.\d+)?", "#", _norm_text(msg))
-
-
-def _hhmmss(t: float) -> str:
-    return time.strftime("%H:%M:%S", time.localtime(t))
 
 
 # ---------------------------------------------------------------------------
@@ -1641,7 +1639,7 @@ class LiveSession:
         return {"frames": self.frames, "skipped": self.skipped, "parses": self.parses, "log_reads": self.log_reads,
                 "entries": len(self.stream.entries), "offers": self.offers_evaluated, "gaps": self.stream.gaps,
                 "new_games": self.new_games,
-                "card_count": (self.card_count or {}).get("entries") if self.card_count else None}
+                "counted": (self.card_count or {}).get("entries") if self.card_count else None}
 
     def close(self) -> None:
         """Save the card-count session (it is also saved after every update)."""
