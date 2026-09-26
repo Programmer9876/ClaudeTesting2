@@ -1,5 +1,8 @@
 # catanbot
 
+*Last updated 2026-09-26 (UTC).  Every result below names its date, our code commit and the Catanatron
+version; the History section at the end keeps the trail.*
+
 An ML-trained Settlers of Catan bot for 3-4 player games that
 
 * **plays**: expectimax search over dice / draws / steals / trade acceptance
@@ -57,6 +60,10 @@ uncertain is flagged and correctable with `--fix`.
 
 ## Strength against Catanatron, and what it does not show
 
+*As of 2026-09-26.  Our code: commits `9984181` and `9599eed` (strength proof), `35ef224` (1v1).  Opponents:
+Catanatron 3.3.0 at GitHub commit `ecf9311` (committed 2026-09-08; still the latest upstream on 2026-09-26)
+and 3.2.1 from PyPI.  A newer bot or a newer Catanatron can change these numbers: check the History section.*
+
 Pre-registered results, with every game archived and replayable:
 - 4-player, our bot against three Catanatron bots (docs/PROOF.md): 62.8 % against ValueFunction and 54.5 %
   against AlphaBeta, where chance is 25 %; 58.5 % against AlphaBeta when our bot sees only what a Colonist
@@ -78,3 +85,17 @@ docs/BENCHMARKS.md, "What Catanatron's bots are, and what they are not".
 Results of the training run shipped in `models/value_net.npz` are in
 `docs/RESULTS.md`.
 Champion league and promotion gate for every new training run / strategy (exact old bots, sequential tests): `docs/LEAGUE.md`.
+
+## History
+
+A dated trail of results and of what they were measured against.  When a result is re-measured (a newer
+version of our bot, a newer Catanatron), add a row; never overwrite an old one.
+
+| date (UTC) | what | our code | opponents | where |
+|---|---|---|---|---|
+| 2026-09-25 | Catanatron ladders: stand-ins and strong players | see the doc | Catanatron 3.2.1 (PyPI), 3.3.0 (`ecf9311`) | docs/BENCHMARKS.md |
+| 2026-09-26 | Strength proof complete, claims 1-4 PASS: 62.8 % vs 3x ValueFunction, 54.5 % vs 3x AlphaBeta (chance 25 %), 58.5 % vs 3x AlphaBeta with Colonist information | `9984181`, `9599eed` | Catanatron 3.3.0 (`ecf9311`), 3.2.1 | docs/PROOF.md, proof/ |
+| 2026-09-26 | 1v1 benchmark: 75.5 % vs AlphaBeta, 73.2 % vs ValueFunction | `35ef224` | Catanatron 3.3.0 (`ecf9311`) | docs/BENCH_1V1.md, bench_1v1/ |
+| 2026-09-26 | Catanatron's gaps documented (development cards, hidden VP, one enemy, depth 2, no trading, no politics) | - | checked against Catanatron `ecf9311` | docs/BENCHMARKS.md |
+| 2026-09-26 | Test queue started; first verdicts (player trading worth about 24 points against value-rule responders; wider offers shelved; acceptance calibration failed its behaviour check) | epochs A `3c7089c`, B1 `aefdd4a` | Catanatron 3.3.0 (`ecf9311`), self-play | docs/ABLATIONS.md, docs/queue/ |
+

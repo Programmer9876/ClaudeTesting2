@@ -733,9 +733,14 @@ cannot pay).
 
 ## What Catanatron's bots are, and what they are not (read before quoting any result)
 
+*As of 2026-09-26: checked against Catanatron 3.3.0 at GitHub commit `ecf9311` (committed 2026-09-08), which
+was still the latest upstream `main` on 2026-09-26.  Catanatron is still being developed, and a later version
+may close some of these gaps.  Re-check the listed source lines before quoting this table about a newer
+version, and add a dated note here when something changes.*
+
 Catanatron is the standard open-source Catan benchmark; HexMachina (Belle et al.) also measured against its
 AlphaBeta player, which is why we use it.  But its bots are far from complete players.  Every gap below was
-checked in its source (GitHub checkout `ecf9311`, catanatron 3.3.0) and, where possible, measured in our logs.
+checked in its source and, where possible, measured in our logs.
 
 | gap | where in Catanatron | what we see in our games |
 |---|---|---|

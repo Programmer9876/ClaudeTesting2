@@ -1,5 +1,8 @@
 # Test-queue games
 
+*Started 2026-09-26 (UTC) and extended at every check-in.  `index.json` and `epochs.json` record, per row,
+the code epoch and the commit its games ran on.*
+
 The per-game results of every finished test-queue row (docs/QUEUE.md), one file per row.  The verdicts made
 from them are in `../ledger.jsonl` and `../QUEUE.md`.  `scripts/archive_queue.py` copies a row here once its
 last record is `stop`.  Rows still running are copied when they finish, or with `--all` before a session ends.

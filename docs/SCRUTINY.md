@@ -446,7 +446,7 @@ identical to the run's own.
 
 ## F. Questions added after the proof
 
-### Q21. Is the development deck the standard one, is the shuffle fair, and is the bank finite?
+### Q21. Is the development deck the standard one, is the shuffle fair, and is the bank finite? (2026-09-26)
 
 Yes.  `scripts/audit_devdeck.py proof bench_1v1` checks all 8,400 logged games (the proof's 7,600 and the
 1v1 benchmark's 800):
@@ -488,7 +488,7 @@ it was won on hidden points.  Three or more Victory Point cards in six draws has
 our bot's purchases, 55.4 % were Knights and 20.6 % Victory Point cards, as the deck predicts.  Our bot plays
 its Knights, which everyone sees, and keeps its Victory Point cards hidden.  So the hidden points stand out.
 
-### Q22. Why does Catanatron's AlphaBeta almost never buy development cards, and does our edge depend on it?
+### Q22. Why does Catanatron's AlphaBeta almost never buy development cards, and does our edge depend on it? (2026-09-26)
 
 Its search handles a purchase correctly: it expands it as a chance node over the cards it cannot see
 (`players/tree_search_utils.py`, `execute_spectrum`).  The cause is the hand-set value function it scores
@@ -523,7 +523,7 @@ the registered results without changing them:
 1. our bot with development-card purchases off, against AlphaBeta;
 2. an AlphaBeta patched to count its own hidden points and to score a won game as a win.
 
-### Q23. Are discards public?  The Colonist-information tests treated them as hidden.
+### Q23. Are discards public?  The Colonist-information tests treated them as hidden. (2026-09-26)
 
 On a 7, Colonist shows which cards each player discarded (the user, a regular Colonist player, confirms it).
 In physical Catan the discards go back to the bank, face up.
