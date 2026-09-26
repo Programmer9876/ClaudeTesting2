@@ -4,6 +4,22 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 14:40 UTC - step 6 (development-card guessing) built; implementation finished
+
+- **Built,** off by default:
+  - `devbelief.ENABLED`: a held-card age model, with exact posteriors for hidden VP, Monopoly and Knights;
+  - the Knight hint wired into the counted adapter for the robber terms;
+  - the advisor's development-card reading from Colonist's log (`--dev-model`);
+  - the zero-game `belief_shadow.py` (dev oracle) and `dev_belief_calibrate.py` (gate A).
+- **Checks rerun by the coordinator:** default play is unchanged with full information (24/24 games identical
+  to epoch B3) and with Colonist information and public discards (12/12).  126 card-counting, public-info,
+  queue and robber tests pass on both catanatron versions.
+- **Smoke gate A** (20 self-generated games): the model beats uniform guessing on every measure, for example
+  hidden-VP error 0.23 vs 0.70.  The real gate A and the oracle shadow on the proof logs run in the queue.
+- **Not built:** the self-bot opponents harness, which would need a change to the benchmark script.
+
+This was the last implementation step.  From here the project only runs tests.
+
 ## 2026-09-26 13:40 UTC - multi-seat benchmark: all three pass; first queue ADOPT (openings, one opponent set)
 
 - **Multi-seat benchmark** (pre-registered at `332775b`; docs/BENCH_MULTI.md, evidence in bench_multi/):
