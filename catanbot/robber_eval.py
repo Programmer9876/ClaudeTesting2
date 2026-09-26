@@ -66,7 +66,9 @@ PLACEBO = 0           # 1 = control arm: every seat gets the next seat's correct
 # --- R1b knight insurance --------------------------------------------------------------------------------------------
 INSURANCE_W = 0.0     # horizon multiplier (rounds of cover); 0 = off even with robber_corr=1; SPSA range 0-3
 INS_AVERT = 0.85      # share of a block a held knight averts (0.18 of 1.34 cards lost with a knight)
-INS_OFFSET = 0.0      # centring: the mean of D x P_hit over insured players at the shadow's leaves (0 = uncentred)
+INS_OFFSET = 1.38     # centring: the mean of D x P_hit over insured players at the shadow's leaves (calibrated:
+#                       1.378 over 169,412 insured leaf evaluations of 24 default self-play games, seeds
+#                       7500-7517 and 7600-7605; per-game means 0.46-3.04, sd 0.79)
 TGT_LEAD = 0.5        # prior target model: weight of "the clear leader" vs blockable pips
 HIT_SHARE = 0.9       # share of a player's best blockable hex a hit denies (Catanatron: 7.7 of 8.5 pips)
 KNIGHT_OFF = 0.5      # share of turns a knight holder spends it on offence (steal_exposure_fast's convention)

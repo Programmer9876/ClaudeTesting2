@@ -4,8 +4,10 @@
 "robber" by ``robber_eval.register_tunables``; pass ``observers=["robber"]``).  It reads the state before each
 action (``on_action(state, action, player)``, called before the action is applied), never mutates it and never
 draws a random number, so games are identical with and without it (tests/test_robber_metrics.py).  It is not a
-bot feature: no tunable.  Against Catanatron the same mechanism metrics come from ``scripts/mechanics.py`` (the
-action log); adapter stats keep only bot-internal counters (the plan's cross-area resolution).
+bot feature: no tunable.  Against Catanatron the robber metrics come from ``scripts/mechanics.py`` (the action log:
+robber on the leader, block and steal losses, knights played / held, Largest Army; it does not classify would-kick
+knight holders); adapter stats keep only bot-internal counters (the plan's cross-area resolution).  ``ablate.py``
+does not pass observers yet, so the queue's self-play rows do not collect these counters until its owner adds that.
 
 Per seat (lists indexed by seat):
 

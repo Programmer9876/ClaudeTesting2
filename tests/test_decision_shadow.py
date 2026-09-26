@@ -133,3 +133,101 @@ def test_settle_class_port_tags_and_summary():
     assert sp["setup"]["cand"] == {"n": 1, "settled": 1, "port": 1, "generic": 1}
     assert sp["main"]["def"]["port"] == sp["main"]["cand"]["port"] == 1
     assert "settle_ports" not in DS.summarize(rows[2:], [DS.Candidate("c", {}, {})])["c"]
+
+
+# ---------------------------------------------------------------------------
+# robber classifier and gates (docs/PRIORITY_PLAN.md step 5; --robber-gates)
+# ---------------------------------------------------------------------------
+def _rrow(cls, d, c, rob, ms=(1.0, 1.0), rst=None):
+    got = {"a": c, "ms": ms[1]}
+    if rst:
+        got["rstats"] = rst
+    return {"cls": cls, "def": d, "ms_def": ms[0], "cand": {"x": got}, "rob": rob}
+
+
+def _mv(t1, knight=False, leader=True, opp=5.0, need=0.5, later=False):
+    return {"kick_t1": t1, "kick_any": t1 or later, "on_leader": leader, "opp_pv": opp, "p_need": need,
+            "knight": knight}
+
+
+def test_robber_gates_on_synthetic_rows():
+    R, K, M = ["move_robber", 3, 1], ["move_robber", 4, 2], ["end_turn"]
+    hit = {"def": _mv(True), "cand": {"x": _mv(False)}, "holder": False, "blocked": 0.0}
+    hit_same = {"def": _mv(True), "cand": {"x": _mv(True)}, "holder": False, "blocked": 0.0}
+    other = {"def": _mv(False), "cand": {"x": _mv(False)}, "holder": False, "blocked": 0.0}
+    plain = {"def": None, "cand": {"x": None}, "holder": False, "blocked": 0.0}
+    late = {"def": _mv(False, later=True), "cand": {"x": _mv(False)}, "holder": False, "blocked": 0.0}
+    rows = [_rrow(["robber"], R, K, hit), _rrow(["robber"], R, R, hit_same), _rrow(["robber"], R, R, hit_same),
+            _rrow(["robber"], K, K, other), _rrow(["knight", "roll"], R, K, late)] + \
+        [_rrow(["main"], M, M, plain) for _ in range(99)] + [_rrow(["main"], M, ["buy_dev"], plain)]
+    g = DS.robber_gates(rows, "x", "persistence")
+    assert g["gates"]["G1"]["n"] == 3 and g["gates"]["G1"]["changed"] == 1 and g["gates"]["G1"]["pass"]
+    assert g["gates"]["G2"]["n"] == 1 and g["gates"]["G2"]["pass"]
+    assert g["gates"]["G3"]["n"] == 100 and g["gates"]["G3"]["share"] == 0.01 and g["gates"]["G3"]["pass"]
+    assert g["gates"]["G4"]["pass"] and g["pass"] and g["fallback_trigger"] is False
+    assert g["readout"]["kick_later"] == {"n": 1, "changed": 1, "share": 1.0}   # t >= 2 holders: not gated
+    slow = [dict(r, ms_def=1.0, cand={"x": dict(r["cand"]["x"], ms=1.3)}) for r in rows]
+    g = DS.robber_gates(slow, "x", "persistence")
+    assert not g["gates"]["G4"]["pass"] and not g["pass"] and g["fallback_trigger"] is True
+    inert = [dict(r, cand={"x": dict(r["cand"]["x"], a=r["def"])}) for r in rows]
+    assert DS.robber_gates(inert, "x", "persistence")["fallback_trigger"] is True    # G1 fails: inert
+    # insurance: holders' decisions, P_hit median, centring from the candidates' robber_eval counters
+    hold = lambda p: {"def": None, "cand": {"x": None}, "holder": True, "blocked": 0.0, "p_hit": p, "d": 5.0}  # noqa
+    rst = {"ins_n": 10, "ins_sum_c": 0.2, "ins_sum_dp": 21.0, "evals": 10, "nonzero": 10, "kick_sets": 0}
+    rows = [_rrow(["roll", "knight"], ["play_knight", 1, 2], ["roll"], hold(0.9), rst=rst),
+            _rrow(["roll", "knight"], ["play_knight", 1, 2], ["roll"], hold(0.8), rst=rst),
+            _rrow(["roll", "knight"], ["roll"], ["roll"], hold(0.1), rst=rst),
+            _rrow(["main", "knight"], ["end_turn"], ["end_turn"], hold(0.2), rst=rst),
+            _rrow(["main"], M, M, plain, rst=rst)]
+    g = DS.robber_gates(rows, "x", "insurance")
+    assert g["gates"]["G1"]["n"] == 4 and g["gates"]["G1"]["changed"] == 2 and g["gates"]["G1"]["pass"]
+    assert g["gates"]["G2"]["kept_exposed"] == 2 and g["gates"]["G2"]["pass"]
+    assert g["gates"]["G3"]["n"] == 1 and g["gates"]["G3"]["pass"]
+    assert abs(g["gates"]["G4"]["mean_c_ins"] - 0.02) < 1e-12 and g["gates"]["G4"]["pass"]
+    assert abs(g["ins_offset_cal"] - 2.1) < 1e-12 and g["pass"]
+    # duration: >= 2% of robber / knight decisions, readouts on the changed robber moves
+    rows = [_rrow(["robber"], R, K, {"def": _mv(False, need=0.2), "cand": {"x": _mv(False, need=0.6, leader=False,
+                                                                                    opp=3.0)},
+                                     "holder": False, "blocked": 0.0})] + \
+        [_rrow(["robber"], R, R, other) for _ in range(9)]
+    g = DS.robber_gates(rows, "x", "duration")
+    assert g["gates"]["G1"]["share"] == 0.1 and g["pass"]
+    assert abs(g["readout"]["d_p_need_mean"] - 0.4) < 1e-12 and g["readout"]["d_leader_hit"] == -1
+    with pytest.raises(SystemExit):
+        DS.parse_gate_map("r1a=nope")
+    assert DS.parse_gate_map("a=persistence, b=insurance") == {"a": "persistence", "b": "insurance"}
+
+
+def test_robber_shadow_identity_tags_and_gate_report(tmp_path):
+    """One short game with the robber classifier on: the A/A and a candidate equal to the default (robber_corr=0
+    spelled out) change 0 decisions, the robber / knight rows carry the tags, every candidate search of
+    robber_corr=1 reports its robber_eval counters, the game is the default bot's own, and the gate report
+    reproduces the in-run gates."""
+    from catanbot.selfplay import make_bot, play_game
+    out = tmp_path / "rob.json"
+    rc = DS.main(["--games", "1", "--seed", "7304", "--phases", "robber,knight,main", "--main-every", "6",
+                  "--max-turns", "70", "--keep-rows", "--robber-gates", "same=persistence,r1a=persistence",
+                  "--cand", "same:robber_corr=0", "--cand", "r1a:robber_corr=1", "--json", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    assert doc["aa_ok"] is True and doc["candidates"]["same"]["changed"] == 0
+    assert doc["robber_gate_map"] == {"same": "persistence", "r1a": "persistence"}
+    rows = doc["rows"]
+    assert rows and all("rob" in r for r in rows if set(r["cls"]) & {"robber", "knight", "main", "roll"})
+    assert all("rstats" in r["cand"]["r1a"] and "rstats" not in r["cand"]["same"] for r in rows)
+    for r in rows:
+        if r["def"] and r["def"][0] in ("move_robber", "play_knight"):
+            assert r["rob"]["def"] is not None and set(r["rob"]["def"]) >= {"kick_t1", "kick_any", "on_leader"}
+        if r["rob"]["holder"]:
+            assert 0.0 <= r["rob"]["p_hit"] <= 1.0
+    same = doc["robber_gates"]["same"]
+    assert same["gates"]["G2"]["changed"] == 0 and same["gates"]["G3"]["changed"] == 0
+    rep = DS.gate_report(str(out), "r1a", str(tmp_path / "gate.json"))
+    assert rep["gates"] == doc["robber_gates"]["r1a"]["gates"] and rep["pass"] == doc["robber_gates"]["r1a"]["pass"]
+    assert json.loads((tmp_path / "gate.json").read_text())["fallback_trigger"] == rep["fallback_trigger"]
+    bots = [make_bot(SPEC) for _ in range(4)]
+    res = play_game(bots, rng=random.Random(7304), seed=7304, max_turns=70)
+    g = doc["games"][0]
+    assert (res.winner, list(res.vps), res.turns, res.actions) == (g["winner"], g["vps"], g["turns"], g["actions"])
+    with pytest.raises(SystemExit):
+        DS.gate_report(str(out), "nope")

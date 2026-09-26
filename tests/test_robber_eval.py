@@ -531,11 +531,11 @@ def test_insurance_independent_of_hand_size():
 def test_insurance_spare_knight_for_blocked_holder_with_two():
     s, h, j, me, holder = _ins_state()
     s.players[j].dev_cards[K] = 1              # blocked (>= KICK_MIN): its only knight goes to the kick
-    assert _c_ins(s, me, j) == 0.0
+    assert _c_ins(s, me, j, INS_OFFSET=0.0) == 0.0
     ctx = ctx_of(s, me, PERSIST_W=0.0, INSURANCE_W=1.0)
     assert ctx.insured(s, j, True) == 0.0 and ctx.insured(s, j, False) == 1.0
     s.players[j].dev_cards[K] = 2              # a spare knight: insured after kicking
-    assert ctx.insured(s, j, True) == 1.0 and _c_ins(s, me, j) > 0.0
+    assert ctx.insured(s, j, True) == 1.0 and _c_ins(s, me, j, INS_OFFSET=0.0) > 0.0
 
 
 def test_insurance_first_knight_only():

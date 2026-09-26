@@ -193,7 +193,7 @@ After an ADOPT, member rows are superseded by the knockouts. The mechanism reado
 - roads built and Longest Road for diversification;
 - knights played vs held, Largest Army, and income under the robber for the robber.
 
-Plan rows: `div_lr_bundle` (`ports_conversion_cost@value` + `paths=1`) and `robber_la_bundle` (`robber_corr=1` + `paths=1`). Both are disabled until their pieces are built.
+Plan rows: `div_lr_bundle` (`ports_conversion_cost@value` + `paths=1`) and `robber_la_bundle` (`robber_corr=1` + `paths=1`). `div_lr_bundle` is enabled; `robber_la_bundle` (step 5) waits for `--bump-code --areas robber`: its pieces are bot-spec keys, which the queue does not tunable-check, so it stays `enabled: false` until the bump, then runs first in its area's new rows (priority 22.9, after the R1a shadow gate), before the lone self-play screen of `robber_corr`.
 
 ## Order and preemption
 
@@ -246,6 +246,7 @@ The enabled rows are the existing campaign rows, re-expressed:
   and one best-cell screen per cell behind it; `ports_spot_want@value` stays disabled (step 7, after winpaths Stage 5)
   and SPOT_LEADER is deferred to human testing.
 - **robber:** a 40-game zero-game shadow that gates the prior-only rows, plus the knockouts and new-direction rows.
+  Step 5 (epoch B3, after `--bump-code --areas robber`): a second 40-game shadow, `shadow_robber_step5` (`decision_shadow.py --robber-gates`: the robber / would-kick-holder classifier), and four command gate rows reading it - `robber_gate_r1a` (persistence G1-G4), `robber_gate_kick_trigger` (PASS when R1a fails G1 or G4: the knight_kick fallback rule), `robber_gate_r1b` (insurance G1-G5) and `robber_gate_r1c` (block duration). These are `enabled: false` until the bump (command rows are not tunable-checked).  Behind them: `robber_la_bundle` (disabled until the bump) and its two knockouts, the self-play screens `robber_persistence` (after the R1a gate) and `knight_kick` (after the trigger), both in `screen_once` and both BLOCKED / WAITING until the bump because `search.robber_corr` / `search.kick` are not in epoch A.  Insurance and block duration get no standalone A/B: on a gate PASS they are requests to the SPSA owner (`robber_spsa` stays disabled).
 - **politics:** four vrule rows and two 1,200-game self-play screens, all fixed-N, in one politics tier.
 - **other:** search vs heuristic (estimates), depth 2, the cheaper-search knockouts, and win-path rows gated by their own shadow.
 - **tier-3 AlphaBeta confirmations:** gated automatically.

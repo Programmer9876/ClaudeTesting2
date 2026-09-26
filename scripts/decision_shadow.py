@@ -431,7 +431,9 @@ def gate_share(result: Dict[str, Any], label: str, classes: Sequence[str]) -> Op
 # Gate sets of the robber design (docs/designs/priority_areas_2026-09-26.json designs[3]):
 #   persistence (R1a; also the knight_kick alternative): G1 >= 30% of the default's robber / knight moves whose hex
 #     blocks a would-kick knight holder kicking within one roll (t <= 1) change; G2 <= 3% of the other robber /
-#     knight decisions change; G3 <= 1% of main-phase first actions (no knight legal) change; G4 ms ratio <= 1.2
+#     knight decisions (the default blocks no would-kick holder: the critique's "other decisions"; hits on holders
+#     kicking after 2+ rolls, which R1a is meant to change, are a readout) change; G3 <= 1% of main-phase first
+#     actions (no knight legal) change; G4 ms ratio <= 1.2
 #     mean and <= 1.5 p95.  Failing G1 or G4 unlocks the knight_kick fallback (``fallback_trigger``).
 #   insurance (R1b): G1 >= 3% of knight holders' roll / main first actions change; G2 in >= 60% of those changes
 #     the candidate keeps the knight while P_hit is above its median; G3 <= 1% of non-holders' roll / main first
@@ -537,32 +539,32 @@ def robber_gates(rows: Sequence[Dict[str, Any]], label: str, gset: str) -> Dict[
     g: Dict[str, Any] = {}
     if gset == "persistence":
         g1 = [r for r in rk if (r["rob"].get("def") or {}).get("kick_t1")]
-        g1_ids = {id(r) for r in g1}
-        g2 = [r for r in rk if id(r) not in g1_ids]
+        later = [r for r in rk if (r["rob"].get("def") or {}).get("kick_any")
+                 and not (r["rob"].get("def") or {}).get("kick_t1")]
+        g2 = [r for r in rk if not (r["rob"].get("def") or {}).get("kick_any")]
         g3 = [r for r in rows if "main" in r["cls"] and "knight" not in r["cls"]]
         s1, s2, s3 = _share(g1, label), _share(g2, label), _share(g3, label)
         g["G1"] = _gate(s1, s1["n"] > 0 and s1["share"] >= 0.30, ">= 30% of default moves onto a t<=1 would-kick "
                                                                   "holder change")
-        g["G2"] = _gate(s2, s2["n"] == 0 or s2["share"] <= 0.03, "<= 3% of other robber / knight decisions change")
+        g["G2"] = _gate(s2, s2["n"] == 0 or s2["share"] <= 0.03, "<= 3% of the other robber / knight decisions "
+                                                                  "(no would-kick holder blocked) change")
         g["G3"] = _gate(s3, s3["n"] == 0 or s3["share"] <= 0.01, "<= 1% of main-phase first actions change")
         g["G4"] = _gate({"mean": ratio, "p95": ratio95}, ratio is not None and ratio <= 1.2 and
                         (ratio95 is None or ratio95 <= 1.5), "ms ratio <= 1.2 mean, <= 1.5 p95")
         out["fallback_trigger"] = not (g["G1"]["pass"] and g["G4"]["pass"])
         cm = [r for r in g1 if r["cand"][label]["a"] != r["def"]]
-        later = [r for r in g2 if (r["rob"].get("def") or {}).get("kick_any")]
-        rest = [r for r in g2 if not (r["rob"].get("def") or {}).get("kick_any")]
         out["readout"] = {"g1_changed_to_robber_move": sum(1 for r in cm if (r["rob"]["cand"].get(label) or {})),
                           "g1_changed_still_t1": sum(1 for r in cm if (r["rob"]["cand"].get(label) or {})
                                                      .get("kick_t1")),
-                          # G2's set split: the default's hex blocks a would-kick holder kicking after 2+ rolls
-                          # (a smaller restore by design) / no would-kick holder (incl. no robber move at all)
-                          "g2_kick_later": _share(later, label), "g2_no_kick_holder": _share(rest, label)}
+                          # neither G1 nor G2: the default's hex blocks a would-kick holder who kicks after 2+ rolls
+                          # (R1a restores 0.95 a^t there, 56% at t = 2: changes are intended, so not gated)
+                          "kick_later": _share(later, label)}
     elif gset == "insurance":
         hold = [r for r in rows if r["rob"].get("holder")]
         non = [r for r in rows if not r["rob"].get("holder") and set(r["cls"]) & {"roll", "main"}]
         s1, s3 = _share(hold, label), _share(non, label)
         ph = sorted(r["rob"]["p_hit"] for r in hold if r["rob"].get("p_hit") is not None)
-        med = ph[len(ph) // 2] if ph else None
+        med = (ph[len(ph) // 2] if len(ph) % 2 else 0.5 * (ph[len(ph) // 2 - 1] + ph[len(ph) // 2])) if ph else None
         chg = [r for r in hold if r["cand"][label]["a"] != r["def"]]
         kept = [r for r in chg if (r["cand"][label]["a"] or [None])[0] != "play_knight"
                 and med is not None and r["rob"].get("p_hit", -1.0) > med]
