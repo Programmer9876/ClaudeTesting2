@@ -101,7 +101,8 @@ class SearchConfig:
     # Trades area (catanbot/acquisition.py, docs/STRATEGY.md "Acquisition"; docs/PRIORITY_PLAN.md step 3).  Off by
     # default: with acq = 0 its hub provider is never built, and with acq_shapes = acq_breadth = acq_floor = 0 no
     # acquisition code runs in _candidates.  None of these fields reaches C++ (native_level_dict is unchanged).
-    acq: int = 0                    # acq.progress: 1 = bank / port conversions in our hand's progress, 2 = + production
+    acq: int = 0                    # acq.progress: 1 = bank / port conversions in our hand's progress, 2 = + production,
+    #                                 3 = production only (the moderate version: no conversion credit)
     acq_w: float = 1.0              # value weight of the acq.progress correction (0 = an exact A/A)
     acq_self: int = 1               # 1 = our own seat only; 0 = every seat with a known hand (self-play variant)
     acq_shapes: int = 0             # acq.breadth (B): 1 = inject mixed-give 2-for-1 proposals into our main-phase nodes

@@ -6,7 +6,8 @@ switch needs the Python evaluator.  Pieces (the design is ``docs/designs/priorit
 "trades", as revised after both critiques):
 
 ``acq.progress`` (``search.acq``: 1 = conversions only, a Stage 0 diagnostic; 2 = conversions + production, the
-tested arm; ``search.acq_w``, ``search.acq_self``).  A hub provider (:class:`AcqContext`, catanbot/corrections.py)
+tested arm, which failed its pre-registered Stage 0 audit; 3 = production only, the moderate version: no conversion
+credit, so a bank trade is never "already done" in the hand; ``search.acq_w``, ``search.acq_self``).  A hub provider (:class:`AcqContext`, catanbot/corrections.py)
 that replaces static's progress term ``heuristic._progress_to_build`` for our own seat by an *effective* progress:
 
 * hand ``h`` (``n = sum h``), our ratios ``rho_r = port_ratio(i, r)``, bank stock ``b_r``; **gate**: ``n > 7``
@@ -164,13 +165,14 @@ def targets(state: GameState, i: int) -> List[Tuple[Tuple[int, ...], float]]:
 
 
 def target_credit(hand: Sequence[int], cost: Sequence[int], ratios: Sequence[int], bank: Sequence[int],
-                  tails: Optional[Sequence[Sequence[float]]]) -> Dict[str, Any]:
-    """The acquisition credit of one target (``tails = None``: mode 1, no production): every intermediate."""
+                  tails: Optional[Sequence[Sequence[float]]], convert: bool = True) -> Dict[str, Any]:
+    """The acquisition credit of one target (``tails = None``: mode 1, no production; ``convert = False``: mode 3,
+    no conversion credit): every intermediate."""
     total = sum(cost)
     have = sum(min(hand[r], cost[r]) for r in range(5))
     miss = [max(0, cost[r] - hand[r]) for r in range(5)]
     surplus = [max(0, hand[r] - cost[r]) for r in range(5)]
-    K = sum(surplus[g] // ratios[g] for g in range(5))
+    K = sum(surplus[g] // ratios[g] for g in range(5)) if convert else 0
     alloc = [0] * 5
     left = K
     if left and any(miss):
@@ -193,7 +195,7 @@ def target_credit(hand: Sequence[int], cost: Sequence[int], ratios: Sequence[int
         for r in range(5):
             for j in range(min(m2[r], len(tails[r]))):
                 prod += tails[r][j]
-    frac_sum = sum((surplus[g] % ratios[g]) / ratios[g] for g in range(5))
+    frac_sum = sum((surplus[g] % ratios[g]) / ratios[g] for g in range(5)) if convert else 0.0
     room = max(0.0, sum(min(m2[r], max(0, bank[r] - alloc[r])) for r in range(5)) - prod)
     conv_frac = min(FRAC_W * frac_sum, room)
     f = min(1.0, (have + conv_int + prod + conv_frac) / total)
@@ -202,7 +204,8 @@ def target_credit(hand: Sequence[int], cost: Sequence[int], ratios: Sequence[int
 
 
 def effective_progress(hand: Sequence[int], tgts: Sequence[Tuple[Sequence[int], float]], ratios: Sequence[int],
-                       bank: Sequence[int], tails: Optional[Sequence[Sequence[float]]]) -> Tuple[float, float]:
+                       bank: Sequence[int], tails: Optional[Sequence[Sequence[float]]],
+                       convert: bool = True) -> Tuple[float, float]:
     """``(E, P)``: ``max_T 0.45 V_T f_T^2`` with and without the acquisition credit (``P`` is exactly
     ``heuristic._progress_to_build`` for the same targets)."""
     E = P = 0.0
@@ -214,7 +217,7 @@ def effective_progress(hand: Sequence[int], tgts: Sequence[Tuple[Sequence[int], 
         if p > P:
             P = p
         if have < total:
-            f = target_credit(hand, cost, ratios, bank, tails)["f"]
+            f = target_credit(hand, cost, ratios, bank, tails, convert)["f"]
         else:
             f = frac
         e = value * 0.45 * f * f
@@ -251,7 +254,7 @@ def best_target_left(state: GameState, i: int, mode: int = 2) -> Tuple[Optional[
     ratios = [state.port_ratio(i, r) for r in range(5)]
     best = (-1.0, None, [0] * 5)
     for cost, value in targets(state, i):
-        d = target_credit(p.resources, cost, ratios, state.bank, tails)
+        d = target_credit(p.resources, cost, ratios, state.bank, tails, mode != 3)
         e = value * 0.45 * d["f"] * d["f"]
         if e > best[0]:
             best = (e, names.get(tuple(cost)), d["left"])
@@ -330,7 +333,7 @@ class AcqContext:
             return 0.0
         tails = self.tails(state, i, horizon_k(state, i, self.me)) if self.mode >= 2 else None
         ratios = [state.port_ratio(i, r) for r in range(5)]
-        E, P = effective_progress(hand, tgts, ratios, state.bank, tails)
+        E, P = effective_progress(hand, tgts, ratios, state.bank, tails, self.mode != 3)
         return self.weight * (E - P)
 
     def corrections(self, state: GameState) -> Optional[List[float]]:
@@ -692,11 +695,11 @@ def register_tunables(registry: Dict[str, object]) -> None:
     tuning = sys.modules.get("catanbot.tuning") or importlib.import_module("catanbot.tuning")
     Tunable = tuning.Tunable
     for attr, default, cands, parse, desc in (
-            ("acq", 0, [2, 1], tuning._parse_int,
+            ("acq", 0, [2, 1, 3], tuning._parse_int,
              "acq.progress (catanbot/acquisition.py): our hand's progress to the next build credits bank / port "
              "conversions (capped by the bank) and, with 2, the chance to roll the missing cards before our next "
-             "build; no correction above 7 cards; 1 = conversions only (a diagnostic); 0 = off (the default bot); "
-             "budgeted at depth 1"),
+             "build; no correction above 7 cards; 1 = conversions only (a diagnostic); 3 = production only (the "
+             "moderate version after 2 failed its Stage 0); 0 = off (the default bot); budgeted at depth 1"),
             ("acq_w", 1.0, [0.0, 0.5, 2.0], tuning._parse_float,
              "value weight of the acq.progress correction (0 = an exact A/A of the hub); " + _ONLY_ACQ),
             ("acq_self", 1, [0], tuning._parse_int,

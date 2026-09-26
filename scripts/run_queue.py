@@ -198,8 +198,12 @@ def load_plan(path: str) -> Plan:
         e["seeds"] = {"count": int(seeds.get("count", e.get("games") or 100)), "base": int(seeds.get("base", 0))}
         e["_order"] = i
         rows.append(e)
+    so = raw.get("screen_once")
+    if so is not None and (not isinstance(so, list) or any(n not in names for n in so)):
+        raise PlanError(f"plan error: screen_once must list plan rows (got {so!r})")
     rows = expand_bundles(rows)
-    settings = {k: raw.get(k) for k in ("crn_pilot", "headroom", "removed", "notes") if raw.get(k) is not None}
+    settings = {k: raw.get(k) for k in ("crn_pilot", "headroom", "removed", "notes", "screen_once")
+                if raw.get(k) is not None}
     return Plan(path, rows, settings, interps, hashlib.sha1(text.encode()).hexdigest()[:12])
 
 
@@ -508,7 +512,17 @@ def lint(plan: Plan, e: Dict[str, Any]) -> Tuple[List[str], List[str]]:
             err.append(f"bundle_of: no row {m!r}")
     if e.get("estimator") == "cv" and d_prior(e) < 0.15:
         warn.append("estimator cv on a low-divergence row gains nothing (variance ratio >= 0.92)")
+    if screen_once(plan, e) and design_of(e) != "politics" and (e.get("polarity") != "new"
+                                                                  or design_of(e) != "screen"):
+        warn.append("screen_once only changes a new row's screen (intake power); ignored here")
     return err, warn
+
+
+def screen_once(plan: Plan, e: Dict[str, Any]) -> bool:
+    """Plan decision 1 (the user, 2026-09-26): take this row's one screen despite a power below 0.5 at its promise.
+    The row field ``"screen_once": true`` or the plan-level list ``"screen_once": [row names]`` (the same; the list
+    keeps the file readable by a queue process started before the field existed, which refuses unknown row fields)."""
+    return bool(e.get("screen_once")) or e.get("name") in (plan.settings.get("screen_once") or [])
 
 
 def headroom_upper_pp(q: "Queue", area: str) -> Optional[Tuple[float, str]]:
@@ -585,6 +599,12 @@ def intake(q: "Queue", e: Dict[str, Any], power_check: bool = True) -> Intake:
         D_eff = D * red[1]
         it.reducer = red[0]
     it.power = SEQ.power_at(promise / unit if unit != 1.0 else promise, D_eff, n_max)
+    if it.power < SEQ.UNPROVEN_POWER and screen_once(q.plan, e):
+        # plan decision 1: one screen within the budget; lint, the cap, early stopping and the look-1
+        # 'unprovable at promise' re-check still apply, an unclear screen ends SHELVE
+        it.warnings.append(f"screen_once: power {it.power:.2f} < {SEQ.UNPROVEN_POWER:g} at +{promise:g} pp "
+                           f"(D {D_eff:.2f}, {n_max} pairs); screened once anyway (plan decision 1)")
+        return it
     if it.power < SEQ.UNPROVEN_POWER:
         bundle = next((b for b in q.plan.rows if b["enabled"] and e["name"] in (b.get("bundle_of") or [])), None)
         if bundle is not None:

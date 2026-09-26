@@ -132,6 +132,7 @@ Optional fields:
 | `shadow_gate` | `{row, key, classes, min_share}`: skip as NOOP(shadow) when the shadow changed fewer decisions |
 | `bundle`, `knockouts` | bundle-first testing of linked pieces (next section) |
 | `bundle_of` | a power bundle: member rows too weak alone (intake) run inside this row |
+| `screen_once` | plan decision 1 (the user, 2026-09-26: screen the +0.5-2 pp ideas once within the budget): the row takes its one screen even though its power at `promise_pp` is below 0.5. It skips only intake's power SHELVE and the bundle step below (a CRN / CV reducer is still used when one exists); lint, the cap, early stopping and the look-1 'unprovable at promise' re-check still apply, and an unclear screen ends SHELVE. Also a plan-level list `"screen_once": [row names]` (the same effect; scripts/queue_plan.json uses the list so that a queue process started before the field existed, which refuses unknown row fields, can still re-read the file) |
 | `estimator: cv`, `crn: dice / auto` | variance reducers. CV needs a pool with M >= 4 N_max on the same default arm. `auto` means `--crn dice` once the CRN pilot passes (discordance down >= 25%, crn A/A identical) |
 | `mechanism` | `{metric, direction}`: the readout the milder fallback's overshoot rule uses |
 | `exclusive`, `weight`, `est_cpu_h`, `requires` | load gate, preemption weight, a command's cost, why a disabled row waits |
@@ -140,7 +141,7 @@ Intake refuses a row before any game when:
 - its routing cannot exercise the mechanic: counting outside counted mode vs Catanatron, player-trade terms without `trades`, or self-play on the Python evaluator or outside politics / trade / robber scope;
 - a required field is missing.
 
-A new row whose power at `promise_pp` is below 0.5 gets these, in order:
+A new row whose power at `promise_pp` is below 0.5 (and without `screen_once`) gets these, in order:
 1. a reducer (CRN or CV);
 2. its bundle row, if one exists;
 3. otherwise SHELVE(intake) at 0 games, with a bundle proposal.
@@ -233,8 +234,9 @@ The enabled rows are the existing campaign rows, re-expressed:
   (`search.acq_breadth`, self-play) with its value-rule confirmation and 3p no-harm follow-ups; the player-trade
   premium (`search.acq_floor`) in self-play and vs value-rule responders; acq.calib's 40-seed native-trading check,
   then its one politics self-play screen, and the rejection-streak fallback (40-seed check + deferred to human
-  testing).  With their plan promises (+2 pp) intake SHELVEs the three screens at 0 games until the user takes
-  plan decision 1.  acq.progress is disabled (it failed its Stage 0 audit) and the (A)-only breadth fallback is not
+  testing).  Their plan promises (+2 pp) are below what the budget can show (power 0.38-0.42), so the three
+  screens and the calibration screen are in the plan-level `screen_once` list (plan decision 1).  A queue process
+  started before step 3 ignores that list and SHELVEs them at intake: restart it after the bump.  acq.progress is disabled (it failed its Stage 0 audit) and the (A)-only breadth fallback is not
   triggered (injected offers were accepted).  `acq_flow_fit` is a zero-game command row run from the working tree.
 - **diversification:** openings (pips_diversity, standin_book and the setup_pick control) vs value and vf, and flat resource demand, with the milder registry vector as its fallback. The port gap is an expansion / diversity gap. Disabled until built: `expansion_reach_credit`, `ports_conversion_cost` (conv=1) and the `div_lr_bundle`.
 - **ports (port access only):** the port gate cells, the best-cell row and spot_want, all disabled until built; SPOT_LEADER is deferred to human testing.

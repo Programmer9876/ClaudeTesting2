@@ -1,5 +1,5 @@
 {
- "notes": "Test queue plan (docs/QUEUE.md; docs/PRIORITY_PLAN.md step 1). Epoch A = today's code: the existing campaign rows re-expressed with area / polarity / tier / promise / design, the A/A and smoke rows, the CRN dice pilot, the zero-game robber and paths shadows, the diversification rows (openings, resource demand; docs/ABLATIONS.md 'Regrouping', 2026-09-26). Rows of features not built yet are present with enabled:false and a 'requires' note. Run with scripts/run_queue.py; campaign.py can read this file too (it runs only the enabled kind:catanatron rows, legacy style). Step 3 (trades, 2026-09-26): the trade rows are enabled for epoch B1 (they need the new tunables, so they wait as BLOCKED until --bump-code --areas trades); acq.progress stopped at its Stage 0 audit; the zero-game gates ran from the working tree (scripts/acq_audit.py, acq_mechanism.py, acq_flow_fit.py, decision_shadow.py).",
+ "notes": "Test queue plan (docs/QUEUE.md; docs/PRIORITY_PLAN.md step 1). Epoch A = today's code: the existing campaign rows re-expressed with area / polarity / tier / promise / design, the A/A and smoke rows, the CRN dice pilot, the zero-game robber and paths shadows, the diversification rows (openings, resource demand; docs/ABLATIONS.md 'Regrouping', 2026-09-26). Rows of features not built yet are present with enabled:false and a 'requires' note. Run with scripts/run_queue.py; campaign.py can read this file too (it runs only the enabled kind:catanatron rows, legacy style). Step 3 (trades, 2026-09-26): the trade rows are enabled for epoch B1 (they need the new tunables, so they wait as BLOCKED until --bump-code --areas trades); acq.progress stopped at its Stage 0 audit; screen_once (plan decision 1, taken by the user: screen the +0.5-2 pp ideas once within the budget) lists the trade screens whose power at their promise is below 0.5 (a plan-level list so that a queue process started before the field existed can still read the file); the zero-game gates ran from the working tree (scripts/acq_audit.py, acq_mechanism.py, acq_flow_fit.py, decision_shadow.py).",
  "defaults": {
   "workers": 3,
   "reuse": true,
@@ -23,6 +23,12 @@
    "name": "t2_counted_info@value",
    "why": "redundant (docs/PRIORITY_PLAN.md, cross-area resolutions): the finished proof already measures counted vs full at 60.3% vs 59.5% over 4 opponent sets; its CPU goes to shadow.dev_oracle. The measurement is kept as the static counting headroom above."
   }
+ ],
+ "screen_once": [
+  "acq_breadth_bundle",
+  "acq_floor_selfplay",
+  "acq_floor_vrule@value",
+  "acq_calib"
  ],
  "experiments": [
   {
@@ -209,7 +215,7 @@
     "metric": "bank_4to1",
     "direction": "-"
    },
-   "requires": "acq.progress Stage 0 FAILED its pre-registered rule (scripts/acq_audit.py, 2026-09-26, real code, C++ evaluator; A/A 0 changed): on 300 trade-legal T1 proof positions acq=2 changed 8.0% of decisions (<= 7 cards 15/150, > 7 cards 9/150), 0 END_TURN flips above 7 cards, 1.12-1.15x ms, but only 1 of its 13 bank trade -> END_TURN flips at <= 7 cards was waitable (P(roll the bought card before our next turn) >= 0.5; required >= 50%); T2 replication: 0 of 6. The delays are the conversion credit's, not production's. A fail stops the feature (design): no games; re-screen once only on top of an adopted port setting that raises our port ownership.",
+   "requires": "acq.progress Stage 0 FAILED its pre-registered rule (scripts/acq_audit.py, 2026-09-26, real code, C++ evaluator; A/A 0 changed): on 300 trade-legal T1 proof positions acq=2 changed 8.0% of decisions (<= 7 cards 15/150, > 7 cards 9/150), 0 END_TURN flips above 7 cards, 1.12-1.15x ms, but only 1 of its 13 bank trade -> END_TURN flips at <= 7 cards was waitable (P(roll the bought card before our next turn) >= 0.5; required >= 50%); T2 replication: 0 of 6. The delays are the conversion credit's, not production's. A fail stops the feature (design): no games; re-screen once only on top of an adopted port setting that raises our port ownership. Moderate version (search.acq=3: production credit only, no conversion credit, so a bank trade is never 'already done' in the hand): exploratory on T1 11/300 changed (3.7%), no END_TURN delays, 1.22x ms; its pre-registered Stage 0 on held-out T10 (300 positions): 13/300 (4.3%), 1.10x ms, one END_TURN flip at <= 7 cards (road -> END_TURN, P 0.23) -> FAIL (0 of 1 waitable); not queued (the design's fallback: advice text only), unless the user reads the single flip as noise.",
    "notes": "acq.progress Stage 0b: 200 seeds of acq=2 plus an A/A with acq_w=0 (a second row once built). Mechanism gate: 4:1 trades per game fall by >= 0.3, END_TURN with > 7 cards does not rise, discards + steals rise by <= 0.5 cards per game."
   },
   {
@@ -240,8 +246,8 @@
     "metric": "bank_4to1",
     "direction": "-"
    },
-   "requires": "acq.progress Stage 0 FAILED its pre-registered rule (scripts/acq_audit.py, 2026-09-26, real code, C++ evaluator; A/A 0 changed): on 300 trade-legal T1 proof positions acq=2 changed 8.0% of decisions (<= 7 cards 15/150, > 7 cards 9/150), 0 END_TURN flips above 7 cards, 1.12-1.15x ms, but only 1 of its 13 bank trade -> END_TURN flips at <= 7 cards was waitable (P(roll the bought card before our next turn) >= 0.5; required >= 50%); T2 replication: 0 of 6. The delays are the conversion credit's, not production's. A fail stops the feature (design): no games; re-screen once only on top of an adopted port setting that raises our port ownership.",
-   "notes": "Screen on the epoch-B1 value default arm (C++ evaluator). Expected +0.5 to +1.5 pp (below the MDE): with promise 1.5 intake would SHELVE it at 0 games anyway (power 0.16) unless the user overrides (decision 1 of the plan). Stopped at Stage 0 (see requires)."
+   "requires": "acq.progress Stage 0 FAILED its pre-registered rule (scripts/acq_audit.py, 2026-09-26, real code, C++ evaluator; A/A 0 changed): on 300 trade-legal T1 proof positions acq=2 changed 8.0% of decisions (<= 7 cards 15/150, > 7 cards 9/150), 0 END_TURN flips above 7 cards, 1.12-1.15x ms, but only 1 of its 13 bank trade -> END_TURN flips at <= 7 cards was waitable (P(roll the bought card before our next turn) >= 0.5; required >= 50%); T2 replication: 0 of 6. The delays are the conversion credit's, not production's. A fail stops the feature (design): no games; re-screen once only on top of an adopted port setting that raises our port ownership. Moderate version (search.acq=3: production credit only, no conversion credit, so a bank trade is never 'already done' in the hand): exploratory on T1 11/300 changed (3.7%), no END_TURN delays, 1.22x ms; its pre-registered Stage 0 on held-out T10 (300 positions): 13/300 (4.3%), 1.10x ms, one END_TURN flip at <= 7 cards (road -> END_TURN, P 0.23) -> FAIL (0 of 1 waitable); not queued (the design's fallback: advice text only), unless the user reads the single flip as noise.",
+   "notes": "Screen on the epoch-B1 value default arm (C++ evaluator). Expected +0.5 to +1.5 pp (below the MDE): power 0.16 at promise 1.5; plan decision 1 (screen once) would apply, but the feature stopped at Stage 0 (see requires)."
   },
   {
    "name": "acq_breadth_bundle",
@@ -258,7 +264,7 @@
    "games": 2400,
    "players": 4,
    "base_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
-   "notes": "acq.breadth bundle as one switch (search.acq_breadth=1: >= 5 proposal candidates per node = search.trade_proposals 5, plus the injected mixed-give 2-for-1 offers = search.acq_shapes 1; ablate.py runs one tunable per call). Self-play only (player trades are inert vs Catanatron). Mechanism check (scripts/acq_mechanism.py, 2026-09-26, 8 paired self-play games per switch, seeds 7700-7707): injected mixed-give offers accepted 2/14 with acq_shapes=1 and 2/6 with acq_breadth=1 (3 executed) -> (B) kept, the bundle runs and the (A)-only fallback is not triggered. Zero-game shadow (scripts/decision_shadow.py, 4 self-play games, 3,458 main / trade decisions, A/A 0): bundle 9.1% changed (trade_proposals=5 alone 8.8%, acq_shapes=1 alone 0.4%), 1.17x ms per decision (1.30x in the mechanism games). Seqtest screen over 2,400 games in 240-game chunks. Intake: power 0.42 at +2 pp -> SHELVE(intake) at 0 games unless the user overrides (plan decision 1: --no-intake or a larger promise_pp)."
+   "notes": "acq.breadth bundle as one switch (search.acq_breadth=1: >= 5 proposal candidates per node = search.trade_proposals 5, plus the injected mixed-give 2-for-1 offers = search.acq_shapes 1; ablate.py runs one tunable per call). Self-play only (player trades are inert vs Catanatron). Mechanism check (scripts/acq_mechanism.py, 2026-09-26, 8 paired self-play games per switch, seeds 7700-7707): injected mixed-give offers accepted 2/14 with acq_shapes=1 and 2/6 with acq_breadth=1 (3 executed) -> (B) kept, the bundle runs and the (A)-only fallback is not triggered. Zero-game shadow (scripts/decision_shadow.py, 4 self-play games, 3,458 main / trade decisions, A/A 0): bundle 9.1% changed (trade_proposals=5 alone 8.8%, acq_shapes=1 alone 0.4%), 1.17x ms per decision (1.30x in the mechanism games). Seqtest screen over 2,400 games in 240-game chunks. Power 0.42 at +2 pp: screened once anyway (plan decision 1, taken by the user: screen_once; an unclear screen ends SHELVE)."
   },
   {
    "name": "acq_breadth_proposals5",
@@ -433,7 +439,7 @@
    "games": 2400,
    "players": 4,
    "base_spec": "search:depth=1,beam=4,expand=8,evaluator=heuristic",
-   "notes": "Player-trade premium (search.acq_floor, acquisition.W_PREMIUM 1.0; user direction 2026-09-26; trade economics, not a politics-rule term): a player trade we propose or accept must beat our best bank / port alternative for the same cards in win probability by W x partner's gain x danger multiplier; ties go to the bank. Where players trade: self-play. Zero-game: shadow 1.6% of 3,458 main / trade decisions changed (25 accept -> reject, 13 proposal -> proposal, 5 proposal -> bank trade), 1.21x ms; mechanism smoke: the default's trades fail the rule in 0.6% of proposals and 6.7% of accepts, 0 with the flag; trades dominated by the own port's card count: 0 in both arms. Also an advisor rule: catanbot recommend --trade-floor W. Intake: power 0.42 at +2 pp -> SHELVE(intake) unless the user overrides (plan decision 1)."
+   "notes": "Player-trade premium (search.acq_floor, acquisition.W_PREMIUM 1.0; user direction 2026-09-26; trade economics, not a politics-rule term): a player trade we propose or accept must beat our best bank / port alternative for the same cards in win probability by W x partner's gain x danger multiplier; ties go to the bank. Where players trade: self-play. Zero-game: shadow 1.6% of 3,458 main / trade decisions changed (25 accept -> reject, 13 proposal -> proposal, 5 proposal -> bank trade), 1.21x ms; mechanism smoke: the default's trades fail the rule in 0.6% of proposals and 6.7% of accepts, 0 with the flag; trades dominated by the own port's card count: 0 in both arms. Also an advisor rule: catanbot recommend --trade-floor W. Power 0.42 at +2 pp: screened once anyway (plan decision 1, screen_once)."
   },
   {
    "name": "acq_floor_vrule@value",
@@ -453,7 +459,7 @@
     "count": 2000,
     "base": 0
    },
-   "notes": "Player-trade premium vs value-rule responders (their seats accept by a value rule, so our proposals do get accepted; report as 'vs value-rule responders'). C++ evaluator; its epoch-B1 trading-on default arm. Intake: power ~0.38 at +2 pp (D prior 0.25) -> SHELVE(intake) unless the user overrides (plan decision 1)."
+   "notes": "Player-trade premium vs value-rule responders (their seats accept by a value rule, so our proposals do get accepted; report as 'vs value-rule responders'). C++ evaluator; its epoch-B1 trading-on default arm. Power ~0.38 at +2 pp (D prior 0.25): screened once anyway (plan decision 1, screen_once)."
   },
   {
    "name": "ports_gate_f1@vf",

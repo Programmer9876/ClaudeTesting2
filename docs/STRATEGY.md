@@ -488,7 +488,11 @@ switch below is off by default and needs neither the Python evaluator nor a C++ 
   but only 1 of the 13 bank trade -> END_TURN delays at 7 or fewer cards is waitable (P(roll the bought card before
   our next turn) >= 0.5; 50 % required; T2: 0 of 6).  The conversion credit makes a held surplus worth as much as
   the converted card, so the search keeps options instead of trading; production does not turn those delays back
-  into trades.  So no games (the feature stops); `acquisition.best_target_left` stays for advice text.
+  into trades.  So no games (the feature stops).  The more moderate version, `search.acq=3` (production credit
+  only: no conversion is ever counted as done), makes no bank-trade delays - it retargets which card a bank trade
+  buys and sometimes trades instead of ending the turn - but its pre-registered Stage 0 on held-out T10 positions
+  still failed by a single flip (4.3 % changed, one road -> END_TURN hold with P 0.23, 1.10x ms), so it is not
+  queued either; `acquisition.best_target_left` stays for advice text (the design's fallback).
 * **Composition with `conv=1`**: both are hub providers, summed per leaf (tested).  Conversion cost is a *flow*
   (cards our buildings lose to the bank over the rest of the game; moves with buildings and ports), acq.progress a
   *stock* (this hand's distance to the next build; moves with the hand).  They cancel disjoint parts of static (the

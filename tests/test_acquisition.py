@@ -876,3 +876,20 @@ def test_calibration_and_streak_observe_native_trades_through_the_adapter():
     assert me.stats["offers"] > 0 and me.stats["observe_errors"] == 0
     assert cal is not None and cal.updates > 0 and cal.a and min(cal.a.values()) < 0.0
     assert any(v >= 1 for v in cal.streak.values()) and OM.CALIB_RATE == 0.0
+
+
+def test_mode_three_credits_production_only():
+    s = board()
+    s.phase, s.current, s.dice = PHASE_MAIN, 0, 6
+    set_hand(s, 0, vec(sheep=4, wheat=2))                            # 4 surplus sheep, 3 ore missing for a city
+    ys = Q.roll_yields(s, 0)
+    t = Q.roll_tails(ys, 4)
+    d2 = Q.target_credit(s.players[0].resources, B.COST_CITY, [4] * 5, s.bank, t)
+    d3 = Q.target_credit(s.players[0].resources, B.COST_CITY, [4] * 5, s.bank, t, convert=False)
+    assert d2["conv_int"] == 1 and d3["conv_int"] == 0 and d3["conv_frac"] == 0.0
+    assert d3["prod"] == pytest.approx(sum(t[OR][:3])) and d3["prod"] > d2["prod"] > 0.0   # all 3 ore to roll
+    c3 = Q.AcqContext(s, 0, mode=3).corrections(s)[0]
+    c2 = Q.AcqContext(s, 0, mode=2).corrections(s)[0]
+    assert 0.0 < c3 < c2
+    s.hexes = [(B.DESERT, 0)] * B.NUM_HEXES                          # nothing to roll: mode 3 credits nothing
+    assert Q.AcqContext(s, 0, mode=3).corrections(s) is None and Q.AcqContext(s, 0, mode=2).corrections(s)

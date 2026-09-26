@@ -59,7 +59,7 @@ EXPERIMENT_KEYS = {"name", "interpreter", "opponent", "tunable", "values", "flag
 QUEUE_KEYS = {"kind", "area", "polarity", "promise_pp", "mechanism", "tier", "design", "parent", "fallback", "on",
               "after", "route", "estimator", "crn", "weight", "exclusive", "cmd", "verdict_from", "est_cpu_h", "games",
               "players", "counters", "headroom", "d_prior", "confirms", "shadow_gate", "label", "bundle_of", "mech",
-              "info", "chunk_games", "noharm", "pool_m", "requires", "cwd", "bundle", "knockouts"}
+              "info", "chunk_games", "noharm", "pool_m", "requires", "cwd", "bundle", "knockouts", "screen_once"}
 EXPERIMENT_KEYS = EXPERIMENT_KEYS | QUEUE_KEYS
 RUNNABLE_KINDS = (None, "catanatron")
 NAME_RE = re.compile(r"^[A-Za-z0-9_.@+=-]+$")

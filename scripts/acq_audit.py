@@ -239,6 +239,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--positions", type=int, default=300)
     ap.add_argument("--spec", default=None, help="the default bot spec (default: the shipped search bot)")
     ap.add_argument("--cand", action="append", default=None, metavar="LABEL:NAME=VALUE,...")
+    ap.add_argument("--rule", default="acq2", metavar="LABEL",
+                    help="the candidate the pre-registered rule decides (exit code); default acq2")
     ap.add_argument("--json", help="write the result here (rows included)")
     args = ap.parse_args(argv)
     from catanbot import tuning
@@ -266,9 +268,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               f"{(s['ms_ratio'] or float('nan')):.2f}; per decision {s['per_decision']}")
         for kname, cnt in list(s["kinds"].items())[:6]:
             print(f"      {cnt:4d}  {kname}")
-    ver = verdict(summ["acq2"]) if "acq2" in summ else None
-    if ver is not None:
-        print(f"Stage 0 (acq2, pre-registered): {'PASS' if ver['pass'] else 'FAIL'} {ver['checks']}")
+    ver = verdict(summ[args.rule]) if args.rule in summ else None
+    for c in cands[1:]:
+        if c.label.startswith("acq"):
+            v = verdict(summ[c.label])
+            print(f"Stage 0 rule ({c.label}{', decides' if c.label == args.rule else ''}): "
+                  f"{'PASS' if v['pass'] else 'FAIL'} {v['checks']}")
     if "conv" in summ and "conv_acq2" in summ and "acq2" in summ:
         both = sum(1 for r in rows if r["cand"]["conv"]["a"] != r["def"] and r["cand"]["acq2"]["a"] != r["def"])
         pair = sum(1 for r in rows if r["cand"]["conv_acq2"]["a"] != r["def"])
@@ -280,7 +285,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         os.makedirs(os.path.dirname(os.path.abspath(args.json)), exist_ok=True)
         with open(args.json + ".tmp", "w") as fh:
             json.dump({"spec": spec, "evaluator": tuning.evaluator_mode(), "positions": len(rows), "games": games,
-                       "aa_ok": aa_ok, "candidates": summ, "stage0": ver, "rows": rows,
+                       "aa_ok": aa_ok, "candidates": summ, "stage0": ver, "rule": args.rule, "rows": rows,
                        "cpu_s": time.process_time() - cpu0}, fh)
         os.replace(args.json + ".tmp", args.json)
     return 0 if aa_ok and (ver is None or ver["pass"]) else 3

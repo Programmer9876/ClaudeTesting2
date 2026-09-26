@@ -91,8 +91,8 @@ def _fake_args(effect, disc=None):
 # ---------------------------------------------------------------------------
 # the plan and intake
 # ---------------------------------------------------------------------------
-# Enabled rows whose honest promise is below what their budget can show: intake SHELVEs them at 0 games until the
-# user takes docs/PRIORITY_PLAN.md decision 1 (--no-intake or a larger promise_pp).
+# Enabled screens whose honest promise is below what their budget can show: plan decision 1 (the user: screen them
+# once within the budget) is the plan-level screen_once list, so intake runs them instead of SHELVEing them.
 BELOW_MDE = ("acq_breadth_bundle", "acq_floor_selfplay", "acq_floor_vrule@value")
 
 
@@ -110,9 +110,9 @@ def test_every_current_plan_row_gets_area_polarity_tier(tmp_path):
             assert e.get("polarity") in RQ.POLARITIES and e.get("tier"), e["name"]
             for n in RQ.row_names(e):
                 tuning.find(n)                                  # epoch A runs on today's registry
-        if e["name"] in BELOW_MDE:          # plan decision 1: honest promises below the budget's MDE
-            assert rs.status == "SHELVED" and rs.reason.startswith("SHELVE(intake"), (e["name"], rs.reason)
-            continue
+        if e["name"] in BELOW_MDE:          # plan decision 1: honest promises below the budget's MDE, screened once
+            assert RQ.screen_once(q.plan, e) and rs.intake.power < 0.5, e["name"]
+            assert any(w.startswith("screen_once: power") for w in rs.intake.warnings), e["name"]
         assert rs.status not in ("REFUSED", "SHELVED", "BLOCKED"), (e["name"], rs.status, rs.reason)
     names = {e["name"] for e in q.plan.rows}
     assert "t2_counted_info@value" not in names                 # removed as redundant (the proof measured it)
@@ -214,6 +214,37 @@ def test_lint_routing_rules(tmp_path):
     assert st["no_area"][0] == "REFUSED" and st["no_promise"][0] == "REFUSED"
     assert st["human"][0] == "DEFERRED"
     assert all(rs.name not in ("count_sp", "human") for rs in q.order())
+
+
+def test_screen_once_takes_one_screen_despite_low_power(tmp_path):
+    """Plan decision 1: a row field or the plan-level list skips only intake's power SHELVE; lint, the cap and the
+    look-1 'unprovable at promise' re-check still apply."""
+    lo = _row("lo", promise_pp=2, d_prior=0.40, seeds={"count": 2000, "base": 0})
+    q = _q(tmp_path, [lo])
+    q.refresh()
+    assert q.rows["lo"].status == "SHELVED" and "unprovable at budget" in q.rows["lo"].reason
+    q = _q(tmp_path, [dict(lo, screen_once=True)])
+    q.refresh()
+    rs = q.rows["lo"]
+    assert rs.status == "ELIGIBLE" and rs.n_max == 2000 and rs.intake.power < 0.5
+    assert any(w.startswith("screen_once: power 0.25") for w in rs.intake.warnings)
+    q = _q(tmp_path, [lo, _row("ko", polarity="knockout", tunable="danger.BLOCK_NEED", values=[0])],
+           top={"screen_once": ["lo", "ko"]})
+    q.refresh()
+    assert q.rows["lo"].status == "ELIGIBLE" and RQ.screen_once(q.plan, q.plan.row("lo"))
+    assert any("screen_once only changes" in w for w in q.rows["ko"].intake.warnings)
+    bad = _plan(tmp_path, [lo], screen_once=["nope"])
+    with pytest.raises(RQ.PlanError):
+        RQ.load_plan(bad)
+    # the look-1 re-check still ends a hopeless screen (high observed discordance: power < 0.30 at the promise)
+    q = _q(tmp_path, [dict(lo, screen_once=True)])
+    q.refresh()
+    q.ledger.append({"kind": "pin", "row": "lo", "epoch": "live", "identity": q.identity(q.plan.row("lo")),
+                     "values": ["2"], "n_max": 2000, "base": 0})
+    _play(q, "lo", 400, extra=["--fake-games", "0.0", "--fake-discordance", "0.9"])
+    q.refresh()
+    v = q.ledger.verdict("lo", "2")
+    assert v["verdict"] == "SHELVE" and "unprovable at promise" in v["reason"] and v["look"] == 1
 
 
 def test_politics_names_force_politics_design(tmp_path):

@@ -4,6 +4,34 @@ Living document, updated by the overnight check-ins.  Newest entries first.
 Everything here was measured on the cloud container (4 shared cores, 15 GB);
 numbers vary with the load from concurrent jobs.
 
+## 2026-09-26 09:00 UTC - trading (step 3) built; the hand-value idea failed its pre-registered check
+
+All switches are off by default, and the default bot's pinned game digests
+are unchanged.  255 tests pass on catanatron 3.3 and 247 (+9 skipped) on
+3.2.1.
+
+| feature | zero-game result | status |
+|---|---|---|
+| hand value from conversions and roll odds (`acq=1/2`) | **failed Stage 0**: 8 % of decisions change, mostly "bank trade -> end turn" to wait for cards it had only about a 20 % chance to roll before its next turn (1 of 13 such waits was reasonable; the rule needs at least half) | stopped, no games |
+| moderate version, roll odds only (`acq=3`) | 4 % change; one bad wait on held-out games | stopped; becomes advisor text ("keep: 58 % to roll the ore") |
+| player-trade premium (`acq_floor`, the user's rule) | 1.6 % change: 25 accepts became rejects, 5 proposals became bank trades | queued: self-play, and vs Catanatron with value-rule answers |
+| wider trade offers (`acq_breadth`: 5 proposals, mixed 2-for-1 offers) | 9.1 % change; injected offers were accepted 2 of 14 times | queued: self-play |
+| learning who accepts (`CALIB_RATE`) | prediction error (Brier) 0.31 -> 0.15 | politics tier: native check, then one screen |
+| port trade-flow model (`acq.flow`) | per-resource error 0.69 vs 1.27 for flat shares | a data product for the ports step |
+
+**Why the hand-value idea failed.**  It credits surplus cards as if they
+were already converted.  So a bank trade that does not finish a build this
+turn looks worthless, while the static value still pays for every card held.
+The bot then holds cards instead of trading, which exposes them to the
+robber for a round.
+
+**The player-trade premium measures a real leak.**  With the premium off,
+the default bot accepted trades that fail the rule in 6.7 % of accepts
+(0.6 % of proposals).  Those are trades that our own bank or port would have
+given us without helping the partner.  Trades literally worse than our port
+rate by card count never occurred, because the engine only offers 1-for-1
+and single-resource 2-for-1 deals.
+
 ## 2026-09-26 07:20 UTC - port-aware diversification built; the opening is the real lever
 
 Built off by default (step 2 of the plan and the user's diversification
