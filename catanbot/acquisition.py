@@ -791,7 +791,7 @@ def register_tunables(registry: Dict[str, object]) -> None:
                             "multiplier (0 = plain bank floor: ties go to the bank); only with search.acq_floor=1")
     registry[t.name] = t
     for attr, default, cands, desc in (
-            ("OFFER_COST", OFFER_COST, [0.002, 0.005, 0.01],
+            ("OFFER_COST", OFFER_COST, [0.00002, 0.001, 0.003],
              "offer cost: win probability charged per player-trade proposal we make; with a cost on, a proposal is "
              "valued min(expectation, not offering + P(accept) x (accepted - rejected branch)) - cost, so it is made "
              "only when its own expected gain beats its cost, and its rejected outcome no longer ranks it in the "
@@ -799,7 +799,7 @@ def register_tunables(registry: Dict[str, object]) -> None:
             ("OFFER_LEAK", OFFER_LEAK, [0.001, 0.003],
              "offer cost, information-leak part: win probability per card the proposal asks for, +1 unit when the "
              "trade would complete a settlement or city (acquisition.offer_reveal); 0 = off"),
-            ("OFFER_REPEAT", OFFER_REPEAT, [0.5, 1.0],
+            ("OFFER_REPEAT", OFFER_REPEAT, [3.0, 1.0, 0.5],
              "offer cost, repetition part: the price is multiplied by (1 + this) per offer of ours in a row that "
              "nobody took (reset by an acceptance; OpponentModel.offer_run); 0 = no escalation; only with "
              "OFFER_COST or OFFER_LEAK > 0")):

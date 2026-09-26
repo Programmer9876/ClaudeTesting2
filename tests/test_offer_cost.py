@@ -6,8 +6,10 @@
 * the cost itself: offer_reveal (cards asked, +1 for a completed settlement / city), offer_cost;
 * the valuation: min(E, V_no + P x (V_acc - V_rej)) - cost on hand-built outcome nodes (missing branches, no sibling);
   the pricing never raises a root value; a trade we value at or below nothing is never proposed;
+* the escalation: the model's run of our offers nobody took (only with the cost on), the price x (1 + REPEAT) ** run,
+  a table that keeps rejecting stops the offers and an acceptance resumes them (not absorbing);
 * the combination: with every seat on a rejection streak (P = 0) the old search still proposes (a free, tied or
-  deeper-searching offer), the priced one never does.
+  deeper-searching offer), the priced one never does (absorbing: the streak never lifts).
 """
 import hashlib
 import random
@@ -29,7 +31,7 @@ from catanbot.state import PHASE_MAIN
 from tests.test_corrections import PINNED_GAMES, PINNED_SEARCH, positions, search_hash
 
 DEFAULT = tuning.DEFAULT_SEARCH_SPEC
-ZERO = {"acquisition.OFFER_COST": 0.0, "acquisition.OFFER_LEAK": 0.0}
+ZERO = {"acquisition.OFFER_COST": 0.0, "acquisition.OFFER_LEAK": 0.0, "acquisition.OFFER_REPEAT": 0.0}
 CFG = SearchConfig(depth=1, beam=4, expand=8)
 
 
@@ -52,12 +54,24 @@ def test_registered_off_by_default():
         t = tuning.TUNABLES[name]
         assert t.kind == "weight" and t.default == 0.0 and t.requires_search and not t.needs_python_evaluator
         assert all(v > 0 for v in t.candidates) and t.parse("0.004") == 0.004
-    assert Q.OFFER_COST == 0.0 and Q.OFFER_LEAK == 0.0 and not Q.offer_cost_on()
+    assert Q.OFFER_COST == 0.0 and Q.OFFER_LEAK == 0.0 and Q.OFFER_REPEAT == 0.0 and not Q.offer_cost_on()
     assert _offer_pricing() is None
     assert tuning.verify_registry() == []
     with tuning.overridden({"acquisition.OFFER_LEAK": 0.001}):
         assert _offer_pricing() is Q
+    with tuning.overridden({"acquisition.OFFER_REPEAT": 3.0}):          # the escalation alone prices nothing
+        assert _offer_pricing() is None
     assert _offer_pricing() is None
+
+
+def test_repeat_alone_is_inert_and_keeps_no_run():
+    h = hashlib.sha256()
+    bots = [ParamBot(make_bot(DEFAULT), {"acquisition.OFFER_REPEAT": 3.0}) for _ in range(4)]
+    res = play_game(bots, rng=random.Random(12), seed=12, max_turns=36,
+                    on_action=lambda st, a, p: h.update(repr((p, a)).encode()))
+    h.update(repr((res.winner, list(res.vps), res.turns, res.actions)).encode())
+    assert h.hexdigest()[:16] == PINNED_GAMES["default"][1][1]
+    assert all(b.model.offer_runs is None for b in bots)
 
 
 def test_zero_weights_spelled_out_play_the_pinned_default_game():
@@ -83,6 +97,8 @@ def test_cost_off_never_enters_the_pricing_code(monkeypatch):
         monkeypatch.setattr(Q, name, boom)
     for name in ("_priced_children", "_offer_value"):
         monkeypatch.setattr(Searcher, name, boom)
+    for name in ("_note_offer_answer", "offer_run"):
+        monkeypatch.setattr(OpponentModel, name, boom)
     res = play_game([make_bot(DEFAULT) for _ in range(4)], rng=random.Random(4), seed=4, max_turns=30)
     assert res.actions > 100
 
@@ -128,7 +144,29 @@ def test_offer_cost_is_fixed_plus_leak(mains):
     with tuning.overridden({"acquisition.OFFER_COST": 0.004, "acquisition.OFFER_LEAK": 0.001}):
         assert Q.offer_cost(s, 0, give, get) == pytest.approx(0.006)
         assert Q.offer_cost(s, 0, give, _vec(wood=1)) == pytest.approx(0.005)
-    assert Q.OFFER_COST == 0.0 and Q.OFFER_LEAK == 0.0                      # restored
+        assert Q.offer_cost(s, 0, give, get, run=3.0) == pytest.approx(0.006)   # OFFER_REPEAT 0: no escalation
+        with tuning.overridden({"acquisition.OFFER_REPEAT": 1.0}):
+            assert Q.offer_cost(s, 0, give, get, run=3.0) == pytest.approx(0.006 * 8)
+            assert Q.offer_cost(s, 0, give, get, run=0.5) == pytest.approx(0.006 * 2 ** 0.5)
+            assert Q.offer_cost(s, 0, give, get, run=1e6) == pytest.approx(0.006 * 2 ** Q.OFFER_RUN_CAP)
+    assert Q.OFFER_COST == 0.0 and Q.OFFER_LEAK == 0.0 and Q.OFFER_REPEAT == 0.0   # restored
+
+
+def test_model_tracks_our_run_only_with_the_cost_on(mains):
+    from tests.test_acquisition import offer_state, vec
+    give, get = vec(wood=1, brick=1), vec(ore=1)
+    s0, s1 = offer_state(give, get)
+    m = OpponentModel(s1)
+    j = E.acting_player(s1)
+    m.observe(s1, (A.REJECT_TRADE,), j)
+    assert m.offer_runs is None and m.offer_run(s0, 0) == 0.0                # cost off: nothing kept
+    with tuning.overridden({"acquisition.OFFER_COST": 0.001}):
+        for k in range(1, 7):
+            m.observe(s1, (A.REJECT_TRADE,), j)
+            assert m.offer_run(s0, 0) == pytest.approx(k / 3.0)              # a whole offer per 3 rejections
+        assert m.offer_run(s0, 1) == 0.0
+        m.observe(s1, (A.ACCEPT_TRADE,), j)
+        assert m.offer_run(s0, 0) == 0.0                                     # an acceptance resets it
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +284,21 @@ def test_proposal_on_top_only_when_its_own_gain_beats_the_cost(mains, monkeypatc
     assert tops > 0
 
 
+def _run_model(s, me, run):
+    m = OpponentModel(s)
+    m.offer_runs = {OM._pname(s, me): float(run)}
+    return m
+
+
+def test_escalation_stops_a_rejecting_table_and_an_acceptance_resumes(mains):
+    over = {"acquisition.OFFER_COST": 0.0002, "acquisition.OFFER_REPEAT": 1.0}
+    tops = {0: 0, 20: 0}
+    for s, me in mains:
+        for run in tops:
+            tops[run] += search(s, me, _run_model(s, me, run), over)[0].action[0] == A.PROPOSE_TRADE
+    assert tops[0] > 0 and tops[20] == 0                                     # run 0 = after an acceptance
+
+
 # ---------------------------------------------------------------------------
 # the combination with the rejection streak / calibration
 # ---------------------------------------------------------------------------
@@ -280,7 +333,7 @@ def test_calibrated_zero_probability_seats_get_no_priced_offers(mains, monkeypat
 
 
 def test_priced_parambot_game_runs_and_restores(mains):
-    ov = {"acquisition.OFFER_COST": 0.003, "acquisition.OFFER_LEAK": 0.001, "opponent_model.REJECT_STREAK": 3}
+    ov = {"acquisition.OFFER_COST": 0.003, "acquisition.OFFER_LEAK": 0.001, "acquisition.OFFER_REPEAT": 1.0}
     props = {0: 0, 1: 0}
 
     def count(st, a, p):
@@ -290,4 +343,5 @@ def test_priced_parambot_game_runs_and_restores(mains):
     bots = [ParamBot(make_bot(DEFAULT), ov) if i % 2 == 0 else make_bot(DEFAULT) for i in range(4)]
     res = play_game(bots, rng=random.Random(7), seed=7, max_turns=40, on_action=count)
     assert res.actions > 100 and props[1] > 0
-    assert Q.OFFER_COST == 0.0 and Q.OFFER_LEAK == 0.0 and OM.REJECT_STREAK == 0
+    assert bots[0].model.offer_runs and bots[1].model.offer_runs is None    # our own offers' answers are observed
+    assert Q.OFFER_COST == 0.0 and Q.OFFER_LEAK == 0.0 and Q.OFFER_REPEAT == 0.0
